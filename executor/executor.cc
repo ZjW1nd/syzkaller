@@ -1528,9 +1528,8 @@ static int nyx_mode_loop(int argc, char** argv)
 		fail("failed to allocate Nyx payload buffer");
 
 	uint64_t cr3 = 0;
-	if (!nyx_query_cr3(&cr3))
-		fail("failed to query CR3 via findCR3 helper");
-	nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
+	if (nyx_query_cr3(&cr3))
+		nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
 	nyx_hypercall(HYPERCALL_KAFL_USER_SUBMIT_MODE, KAFL_MODE_64);
 	if (!nyx_submit_module_range("ntoskrnl.exe"))
 		fail("failed to submit ntoskrnl.exe range");

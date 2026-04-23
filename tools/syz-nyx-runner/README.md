@@ -16,11 +16,12 @@ Example:
 
 ```bash
 ./bin/syz-manager -config demo.cfg
-./bin/syz-nyx-runner 0 127.0.0.1 12345 \
+./bin/syz-nyx-runner \
   --qemu-path /path/to/qemu-system-x86_64 \
   --workdir /tmp/syz-nyx-demo \
   --image /path/to/windows.qcow2 \
   --qemu-arg=-enable-kvm \
   --qemu-arg=-cpu \
-  --qemu-arg=host,migratable=off
+  --qemu-arg=host,migratable=off \
+  0 127.0.0.1 12345
 ```

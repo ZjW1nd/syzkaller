@@ -173,6 +173,7 @@ type nyxVM struct {
 	payloadPath string
 	ijonPath    string
 	coverPath   string
+	snapshotDir string
 
 	payloadSize int
 	bitmapSize  int
@@ -201,6 +202,7 @@ func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image stri
 		payloadPath: filepath.Join(workdir, fmt.Sprintf("payload_%d", index)),
 		ijonPath:    filepath.Join(workdir, fmt.Sprintf("ijon_%d", index)),
 		coverPath:   filepath.Join(workdir, fmt.Sprintf("syz_cov_%d.bin", index)),
+		snapshotDir: filepath.Join(workdir, "snapshot"),
 		payloadSize: payloadSize,
 		bitmapSize:  bitmapSize,
 		qemuPath:    qemuPath,
@@ -217,6 +219,23 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	}
 	if err := os.MkdirAll(vm.dumpDir, 0o755); err != nil {
 		return err
+	}
+	if err := os.MkdirAll(filepath.Join(vm.workdir, fmt.Sprintf("redqueen_workdir_%d", vm.index)), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(vm.snapshotDir, 0o755); err != nil {
+		return err
+	}
+	for _, path := range []string{
+		filepath.Join(vm.workdir, "page_cache.lock"),
+		filepath.Join(vm.workdir, "page_cache.addr"),
+		filepath.Join(vm.workdir, "page_cache.dump"),
+	} {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+		if err != nil {
+			return err
+		}
+		_ = f.Close()
 	}
 	for _, file := range []struct {
 		path string
@@ -257,6 +276,7 @@ func (vm *nyxVM) start(ctx context.Context) error {
 		"-chardev", fmt.Sprintf("socket,server,id=nyx_socket,path=%s", vm.controlPath),
 		"-device", fmt.Sprintf("nyx,chardev=nyx_socket,workdir=%s,worker_id=%d,bitmap_size=%d,input_buffer_size=%d",
 			vm.workdir, vm.index, vm.bitmapSize, vm.payloadSize),
+		"-fast_vm_reload", fmt.Sprintf("path=%s,load=off", vm.snapshotDir),
 	)
 	vm.process = exec.CommandContext(ctx, vm.qemuPath, args...)
 	if vm.debug {
