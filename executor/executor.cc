@@ -111,6 +111,9 @@ void debug_dump_data(const char* data, int length);
 static void receive_execute();
 static void reply_execute(uint32 status);
 static void receive_handshake();
+#if GOOS_windows
+static int nyx_mode_loop(int argc, char** argv);
+#endif
 
 #if SYZ_EXECUTOR_USES_FORK_SERVER
 static void SnapshotPrepareParent();
@@ -518,6 +521,7 @@ static void mmap_input();
 #include "executor_darwin.h"
 #elif GOOS_windows
 #include "executor_windows.h"
+#include "nyx_windows.h"
 #elif GOOS_test
 #include "executor_test.h"
 #else
@@ -611,6 +615,10 @@ int main(int argc, char** argv)
 	use_temporary_dir();
 	install_segv_handler();
 	current_thread = &threads[0];
+#if GOOS_windows
+	if (argc > 2 && strcmp(argv[2], "nyx") == 0)
+		return nyx_mode_loop(argc, argv);
+#endif
 
 	if (argc > 2 && strcmp(argv[2], "snapshot") == 0) {
 		SnapshotSetup(argv, argc);
@@ -1492,6 +1500,133 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 	fbb.FinishSizePrefixed(msg_off);
 	return fbb.GetBufferSpan();
 }
+
+#if GOOS_windows
+static bool nyx_dump_exec_result(const char* basename, flatbuffers::span<uint8_t> data)
+{
+	return nyx_dump_bytes(basename, data.data(), data.size(), false);
+}
+
+static bool nyx_dump_ack()
+{
+	static const char ok[] = "ok";
+	return nyx_dump_bytes(NYX_HANDSHAKE_ACK_BASENAME, ok, sizeof(ok) - 1, false);
+}
+
+static int nyx_mode_loop(int argc, char** argv)
+{
+	(void)argc;
+	(void)argv;
+	nyx_host_config_t host_cfg = {};
+	if (!nyx_fetch_host_config(&host_cfg))
+		fail("failed to fetch Nyx host config");
+
+	auto* payload = static_cast<kAFL_payload*>(VirtualAlloc(nullptr, host_cfg.payload_buffer_size,
+								MEM_COMMIT | MEM_RESERVE,
+								PAGE_READWRITE));
+	if (payload == nullptr)
+		fail("failed to allocate Nyx payload buffer");
+
+	uint64_t cr3 = 0;
+	if (!nyx_query_cr3(&cr3))
+		fail("failed to query CR3 via findCR3 helper");
+	nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
+	nyx_hypercall(HYPERCALL_KAFL_USER_SUBMIT_MODE, KAFL_MODE_64);
+	if (!nyx_submit_module_range("ntoskrnl.exe"))
+		fail("failed to submit ntoskrnl.exe range");
+
+	nyx_agent_config_t agent_cfg = {};
+	agent_cfg.agent_magic = NYX_AGENT_MAGIC;
+	agent_cfg.agent_version = NYX_AGENT_VERSION;
+	agent_cfg.agent_non_reload_mode = 1;
+	agent_cfg.coverage_bitmap_size = host_cfg.bitmap_size;
+	nyx_hypercall(HYPERCALL_KAFL_SET_AGENT_CONFIG, (uint64_t)(uintptr_t)&agent_cfg);
+	nyx_hypercall(HYPERCALL_KAFL_GET_PAYLOAD, (uint64_t)(uintptr_t)payload);
+
+	std::vector<uint8_t> output_mem(kMaxOutput);
+	output_data = reinterpret_cast<OutputData*>(output_mem.data());
+	output_size = output_mem.size();
+	output_data->size.store(output_size, std::memory_order_relaxed);
+	uint64_t freshness = 1;
+	bool have_handshake = false;
+	handshake_req hs = {};
+	kafl_syz_cov_cmd_t cov_cmd = {};
+
+	for (;;) {
+		nyx_hypercall(HYPERCALL_KAFL_NEXT_PAYLOAD, 0);
+		if (payload->size < (int32_t)sizeof(nyx_msg_header_t))
+			fail("Nyx payload too small");
+
+		auto* header = reinterpret_cast<nyx_msg_header_t*>(payload->data);
+		if (header->magic != SYZ_NYX_MSG_MAGIC || header->version != SYZ_NYX_MSG_VERSION)
+			fail("bad Nyx payload header");
+		if (sizeof(*header) + header->body_size > (uint32_t)payload->size)
+			fail("Nyx payload body overflow");
+
+		const uint8_t* body = payload->data + sizeof(*header);
+		if (header->kind == SYZ_NYX_KIND_HANDSHAKE) {
+			auto* msg = flatbuffers::GetRoot<rpc::SnapshotHandshake>(body);
+			hs = {
+			    .magic = kInMagic,
+			    .use_cover_edges = msg->cover_edges(),
+			    .is_kernel_64_bit = msg->kernel_64_bit(),
+			    .flags = msg->env_flags(),
+			    .pid = 0,
+			    .sandbox_arg = static_cast<uint64>(msg->sandbox_arg()),
+			    .syscall_timeout_ms = static_cast<uint64>(msg->syscall_timeout_ms()),
+			    .program_timeout_ms = static_cast<uint64>(msg->program_timeout_ms()),
+			    .slowdown_scale = static_cast<uint64>(msg->slowdown()),
+			};
+			parse_handshake(hs);
+			have_handshake = true;
+			nyx_dump_ack();
+			continue;
+		}
+
+		if (header->kind != SYZ_NYX_KIND_EXEC)
+			fail("unknown Nyx payload kind");
+		if (!have_handshake)
+			fail("received exec payload before handshake");
+		if (header->body_size < sizeof(nyx_exec_meta_t))
+			fail("Nyx exec payload too small");
+
+		auto* meta = reinterpret_cast<const nyx_exec_meta_t*>(body);
+		auto* msg = flatbuffers::GetRoot<rpc::SnapshotRequest>(body + sizeof(*meta));
+		execute_req req = {
+		    .id = static_cast<uint64>(meta->request_id),
+		    .type = rpc::RequestType::Program,
+		    .exec_flags = static_cast<uint64>(msg->exec_flags()),
+		    .all_call_signal = msg->all_call_signal(),
+		    .all_extra_signal = msg->all_extra_signal(),
+		};
+		parse_execute(req);
+
+		memset(results, 0, sizeof(results));
+		running = 0;
+		last_scheduled = nullptr;
+		output_data->Reset();
+		output_data->size.store(output_size, std::memory_order_relaxed);
+		output_data->num_calls.store(msg->num_calls(), std::memory_order_relaxed);
+		input_data = const_cast<uint8*>(msg->prog_data()->Data());
+
+		cov_cmd.call_index = 0;
+		cov_cmd.slot_id = 0;
+		cov_cmd.flags = 0;
+
+		uint64_t exec_start = current_time_ms();
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd);
+		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+		execute_one();
+		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)&cov_cmd);
+
+		auto result = finish_output(output_data, meta->proc_id, meta->request_id, msg->num_calls(),
+					    (current_time_ms() - exec_start) * 1000 * 1000,
+					    freshness++, 0, false, nullptr);
+		nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+	}
+}
+#endif
 
 void thread_create(thread_t* th, int id, bool need_coverage)
 {

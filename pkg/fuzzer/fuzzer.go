@@ -73,6 +73,12 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 }
 
 func (fuzzer *Fuzzer) RecommendedCalls() int {
+	if fuzzer.Config.MaxCallsPerProg > 0 {
+		if fuzzer.Config.ModeKFuzzTest {
+			return min(fuzzer.Config.MaxCallsPerProg, prog.RecommendedCallsKFuzzTest)
+		}
+		return min(fuzzer.Config.MaxCallsPerProg, prog.RecommendedCalls)
+	}
 	if fuzzer.Config.ModeKFuzzTest {
 		return prog.RecommendedCallsKFuzzTest
 	}
@@ -208,20 +214,21 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 }
 
 type Config struct {
-	Debug          bool
-	Corpus         *corpus.Corpus
-	Logf           func(level int, msg string, args ...any)
-	Snapshot       bool
-	Coverage       bool
-	FaultInjection bool
-	Comparisons    bool
-	Collide        bool
-	EnabledCalls   map[*prog.Syscall]bool
-	NoMutateCalls  map[int]bool
-	FetchRawCover  bool
-	NewInputFilter func(call string) bool
-	PatchTest      bool
-	ModeKFuzzTest  bool
+	Debug           bool
+	Corpus          *corpus.Corpus
+	Logf            func(level int, msg string, args ...any)
+	Snapshot        bool
+	Coverage        bool
+	FaultInjection  bool
+	Comparisons     bool
+	Collide         bool
+	EnabledCalls    map[*prog.Syscall]bool
+	NoMutateCalls   map[int]bool
+	FetchRawCover   bool
+	NewInputFilter  func(call string) bool
+	PatchTest       bool
+	ModeKFuzzTest   bool
+	MaxCallsPerProg int
 }
 
 func (fuzzer *Fuzzer) triageProgCall(p *prog.Prog, info *flatrpc.CallInfo, call int, triage *map[int]*triageCall) {
@@ -294,7 +301,8 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 	if req == nil {
 		req = genProgRequest(fuzzer, rnd)
 	}
-	if fuzzer.Config.Collide && rnd.Intn(3) == 0 {
+	if fuzzer.Config.Collide && (fuzzer.Config.MaxCallsPerProg == 0 || fuzzer.Config.MaxCallsPerProg > 1) &&
+		rnd.Intn(3) == 0 {
 		req = &queue.Request{
 			Prog: randomCollide(req.Prog, rnd),
 			Stat: fuzzer.statExecCollide,

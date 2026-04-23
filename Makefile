@@ -100,7 +100,7 @@ endif
 
 .PHONY: all clean host target \
 	manager executor kfuzztest ci hub agent \
-	execprog mutate prog2c trace2syz repro upgrade db \
+	execprog mutate prog2c trace2syz repro upgrade db nyx-runner \
 	usbgen symbolize cover kconf syz-build crush \
 	bin/syz-extract bin/syz-fmt \
 	extract generate generate_go generate_rpc generate_sys \
@@ -112,7 +112,7 @@ endif
 	presubmit_arch_executor presubmit_dashboard presubmit_race presubmit_race_dashboard presubmit_old
 
 all: host target
-host: manager repro mutate prog2c db upgrade
+host: manager repro mutate prog2c db upgrade nyx-runner
 target: execprog executor check_syzos
 
 executor: descriptions
@@ -215,6 +215,9 @@ syz-build:
 
 bisect: descriptions
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-bisect github.com/google/syzkaller/tools/syz-bisect
+
+nyx-runner:
+	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-nyx-runner github.com/google/syzkaller/tools/syz-nyx-runner
 
 ifeq ($(HOSTOS), linux)
 kfuzztest: descriptions

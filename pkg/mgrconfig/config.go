@@ -261,6 +261,10 @@ type Experimental struct {
 
 	// Enable dynamic discovery and fuzzing of KFuzzTest targets.
 	EnableKFuzzTest bool `json:"enable_kfuzztest"`
+
+	// Hard upper bound on the number of calls per generated/mutated program.
+	// 0 means use the built-in syzkaller defaults.
+	MaxCallsPerProg int `json:"max_calls_per_prog,omitempty"`
 }
 
 type FocusArea struct {

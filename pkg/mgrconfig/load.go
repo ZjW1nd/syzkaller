@@ -206,6 +206,9 @@ func Complete(cfg *Config) error {
 	if cfg.VMLess && cfg.Reproduce {
 		return fmt.Errorf("if config param type is none, reproduce must be false")
 	}
+	if cfg.Experimental.MaxCallsPerProg < 0 || cfg.Experimental.MaxCallsPerProg > prog.MaxCalls {
+		return fmt.Errorf("experimental.max_calls_per_prog must be in [0, %d]", prog.MaxCalls)
+	}
 
 	return nil
 }

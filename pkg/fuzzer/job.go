@@ -59,7 +59,7 @@ func mutateProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 	}
 	newP := p.Clone()
 	newP.Mutate(rnd,
-		prog.RecommendedCalls,
+		fuzzer.RecommendedCalls(),
 		fuzzer.ChoiceTable(),
 		fuzzer.Config.NoMutateCalls,
 		fuzzer.Config.Corpus.Programs(),
@@ -452,7 +452,7 @@ func (job *smashJob) run(fuzzer *Fuzzer) {
 	rnd := fuzzer.rand()
 	for range iters {
 		p := job.p.Clone()
-		p.Mutate(rnd, prog.RecommendedCalls,
+		p.Mutate(rnd, fuzzer.RecommendedCalls(),
 			fuzzer.ChoiceTable(),
 			fuzzer.Config.NoMutateCalls,
 			fuzzer.Config.Corpus.Programs())
