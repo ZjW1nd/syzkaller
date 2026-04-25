@@ -486,6 +486,19 @@ var List = map[string]map[string]*Target{
 			PtrSize: 8,
 			// TODO(dvyukov): what should we do about 4k vs 64k?
 			PageSize: 4 << 10,
+			CCompiler: "x86_64-w64-mingw32-gcc",
+			CxxCompiler: "x86_64-w64-mingw32-g++",
+			CFlags: []string{
+				"-D_WIN32_WINNT=0x0A00",
+				"-DWIN32_LEAN_AND_MEAN",
+			},
+			CxxFlags: []string{
+				"-D_WIN32_WINNT=0x0A00",
+				"-DWIN32_LEAN_AND_MEAN",
+				"-static",
+				"-lntdll",
+				"-lpsapi",
+			},
 		},
 	},
 	Trusty: {
@@ -572,6 +585,7 @@ var oses = map[string]osCommon{
 		KernelObject:           "zircon.elf",
 	},
 	Windows: {
+		BuildOS:                Linux,
 		SyscallNumbers:         false,
 		ExecutorUsesForkServer: false,
 		ExeExtension:           ".exe",

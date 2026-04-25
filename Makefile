@@ -101,6 +101,7 @@ endif
 .PHONY: all clean host target \
 	manager executor kfuzztest ci hub agent \
 	execprog mutate prog2c trace2syz repro upgrade db nyx-runner \
+	nyx-harness \
 	usbgen symbolize cover kconf syz-build crush \
 	bin/syz-extract bin/syz-fmt \
 	extract generate generate_go generate_rpc generate_sys \
@@ -218,6 +219,9 @@ bisect: descriptions
 
 nyx-runner:
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-nyx-runner github.com/google/syzkaller/tools/syz-nyx-runner
+
+nyx-harness:
+	$(MAKE) -C tools/syz-nyx-test-harness
 
 ifeq ($(HOSTOS), linux)
 kfuzztest: descriptions

@@ -3,6 +3,6 @@
 include <windows.h>
 include <winternl.h>
 
-NtQuerySystemInformation(SystemInformationClass int32, SystemInformation ptr[inout, array[int8]], SystemInformationLength len[SystemInformation], ReturnLength ptr[inout, int32]) intptr
-NtQueryInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation], ReturnLength ptr[inout, int32]) intptr
-NtSetInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation]) intptr
+NtQuerySystemInformation(SystemInformationClass int32, SystemInformation ptr[inout, array[int8]], SystemInformationLength len[SystemInformation], ReturnLength ptr[inout, int32])
+NtQueryInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation], ReturnLength ptr[inout, int32])
+NtSetInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation])

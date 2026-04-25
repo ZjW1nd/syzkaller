@@ -178,6 +178,7 @@ int main()
 		MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	if (!payload)
 		habort("VirtualAlloc payload failed");
+	memset(payload, 0, payload_size);
 	kAFL_hypercall(HYPERCALL_KAFL_GET_PAYLOAD, (uintptr_t)payload);
 
 	if (!submit_module_range("ntoskrnl.exe", 0))

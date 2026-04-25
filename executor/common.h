@@ -30,7 +30,9 @@
 #define htobe64 _byteswap_uint64
 #define le16toh(x) x
 #define htole16(x) x
+#if !defined(__MINGW32__)
 typedef signed int ssize_t;
+#endif
 #else
 #include <endian.h> // for htobe*.
 #endif
@@ -520,7 +522,7 @@ static long syz_execute_func(volatile long text)
 		     "r"(7l), "r"(8l), "r"(9l), "r"(10l), "r"(11l), "r"(12l), "r"(13l));
 #endif
 #endif
-	((void (*)(void))(text))();
+	((void (*)(void))(uintptr_t)text)();
 	return 0;
 }
 #endif

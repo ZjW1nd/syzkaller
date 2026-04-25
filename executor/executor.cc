@@ -207,7 +207,8 @@ private:
 	uint8_t* allocate(size_t size) override
 	{
 		if (allocated_ || size != size_)
-			failmsg("bad allocate request", "allocated=%d size=%zu/%zu", allocated_, size_, size);
+			failmsg("bad allocate request", "allocated=%d size=%I64u/%I64u",
+				allocated_, (uint64)size_, (uint64)size);
 		allocated_ = true;
 		return static_cast<uint8_t*>(buf_);
 	}
@@ -215,8 +216,8 @@ private:
 	void deallocate(uint8_t* p, size_t size) override
 	{
 		if (!allocated_ || buf_ != p || size_ != size)
-			failmsg("bad deallocate request", "allocated=%d buf=%p/%p size=%zu/%zu",
-				allocated_, buf_, p, size_, size);
+			failmsg("bad deallocate request", "allocated=%d buf=%p/%p size=%I64u/%I64u",
+				allocated_, buf_, p, (uint64)size_, (uint64)size);
 		allocated_ = false;
 	}
 
@@ -239,7 +240,8 @@ public:
 			data->size.store(size, std::memory_order_relaxed);
 		size_t consumed = data->consumed.load(std::memory_order_relaxed);
 		if (consumed >= size - sizeof(*data))
-			failmsg("ShmemBuilder: too large output offset", "size=%zd consumed=%zd", size, consumed);
+			failmsg("ShmemBuilder: too large output offset", "size=%I64u consumed=%I64u",
+				(uint64)size, (uint64)consumed);
 		if (consumed)
 			flatbuffers::FlatBufferBuilder::buf_.make_space(consumed);
 	}
@@ -498,6 +500,25 @@ static void parse_handshake(const handshake_req& req);
 
 static void mmap_input();
 
+#if GOOS_windows
+#include <winsock2.h>
+#include <mswsock.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <bcrypt.h>
+#include <imm.h>
+#include <ncrypt.h>
+#include <ole2.h>
+#include <oleauto.h>
+#include <rpc.h>
+#include <rpcndr.h>
+#include <shellapi.h>
+#include <urlmon.h>
+#include <wincrypt.h>
+#include <winscard.h>
+#include <winspool.h>
+#endif
+
 #include "syscalls.h"
 
 #if GOOS_linux
@@ -563,6 +584,7 @@ bool CoverAccessScope::used_;
 static feature_t features[] = {};
 #endif
 
+#if !GOOS_windows
 #include "shmem.h"
 
 #include "conn.h"
@@ -578,6 +600,22 @@ static feature_t features[] = {};
 
 static std::optional<CoverFilter> max_signal;
 static std::optional<CoverFilter> cover_filter;
+#else
+static void SnapshotSetup(char**, int)
+{
+	fail("snapshot mode is not supported on Windows Nyx executor");
+}
+
+static void SnapshotStart()
+{
+	fail("snapshot mode is not supported on Windows Nyx executor");
+}
+
+static void SnapshotDone(bool)
+{
+	fail("snapshot mode is not supported on Windows Nyx executor");
+}
+#endif
 
 #if SYZ_HAVE_SANDBOX_ANDROID
 static uint64 sandbox_arg = 0;
@@ -589,6 +627,19 @@ int main(int argc, char** argv)
 		fprintf(stderr, "no command");
 		return 1;
 	}
+#if GOOS_windows
+	if (strcmp(argv[1], "exec") != 0 || argc <= 2 || strcmp(argv[2], "nyx") != 0) {
+		fprintf(stderr, "windows executor only supports 'exec nyx'\n");
+		return 1;
+	}
+
+	start_time_ms = current_time_ms();
+	os_init(argc, argv, (char*)SYZ_DATA_OFFSET, SYZ_NUM_PAGES * SYZ_PAGE_SIZE);
+	use_temporary_dir();
+	install_segv_handler();
+	current_thread = &threads[0];
+	return nyx_mode_loop(argc, argv);
+#else
 	if (strcmp(argv[1], "runner") == 0) {
 		runner(argv, argc);
 		fail("runner returned");
@@ -715,8 +766,10 @@ int main(int argc, char** argv)
 	reply_execute(status);
 	return status;
 #endif
+#endif
 }
 
+#if !GOOS_windows
 static uint32* input_base_address()
 {
 	if (kAddressSanitizer) {
@@ -815,7 +868,9 @@ void setup_control_pipes()
 	if (dup2(2, 0) < 0)
 		fail("dup2(2, 0) failed");
 }
+#endif
 
+#if !GOOS_windows
 void receive_handshake()
 {
 	handshake_req req = {};
@@ -824,6 +879,7 @@ void receive_handshake()
 		failmsg("handshake read failed", "read=%zu", n);
 	parse_handshake(req);
 }
+#endif
 
 void parse_handshake(const handshake_req& req)
 {
@@ -858,6 +914,7 @@ void parse_handshake(const handshake_req& req)
 	flag_nic_vf = (bool)(req.flags & rpc::ExecEnv::EnableNicVF);
 }
 
+#if !GOOS_windows
 void receive_execute()
 {
 	execute_req req = {};
@@ -868,6 +925,7 @@ void receive_execute()
 		failmsg("control pipe read failed", "read=%zd want=%zd", n, sizeof(req));
 	parse_execute(req);
 }
+#endif
 
 void parse_execute(const execute_req& req)
 {
@@ -897,6 +955,7 @@ bool cover_collection_required()
 	return flag_coverage && (flag_collect_signal || flag_collect_cover || flag_comparisons);
 }
 
+#if !GOOS_windows
 void reply_execute(uint32 status)
 {
 	if (flag_snapshot)
@@ -904,6 +963,7 @@ void reply_execute(uint32 status)
 	if (write(kOutPipeFd, &status, sizeof(status)) != sizeof(status))
 		fail("control pipe write failed");
 }
+#endif
 
 void realloc_output_data()
 {
@@ -921,6 +981,9 @@ void realloc_output_data()
 
 void execute_glob()
 {
+#if GOOS_windows
+	fail("glob requests are not supported by the Windows Nyx executor");
+#else
 	const char* pattern = (const char*)input_data;
 	const auto& files = Glob(pattern);
 	size_t size = 0;
@@ -936,6 +999,7 @@ void execute_glob()
 	}
 	output_data->consumed.store(fbb.GetSize(), std::memory_order_release);
 	output_data->result_offset.store(off, std::memory_order_release);
+#endif
 }
 
 // execute_one executes program stored in input_data.
@@ -1258,7 +1322,11 @@ uint32 write_signal(flatbuffers::FlatBufferBuilder& fbb, int index, cover_t* cov
 		prev_filter = filter;
 		if (ignore || dedup(index, sig))
 			continue;
-		if (!all && max_signal && max_signal->Contains(sig))
+		if (!all
+#if !GOOS_windows
+		    && max_signal && max_signal->Contains(sig)
+#endif
+		)
 			continue;
 		fbb.PushElement(uint64(sig));
 		nsig++;
@@ -1317,9 +1385,14 @@ uint32 write_comparisons(flatbuffers::FlatBufferBuilder& fbb, cover_t* cov)
 
 bool coverage_filter(uint64 pc)
 {
+#if GOOS_windows
+	(void)pc;
+	return true;
+#else
 	if (!cover_filter)
 		return true;
 	return cover_filter->Contains(pc);
+#endif
 }
 
 void handle_completion(thread_t* th)
@@ -1526,6 +1599,7 @@ static int nyx_mode_loop(int argc, char** argv)
 								PAGE_READWRITE));
 	if (payload == nullptr)
 		fail("failed to allocate Nyx payload buffer");
+	memset(payload, 0, host_cfg.payload_buffer_size);
 
 	uint64_t cr3 = 0;
 	if (nyx_query_cr3(&cr3))
