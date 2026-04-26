@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	mrand "math/rand"
 	"net"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/prog"
+	_ "github.com/google/syzkaller/sys"
 	"golang.org/x/sys/unix"
 )
 
@@ -54,6 +56,7 @@ const (
 
 	nyxHandshakeAck = "syz_nyx_handshake.ok"
 	nyxExecResult   = "syz_nyx_result.bin"
+	nyxPageSize     = 0x1000
 )
 
 type multiFlag []string
@@ -65,6 +68,47 @@ func (m *multiFlag) String() string {
 func (m *multiFlag) Set(value string) error {
 	*m = append(*m, value)
 	return nil
+}
+
+func reorderArgsForFlags(args []string) []string {
+	takesValue := map[string]bool{
+		"-qemu-path":           true,
+		"-image":               true,
+		"-workdir":             true,
+		"-payload-size":        true,
+		"-bitmap-size":         true,
+		"-memory":              true,
+		"-standalone-syscall":  true,
+		"-standalone-seed":     true,
+		"-qemu-arg":            true,
+		"--qemu-path":          true,
+		"--image":              true,
+		"--workdir":            true,
+		"--payload-size":       true,
+		"--bitmap-size":        true,
+		"--memory":             true,
+		"--standalone-syscall": true,
+		"--standalone-seed":    true,
+		"--qemu-arg":           true,
+	}
+	var flags []string
+	var pos []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if strings.HasPrefix(arg, "-") {
+			flags = append(flags, arg)
+			if strings.Contains(arg, "=") {
+				continue
+			}
+			if takesValue[arg] && i+1 < len(args) {
+				i++
+				flags = append(flags, args[i])
+			}
+			continue
+		}
+		pos = append(pos, arg)
+	}
+	return append(flags, pos...)
 }
 
 type nyxMsgHeader struct {
@@ -94,6 +138,18 @@ type nyxCovRecord struct {
 	PCCount   uint32
 	Reserved  uint32
 }
+
+type nyxCovDumpRecord struct {
+	CallIndex uint32
+	SlotID    uint32
+	Flags     uint64
+	PCs       []uint64
+}
+
+const (
+	nyxCovMagic   = 0x564f4353
+	nyxCovVersion = 1
+)
 
 type qemuAux struct {
 	data []byte
@@ -149,6 +205,17 @@ func (a *qemuAux) misc() []byte {
 	return append([]byte{}, a.data[nyxMiscOffset+2:nyxMiscOffset+2+int(mlen)]...)
 }
 
+func (a *qemuAux) clearTransientResult() {
+	a.data[nyxResultExecDoneOffset] = 0
+	a.data[nyxResultExecCodeOffset] = 0
+	a.data[nyxResultPtOverflowOff] = 0
+	a.data[nyxResultPageFaultOff] = 0
+	for i := 0; i < 8; i++ {
+		a.data[nyxResultPageAddrOff+i] = 0
+	}
+	binary.LittleEndian.PutUint16(a.data[nyxMiscOffset:nyxMiscOffset+2], 0)
+}
+
 func (a *qemuAux) setTimeout(timeout time.Duration) {
 	secs := byte(timeout / time.Second)
 	usec := uint32((timeout % time.Second) / time.Microsecond)
@@ -183,6 +250,7 @@ type nyxVM struct {
 	image    string
 	memoryMB int
 	debug    bool
+	hardTimeout time.Duration
 
 	payloadFile *os.File
 	payloadMM   []byte
@@ -191,7 +259,8 @@ type nyxVM struct {
 	process     *exec.Cmd
 }
 
-func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image string, memoryMB int, payloadSize, bitmapSize int, debug bool) *nyxVM {
+func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image string, memoryMB int, payloadSize, bitmapSize int, debug bool, hardTimeout time.Duration) *nyxVM {
+	payloadSize = alignUp(payloadSize, nyxPageSize)
 	return &nyxVM{
 		index:       index,
 		workdir:     workdir,
@@ -210,7 +279,19 @@ func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image stri
 		image:       image,
 		memoryMB:    memoryMB,
 		debug:       debug,
+		hardTimeout: hardTimeout,
 	}
+}
+
+func alignUp(v, align int) int {
+	if align <= 0 {
+		return v
+	}
+	rem := v % align
+	if rem == 0 {
+		return v
+	}
+	return v + align - rem
 }
 
 func (vm *nyxVM) start(ctx context.Context) error {
@@ -267,7 +348,7 @@ func (vm *nyxVM) start(ctx context.Context) error {
 
 	args := append([]string{}, vm.qemuArgs...)
 	if vm.image != "" {
-		args = append(args, "-drive", "file="+vm.image)
+		args = append(args, "-drive", qemuImageDriveArg(vm.image))
 	}
 	if vm.memoryMB > 0 {
 		args = append(args, "-m", fmt.Sprint(vm.memoryMB))
@@ -301,17 +382,58 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	if vm.control == nil {
 		return errors.New("timed out waiting for qemu nyx socket")
 	}
+	auxDeadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(auxDeadline) {
+		if _, err := os.Stat(vm.auxPath); err == nil {
+			break
+		}
+		if vm.process.ProcessState != nil && vm.process.ProcessState.Exited() {
+			return errors.New("qemu exited before aux buffer appeared")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	vm.aux, err = openAux(vm.auxPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open aux buffer: %w", err)
 	}
+	lastState := vm.aux.state()
+	lastReport := time.Now()
 	for vm.aux.state() != 3 {
 		if err := vm.stepUntilReady(); err != nil {
 			return err
 		}
+		if vm.aux.state() != lastState || time.Since(lastReport) > 10*time.Second {
+			log.Logf(0, "nyx init state=%d exec_code=%d misc=%q",
+				vm.aux.state(), vm.aux.execCode(), strings.TrimSpace(string(vm.aux.misc())))
+			lastState = vm.aux.state()
+			lastReport = time.Now()
+		}
 	}
-	vm.aux.setTimeout(30 * time.Second)
+	vm.applyHardTimeout()
 	return nil
+}
+
+func (vm *nyxVM) applyHardTimeout() {
+	t := vm.hardTimeout
+	if t <= 0 {
+		t = 3 * time.Minute
+	}
+	if t > 255*time.Second {
+		log.Logf(0, "runner hard timeout %s exceeds aux limit; clamping to 255s", t)
+		t = 255 * time.Second
+	}
+	vm.aux.setTimeout(t)
+}
+
+func qemuImageDriveArg(image string) string {
+	opts := []string{"file=" + image, "if=ide"}
+	switch strings.ToLower(filepath.Ext(image)) {
+	case ".qcow2":
+		opts = append(opts, "format=qcow2")
+	case ".raw", ".img":
+		opts = append(opts, "format=raw")
+	}
+	return strings.Join(opts, ",")
 }
 
 func (vm *nyxVM) stepUntilReady() error {
@@ -369,16 +491,24 @@ func (vm *nyxVM) setPayload(payload []byte) error {
 
 func (vm *nyxVM) executeHandshake(payload []byte) error {
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxHandshakeAck))
+	vm.aux.clearTransientResult()
 	if err := vm.setPayload(payload); err != nil {
 		return err
 	}
 	for i := 0; i < 16; i++ {
+		log.Logf(0, "runner handshake step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
+			strings.TrimSpace(string(vm.aux.misc())))
 		if err := vm.runQemu(); err != nil {
 			return err
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
+			log.Logf(0, "runner handshake ack observed at step=%d", i)
 			return nil
 		}
+		log.Logf(0, "runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
+			strings.TrimSpace(string(vm.aux.misc())))
 		switch vm.aux.execCode() {
 		case nyxRCHprintf:
 			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
@@ -389,16 +519,34 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 	return errors.New("timed out waiting for nyx handshake ack")
 }
 
-func (vm *nyxVM) executeRequest(payload []byte) (*flatrpc.ExecutorMessage, error) {
+func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage, error) {
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxExecResult))
 	_ = os.Remove(vm.coverPath)
+	vm.aux.clearTransientResult()
 	if err := vm.setPayload(payload); err != nil {
 		return nil, err
 	}
+	steps := 0
+	deadline := time.Now().Add(30 * time.Second)
+	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
 	for {
+		if data, err := os.ReadFile(resultPath); err == nil {
+			log.Logf(0, "runner exec result observed before step=%d", steps)
+			return parseExecResult(data)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("timed out waiting for %s after %d steps", resultPath, steps)
+		}
+		log.Logf(0, "runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
+			strings.TrimSpace(string(vm.aux.misc())))
 		if err := vm.runQemu(); err != nil {
 			return nil, err
 		}
+		steps++
+		log.Logf(0, "runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
+			strings.TrimSpace(string(vm.aux.misc())))
 		if vm.aux.pageFault() {
 			vm.aux.dumpPage(vm.aux.pageAddr())
 			continue
@@ -407,17 +555,19 @@ func (vm *nyxVM) executeRequest(payload []byte) (*flatrpc.ExecutorMessage, error
 		case nyxRCHprintf:
 			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
 			continue
+		case nyxRCTimeout:
+			log.Logf(0, "runner exec timeout at step=%d; synthesizing hanged result", steps)
+			return synthesizeHangedResult(req), nil
 		case nyxRCAbort:
 			return nil, fmt.Errorf("guest abort: %s", string(vm.aux.misc()))
 		}
 		if vm.aux.execDone() {
-			break
+			log.Logf(0, "runner exec observed exec_done at step=%d but result file is not present yet", steps)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxExecResult))
-	if err != nil {
-		return nil, err
-	}
+}
+
+func parseExecResult(data []byte) (*flatrpc.ExecutorMessage, error) {
 	if len(data) < 4 {
 		return nil, errors.New("short nyx exec result")
 	}
@@ -426,6 +576,17 @@ func (vm *nyxVM) executeRequest(payload []byte) (*flatrpc.ExecutorMessage, error
 		return nil, err
 	}
 	return raw, nil
+}
+
+func synthesizeHangedResult(req *flatrpc.ExecRequest) *flatrpc.ExecutorMessage {
+	return &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Value: &flatrpc.ExecResult{
+				Info:   flatrpc.EmptyProgInfo(progExecCallCountOrPanic(req.Data)),
+				Hanged: true,
+			},
+		},
+	}
 }
 
 func packFlatbuffer(msg interface {
@@ -465,21 +626,31 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage, 
 	if !ok || res.Info == nil || len(res.Info.Calls) == 0 {
 		return nil
 	}
-	pcs, err := parseCoverageDump(coverPath)
+	records, err := parseCoverageDump(coverPath)
 	if err != nil {
 		return err
 	}
-	call := res.Info.Calls[0]
-	if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectCover != 0 {
-		call.Cover = append(call.Cover[:0], pcs...)
+	callCover := make(map[uint32][]uint64)
+	for _, rec := range records {
+		if int(rec.CallIndex) >= len(res.Info.Calls) {
+			return fmt.Errorf("coverage record for call %d out of range (%d calls)",
+				rec.CallIndex, len(res.Info.Calls))
+		}
+		callCover[rec.CallIndex] = append(callCover[rec.CallIndex], rec.PCs...)
 	}
-	if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectSignal != 0 {
-		call.Signal = append(call.Signal[:0], pcsToSignal(pcs, coverEdges)...)
+	for callIndex, pcs := range callCover {
+		call := res.Info.Calls[callIndex]
+		if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectCover != 0 {
+			call.Cover = append(call.Cover[:0], pcs...)
+		}
+		if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectSignal != 0 {
+			call.Signal = append(call.Signal[:0], pcsToSignal(pcs, coverEdges)...)
+		}
 	}
 	return nil
 }
 
-func parseCoverageDump(path string) ([]uint64, error) {
+func parseCoverageDump(path string) ([]nyxCovDumpRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -491,24 +662,45 @@ func parseCoverageDump(path string) ([]uint64, error) {
 	if err := binary.Read(bytes.NewReader(data[:binary.Size(hdr)]), binary.LittleEndian, &hdr); err != nil {
 		return nil, err
 	}
+	if hdr.Magic != nyxCovMagic {
+		return nil, fmt.Errorf("unexpected syz_cov magic 0x%x", hdr.Magic)
+	}
+	if hdr.Version != nyxCovVersion {
+		return nil, fmt.Errorf("unsupported syz_cov version %d", hdr.Version)
+	}
 	if hdr.RecordCount == 0 {
 		return nil, nil
 	}
 	off := binary.Size(hdr)
-	var rec nyxCovRecord
-	if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
-		return nil, err
-	}
-	off += binary.Size(rec)
-	pcs := make([]uint64, rec.PCCount)
-	for i := range pcs {
-		if off+8 > len(data) {
-			return nil, errors.New("coverage body truncated")
+	records := make([]nyxCovDumpRecord, 0, hdr.RecordCount)
+	for range hdr.RecordCount {
+		if off+binary.Size(nyxCovRecord{}) > len(data) {
+			return nil, errors.New("coverage record truncated")
 		}
-		pcs[i] = binary.LittleEndian.Uint64(data[off : off+8])
-		off += 8
+		var rec nyxCovRecord
+		if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
+			return nil, err
+		}
+		off += binary.Size(rec)
+		pcs := make([]uint64, rec.PCCount)
+		for i := range pcs {
+			if off+8 > len(data) {
+				return nil, errors.New("coverage body truncated")
+			}
+			pcs[i] = binary.LittleEndian.Uint64(data[off : off+8])
+			off += 8
+		}
+		records = append(records, nyxCovDumpRecord{
+			CallIndex: rec.CallIndex,
+			SlotID:    rec.SlotID,
+			Flags:     rec.Flags,
+			PCs:       pcs,
+		})
 	}
-	return pcs, nil
+	if off != len(data) {
+		return nil, fmt.Errorf("unexpected trailing syz_cov data: %d bytes", len(data)-off)
+	}
+	return records, nil
 }
 
 func pcsToSignal(pcs []uint64, coverEdges bool) []uint64 {
@@ -562,6 +754,7 @@ func (r *runner) connect() error {
 		return err
 	}
 	r.conn = flatrpc.NewConn(conn)
+	log.Logf(0, "runner connecting to manager %s:%s", r.addr, r.port)
 	hello, err := flatrpc.Recv[*flatrpc.ConnectHelloRaw](r.conn)
 	if err != nil {
 		return err
@@ -578,6 +771,9 @@ func (r *runner) connect() error {
 	if err != nil {
 		return err
 	}
+	log.Logf(0, "runner connected: cover_edges=%v kernel64=%v slowdown=%d syscall_timeout_ms=%d program_timeout_ms=%d",
+		r.connectReply.CoverEdges, r.connectReply.Kernel64Bit, r.connectReply.Slowdown,
+		r.connectReply.SyscallTimeoutMs, r.connectReply.ProgramTimeoutMs)
 	if err := flatrpc.Send(r.conn, &flatrpc.InfoRequest{}); err != nil {
 		return err
 	}
@@ -589,6 +785,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	if r.handshakeReady && r.lastEnvFlags == req.ExecOpts.EnvFlags && r.lastSandboxArg == req.ExecOpts.SandboxArg {
 		return nil
 	}
+	log.Logf(0, "runner sending handshake: env_flags=0x%x sandbox_arg=%d", req.ExecOpts.EnvFlags, req.ExecOpts.SandboxArg)
 	msg := &flatrpc.SnapshotHandshakeT{
 		CoverEdges:       r.connectReply.CoverEdges,
 		Kernel64Bit:      r.connectReply.Kernel64Bit,
@@ -602,6 +799,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	if err := r.vm.executeHandshake(packNyxPayload(nyxKindHandshake, nil, packFlatbuffer(msg))); err != nil {
 		return err
 	}
+	log.Logf(0, "runner handshake complete")
 	r.handshakeReady = true
 	r.lastEnvFlags = req.ExecOpts.EnvFlags
 	r.lastSandboxArg = req.ExecOpts.SandboxArg
@@ -612,25 +810,48 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if req.Type != flatrpc.RequestTypeProgram {
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
 	}
+	execFlags := req.ExecOpts.ExecFlags
+	log.Logf(0, "runner exec request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
+		req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
 	if err := r.ensureHandshake(req); err != nil {
 		return nil, err
 	}
+	r.vm.applyHardTimeout()
 	meta := &nyxExecMeta{RequestID: req.Id, ProcID: 0}
 	body := &flatrpc.SnapshotRequestT{
-		ExecFlags:      req.ExecOpts.ExecFlags,
+		ExecFlags:      execFlags,
 		NumCalls:       int32(progExecCallCountOrPanic(req.Data)),
 		AllCallSignal:  allCallSignal(req.AllSignal),
 		AllExtraSignal: hasExtraSignal(req.AllSignal),
 		ProgData:       req.Data,
 	}
-	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)))
+	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req)
 	if err != nil {
 		return nil, err
 	}
 	if err := injectCoverage(req, execMsg, r.connectReply.CoverEdges, r.vm.coverPath); err != nil {
-		return nil, err
+		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
+		if ok && res.Hanged && errors.Is(err, os.ErrNotExist) {
+			log.Logf(0, "runner exec hanged and coverage dump is absent; continuing without coverage")
+		} else {
+			return nil, err
+		}
+	}
+	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
+		log.Logf(0, "runner exec complete: id=%d calls=%d cover_records=%d",
+			req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
 	}
 	return execMsg, nil
+}
+
+func countNonEmptyCover(calls []*flatrpc.CallInfo) int {
+	n := 0
+	for _, call := range calls {
+		if call != nil && (len(call.Cover) != 0 || len(call.Signal) != 0) {
+			n++
+		}
+	}
+	return n
 }
 
 func progExecCallCountOrPanic(data []byte) int {
@@ -668,6 +889,7 @@ func (r *runner) loop() error {
 		}
 		switch req := msg.Msg.Value.(type) {
 		case *flatrpc.ExecRequest:
+			log.Logf(0, "runner received ExecRequest id=%d type=%v", req.Id, req.Type)
 			executing := &flatrpc.ExecutorMessage{
 				Msg: &flatrpc.ExecutorMessages{
 					Type:  flatrpc.ExecutorMessagesRawExecuting,
@@ -695,6 +917,7 @@ func (r *runner) loop() error {
 				return err
 			}
 		case *flatrpc.StateRequest:
+			log.Logf(0, "runner received StateRequest")
 			state := &flatrpc.ExecutorMessage{
 				Msg: &flatrpc.ExecutorMessages{
 					Type:  flatrpc.ExecutorMessagesRawState,
@@ -705,39 +928,158 @@ func (r *runner) loop() error {
 				return err
 			}
 		case *flatrpc.SignalUpdate:
+			log.Logf(0, "runner received SignalUpdate")
 		case *flatrpc.CorpusTriaged:
+			log.Logf(0, "runner received CorpusTriaged")
 		default:
 			return fmt.Errorf("unhandled host message %T", req)
 		}
 	}
 }
 
+func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threaded bool,
+	syscallTimeoutMs, programTimeoutMs int) error {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return fmt.Errorf("get target: %w", err)
+	}
+	meta := target.SyscallMap[syscallName]
+	if meta == nil {
+		return fmt.Errorf("unknown syscall %q", syscallName)
+	}
+	p, bootstrap, err := standaloneProgram(target, meta, seed)
+	if err != nil {
+		return err
+	}
+	if bootstrap {
+		log.Logf(0, "standalone bootstrap program for %s:\n%s", syscallName, string(p.Serialize()))
+	} else {
+		log.Logf(0, "standalone program for %s (seed=%d):\n%s", syscallName, seed, string(p.Serialize()))
+	}
+	execData, err := p.SerializeForExec()
+	if err != nil {
+		return fmt.Errorf("serialize standalone program for exec: %w", err)
+	}
+	execCalls, err := prog.ExecCallCount(execData)
+	if err != nil {
+		return fmt.Errorf("count standalone exec calls: %w", err)
+	}
+	log.Logf(0, "standalone exec encoding: bytes=%d calls=%d", len(execData), execCalls)
+
+	connectReply := &flatrpc.ConnectReply{
+		Cover:            true,
+		CoverEdges:       true,
+		Kernel64Bit:      true,
+		Procs:            1,
+		Slowdown:         1,
+		SyscallTimeoutMs: int32(syscallTimeoutMs),
+		ProgramTimeoutMs: int32(programTimeoutMs),
+	}
+	execFlags := flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagDedupCover
+	if threaded {
+		execFlags |= flatrpc.ExecFlagThreaded
+	}
+	req := &flatrpc.ExecRequest{
+		Id:   1,
+		Type: flatrpc.RequestTypeProgram,
+		Data: execData,
+		ExecOpts: &flatrpc.ExecOpts{
+			EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
+			ExecFlags:  execFlags,
+			SandboxArg: 0,
+		},
+	}
+	r := &runner{
+		id:           index,
+		vm:           vm,
+		connectReply: connectReply,
+	}
+	execMsg, err := r.runRequest(req)
+	if err != nil {
+		return err
+	}
+	res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res.Info == nil {
+		return fmt.Errorf("unexpected executor message type %T", execMsg.Msg.Value)
+	}
+	log.Logf(0, "standalone exec finished: calls=%d cover_records=%d", len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
+	for i, call := range res.Info.Calls {
+		if call == nil {
+			log.Logf(0, "call[%d]: <nil>", i)
+			continue
+		}
+		log.Logf(0, "call[%d]: errno=%d flags=0x%x cover=%d signal=%d comps=%d",
+			i, call.Error, call.Flags, len(call.Cover), len(call.Signal), len(call.Comps))
+	}
+	return nil
+}
+
+func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*prog.Prog, bool, error) {
+	if meta.Name == "NtQuerySystemInformation" {
+		src := []byte("NtQuerySystemInformation(0x0, &(0x7f0000000000)=\"\"/4096, 0x1000, &(0x7f0000001000)=0x0)\n")
+		p, err := target.Deserialize(src, prog.Strict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone bootstrap program for %s: %w", meta.Name, err)
+		}
+		return p, true, nil
+	}
+	ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{meta: true})
+	return target.GenSampleProg(meta, mrand.NewSource(seed), ct), false, nil
+}
+
 func main() {
+	os.Args = append([]string{os.Args[0]}, reorderArgsForFlags(os.Args[1:])...)
+
 	var qemuArgs multiFlag
 	var (
-		qemuPath    = flag.String("qemu-path", "", "qemu binary path")
-		image       = flag.String("image", "", "boot image path")
-		workdir     = flag.String("workdir", "", "nyx runner workdir")
-		payloadSize = flag.Int("payload-size", int(flatrpc.ConstMaxInputSize)+4, "nyx payload buffer size")
-		bitmapSize  = flag.Int("bitmap-size", 0x10000, "nyx bitmap size")
-		memoryMB    = flag.Int("memory", 2048, "guest memory size in MB")
-		debug       = flag.Bool("debug", false, "inherit qemu stdout/stderr")
+		qemuPath           = flag.String("qemu-path", "", "qemu binary path")
+		image              = flag.String("image", "", "boot image path")
+		workdir            = flag.String("workdir", "", "nyx runner workdir")
+		purge              = flag.Bool("purge", false, "remove the existing workdir before starting")
+		hardTimeout        = flag.Duration("hard-timeout", 3*time.Minute, "Nyx/KVM hard timeout fallback (max 255s)")
+		payloadSize        = flag.Int("payload-size", int(flatrpc.ConstMaxInputSize)+4, "nyx payload buffer size")
+		bitmapSize         = flag.Int("bitmap-size", 0x10000, "nyx bitmap size")
+		memoryMB           = flag.Int("memory", 2048, "guest memory size in MB")
+		debug              = flag.Bool("debug", false, "inherit qemu stdout/stderr")
+		standalone         = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
+		standaloneSyscall  = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
+		standaloneSeed     = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
+		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
+		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
+		standaloneThreaded = flag.Bool("standalone-threaded", false, "set ExecFlagThreaded in standalone mode")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
 	flag.Parse()
-	if *qemuPath == "" || *workdir == "" || flag.NArg() != 3 {
+	if *qemuPath == "" || *workdir == "" || (!*standalone && flag.NArg() != 3) || (*standalone && flag.NArg() != 1) {
 		fmt.Fprintf(os.Stderr, "usage: syz-nyx-runner <index> <manager-addr> <manager-port> --qemu-path ... --workdir ... [--image ...] [--qemu-arg ...]\n")
+		fmt.Fprintf(os.Stderr, "   or: syz-nyx-runner <index> --standalone --qemu-path ... --workdir ... [--standalone-syscall ...]\n")
 		os.Exit(2)
 	}
 	index, err := strconv.Atoi(flag.Arg(0))
 	if err != nil {
 		log.Fatalf("bad index: %v", err)
 	}
-	vm := newNyxVM(index, *workdir, *qemuPath, qemuArgs, *image, *memoryMB, *payloadSize, *bitmapSize, *debug)
+	if *purge {
+		log.Logf(0, "purging nyx workdir %s", *workdir)
+		if err := os.RemoveAll(*workdir); err != nil {
+			log.Fatalf("failed to purge workdir %s: %v", *workdir, err)
+		}
+	}
+	if *standaloneSyscallTimeoutMs <= 0 || *standaloneProgramTimeoutMs <= *standaloneSyscallTimeoutMs {
+		log.Fatalf("bad standalone timeouts: syscall=%d program=%d", *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs)
+	}
+	vm := newNyxVM(index, *workdir, *qemuPath, qemuArgs, *image, *memoryMB, *payloadSize, *bitmapSize, *debug, *hardTimeout)
 	defer vm.close()
 	ctx := context.Background()
 	if err := vm.start(ctx); err != nil {
 		log.Fatalf("failed to start Nyx VM: %v", err)
+	}
+	if *standalone {
+		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneThreaded,
+			*standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs); err != nil {
+			log.Fatalf("standalone Nyx request failed: %v", err)
+		}
+		return
 	}
 	r := newRunner(index, flag.Arg(1), flag.Arg(2), vm)
 	if err := r.connect(); err != nil {

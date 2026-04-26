@@ -1,6 +1,8 @@
 // Copyright 2026 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
+#include <stdarg.h>
+#include <stdio.h>
 #include <psapi.h>
 #include <tlhelp32.h>
 #include <winternl.h>
@@ -20,6 +22,7 @@
 #define HYPERCALL_KAFL_RELEASE 4
 #define HYPERCALL_KAFL_SUBMIT_CR3 5
 #define HYPERCALL_KAFL_NEXT_PAYLOAD 12
+#define HYPERCALL_KAFL_PRINTF 13
 #define HYPERCALL_KAFL_USER_SUBMIT_MODE 17
 #define HYPERCALL_KAFL_RANGE_SUBMIT 29
 #define HYPERCALL_KAFL_GET_HOST_CONFIG 35
@@ -29,6 +32,7 @@
 #define HYPERCALL_KAFL_SYZ_COV_DUMP 43
 
 #define KAFL_MODE_64 0
+#define HPRINTF_MAX_SIZE 0x1000
 
 #define SYZ_NYX_MSG_MAGIC 0x3158594e
 #define SYZ_NYX_MSG_VERSION 1
@@ -120,6 +124,16 @@ static inline uint64_t nyx_hypercall(uint64_t p1, uint64_t p2)
 	uint64_t nr = HYPERCALL_KAFL_RAX_ID;
 	asm volatile("vmcall" : "=a"(nr) : "a"(nr), "b"(p1), "c"(p2) : "memory");
 	return nr;
+}
+
+static inline void nyx_hprintf(const char* fmt, ...)
+{
+	static char buf[HPRINTF_MAX_SIZE] __attribute__((aligned(4096)));
+	va_list args;
+	va_start(args, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, args);
+	va_end(args);
+	nyx_hypercall(HYPERCALL_KAFL_PRINTF, (uint64_t)(uintptr_t)buf);
 }
 #else
 #error "Nyx Windows mode requires x86_64"

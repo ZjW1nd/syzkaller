@@ -486,7 +486,10 @@ var List = map[string]map[string]*Target{
 			PtrSize: 8,
 			// TODO(dvyukov): what should we do about 4k vs 64k?
 			PageSize: 4 << 10,
-			CCompiler: "x86_64-w64-mingw32-gcc",
+			osCommon: osCommon{
+				BuildOS: Linux,
+			},
+			CCompiler:   "x86_64-w64-mingw32-gcc",
 			CxxCompiler: "x86_64-w64-mingw32-g++",
 			CFlags: []string{
 				"-D_WIN32_WINNT=0x0A00",
@@ -1019,7 +1022,13 @@ func (target *Target) lazyInit() {
 		if cxx {
 			lang, prog, comp, flags = "c++", simpleCxxProg, target.CxxCompiler, target.CxxFlags
 		}
-		args := []string{"-x", lang, "-", "-o", "/dev/null"}
+		outFile, cleanup, err := tempCompilerOutput()
+		if err != nil {
+			target.BrokenCompiler = fmt.Sprintf("failed to create temporary compiler output: %v", err)
+			return
+		}
+		defer cleanup()
+		args := []string{"-x", lang, "-", "-o", outFile}
 		args = append(args, flags...)
 		cmd := exec.Command(comp, args...)
 		cmd.Stdin = strings.NewReader(prog)
@@ -1032,11 +1041,34 @@ func (target *Target) lazyInit() {
 }
 
 func checkFlagSupported(target *Target, targetCFlags []string, flag string) bool {
-	args := []string{"-x", "c++", "-", "-o", "/dev/null", "-Werror", flag}
+	outFile, cleanup, err := tempCompilerOutput()
+	if err != nil {
+		return false
+	}
+	defer cleanup()
+	args := []string{"-x", "c++", "-", "-o", outFile, "-Werror", flag}
 	args = append(args, targetCFlags...)
 	cmd := exec.Command(target.CCompiler, args...)
 	cmd.Stdin = strings.NewReader(simpleCProg)
 	return cmd.Run() == nil
+}
+
+func tempCompilerOutput() (string, func(), error) {
+	f, err := os.CreateTemp("", "syz-cc-*")
+	if err != nil {
+		return "", nil, err
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", nil, err
+	}
+	os.Remove(path)
+	path += ".exe"
+	cleanup := func() {
+		os.Remove(path)
+	}
+	return path, cleanup, nil
 }
 
 // Split an arch into a pair of related 32 and 64 bit arch names.

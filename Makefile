@@ -101,7 +101,7 @@ endif
 .PHONY: all clean host target \
 	manager executor kfuzztest ci hub agent \
 	execprog mutate prog2c trace2syz repro upgrade db nyx-runner \
-	nyx-harness \
+	nyx-harness nyx-executor \
 	usbgen symbolize cover kconf syz-build crush \
 	bin/syz-extract bin/syz-fmt \
 	extract generate generate_go generate_rpc generate_sys \
@@ -222,6 +222,9 @@ nyx-runner:
 
 nyx-harness:
 	$(MAKE) -C tools/syz-nyx-test-harness
+
+nyx-executor:
+	./tools/build-nyx-windows-executor.sh
 
 ifeq ($(HOSTOS), linux)
 kfuzztest: descriptions

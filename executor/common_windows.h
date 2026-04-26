@@ -12,8 +12,13 @@ static void install_segv_handler()
 {
 }
 
+#if defined(__GNUC__)
+#define NONFAILING(...) \
+	([&]() { __VA_ARGS__; return true; }())
+#else
 #define NONFAILING(...) \
 	([&]() { __try { __VA_ARGS__; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; } return true; }())
+#endif
 #endif
 
 #if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER

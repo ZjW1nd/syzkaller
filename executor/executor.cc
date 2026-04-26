@@ -26,7 +26,7 @@
 
 #include "pkg/flatrpc/flatrpc.h"
 
-#if defined(__GNUC__)
+#if defined(__GNUC__) && !GOOS_windows
 #define SYSCALLAPI
 #define NORETURN __attribute__((noreturn))
 #define PRINTF(fmt, args) __attribute__((format(printf, fmt, args)))
@@ -412,6 +412,7 @@ static thread_t* last_scheduled;
 static __thread struct thread_t* current_thread;
 
 static cover_t extra_cov;
+static bool coverage_initialized;
 
 struct res_t {
 	bool executed;
@@ -519,17 +520,10 @@ static void mmap_input();
 #include <winspool.h>
 #endif
 
-#include "syscalls.h"
-
-#if GOOS_linux
-#ifndef MAP_FIXED_NOREPLACE
-#define MAP_FIXED_NOREPLACE 0x100000
-#endif
-#define MAP_FIXED_EXCLUSIVE MAP_FIXED_NOREPLACE
-#elif GOOS_freebsd
-#define MAP_FIXED_EXCLUSIVE (MAP_FIXED | MAP_EXCL)
+#if GOOS_windows && SYZ_NYX_WINDOWS_DEMO
+#include "syscalls_windows_nyx_demo.h"
 #else
-#define MAP_FIXED_EXCLUSIVE MAP_FIXED // The check is not supported.
+#include "syscalls.h"
 #endif
 
 #if GOOS_linux
@@ -548,6 +542,74 @@ static void mmap_input();
 #else
 #error "unknown OS"
 #endif
+
+#if GOOS_windows
+static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
+{
+	if (!prog_data || prog_size == 0) {
+		nyx_hprintf("nyx exec preview: empty program data\n");
+		return;
+	}
+	uint8* pos = const_cast<uint8*>(prog_data);
+	uint64 total_calls = read_input(&pos);
+	uint64 call_num = read_input(&pos, true);
+	if (call_num == instr_eof) {
+		nyx_hprintf("nyx exec preview: total_calls=%llu first=eof\n",
+			    (unsigned long long)total_calls);
+		return;
+	}
+	if (call_num == instr_copyin || call_num == instr_copyout || call_num == instr_setprops) {
+		nyx_hprintf("nyx exec preview: total_calls=%llu first_instr=%llu\n",
+			    (unsigned long long)total_calls,
+			    (unsigned long long)call_num);
+		return;
+	}
+	const char* name = "<invalid>";
+	if (call_num < ARRAY_SIZE(syscalls) && syscalls[call_num].name)
+		name = syscalls[call_num].name;
+	read_input(&pos); // syscall number
+	uint64 copyout_index = read_input(&pos);
+	uint64 num_args = read_input(&pos);
+	uint64 args[kMaxArgs] = {};
+	uint64 limit = num_args > kMaxArgs ? kMaxArgs : num_args;
+	for (uint64 i = 0; i < limit; i++)
+		args[i] = read_arg(&pos);
+	nyx_hprintf("nyx exec preview: total_calls=%llu call=%llu name=%s copyout=%llu nargs=%llu args=[0x%llx,0x%llx,0x%llx,0x%llx]\n",
+		    (unsigned long long)total_calls,
+		    (unsigned long long)call_num,
+		    name,
+		    (unsigned long long)copyout_index,
+		    (unsigned long long)num_args,
+		    (unsigned long long)args[0],
+		    (unsigned long long)args[1],
+		    (unsigned long long)args[2],
+		    (unsigned long long)args[3]);
+}
+
+static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, uint64 a2 = 0,
+			       uint64 a3 = 0)
+{
+	nyx_hprintf("nyx exec execute_one stage=%s a0=0x%llx a1=0x%llx a2=0x%llx a3=0x%llx\n",
+		    stage,
+		    (unsigned long long)a0,
+		    (unsigned long long)a1,
+		    (unsigned long long)a2,
+		    (unsigned long long)a3);
+}
+#endif
+
+#if GOOS_linux
+#ifndef MAP_FIXED_NOREPLACE
+#define MAP_FIXED_NOREPLACE 0x100000
+#endif
+#define MAP_FIXED_EXCLUSIVE MAP_FIXED_NOREPLACE
+#elif GOOS_freebsd
+#define MAP_FIXED_EXCLUSIVE (MAP_FIXED | MAP_EXCL)
+#else
+#define MAP_FIXED_EXCLUSIVE MAP_FIXED // The check is not supported.
+#endif
+
+
 
 class CoverAccessScope final
 {
@@ -638,6 +700,9 @@ int main(int argc, char** argv)
 	use_temporary_dir();
 	install_segv_handler();
 	current_thread = &threads[0];
+#if SYZ_NYX_WINDOWS_DEMO
+	init_demo_syscalls();
+#endif
 	return nyx_mode_loop(argc, argv);
 #else
 	if (strcmp(argv[1], "runner") == 0) {
@@ -707,32 +772,7 @@ int main(int argc, char** argv)
 #endif
 	}
 
-	if (flag_coverage) {
-		int create_count = kCoverDefaultCount, mmap_count = create_count;
-		if (flag_delay_kcov_mmap) {
-			create_count = kCoverOptimizedCount;
-			mmap_count = kCoverOptimizedPreMmap;
-		}
-		if (create_count > kMaxThreads)
-			create_count = kMaxThreads;
-		for (int i = 0; i < create_count; i++) {
-			threads[i].cov.fd = kCoverFd + i;
-			cover_open(&threads[i].cov, false);
-			if (i < mmap_count) {
-				// Pre-mmap coverage collection for some threads. This should be enough for almost
-				// all programs, for the remaning few ones coverage will be set up when it's needed.
-				thread_mmap_cover(&threads[i]);
-			}
-		}
-		extra_cov.fd = kExtraCoverFd;
-		cover_open(&extra_cov, true);
-		cover_mmap(&extra_cov);
-		cover_protect(&extra_cov);
-		if (flag_extra_coverage) {
-			// Don't enable comps because we don't use them in the fuzzer yet.
-			cover_enable(&extra_cov, false, true);
-		}
-	}
+	setup_coverage();
 
 	int status = 0;
 	if (flag_sandbox_none)
@@ -955,6 +995,37 @@ bool cover_collection_required()
 	return flag_coverage && (flag_collect_signal || flag_collect_cover || flag_comparisons);
 }
 
+static void setup_coverage()
+{
+	if (coverage_initialized || !flag_coverage)
+		return;
+	int create_count = kCoverDefaultCount, mmap_count = create_count;
+	if (flag_delay_kcov_mmap) {
+		create_count = kCoverOptimizedCount;
+		mmap_count = kCoverOptimizedPreMmap;
+	}
+	if (create_count > kMaxThreads)
+		create_count = kMaxThreads;
+	for (int i = 0; i < create_count; i++) {
+		threads[i].cov.fd = kCoverFd + i;
+		cover_open(&threads[i].cov, false);
+		if (i < mmap_count) {
+			// Pre-mmap coverage collection for some threads. This should be enough for almost
+			// all programs, for the remaning few ones coverage will be set up when it's needed.
+			thread_mmap_cover(&threads[i]);
+		}
+	}
+	extra_cov.fd = kExtraCoverFd;
+	cover_open(&extra_cov, true);
+	cover_mmap(&extra_cov);
+	cover_protect(&extra_cov);
+	if (flag_extra_coverage) {
+		// Don't enable comps because we don't use them in the fuzzer yet.
+		cover_enable(&extra_cov, false, true);
+	}
+	coverage_initialized = true;
+}
+
 #if !GOOS_windows
 void reply_execute(uint32 status)
 {
@@ -1042,24 +1113,40 @@ void execute_one()
 	call_props_t call_props;
 	memset(&call_props, 0, sizeof(call_props));
 
-	read_input(&input_pos); // total number of calls
+	uint64 total_calls = read_input(&input_pos);
+#if GOOS_windows
+	nyx_log_exec_stage("begin", total_calls);
+#endif
 	for (;;) {
+		uint64 instr_off = input_pos - input_data;
 		uint64 call_num = read_input(&input_pos);
+#if GOOS_windows
+		nyx_log_exec_stage("dispatch", instr_off, call_num);
+#endif
 		if (call_num == instr_eof)
 			break;
 		if (call_num == instr_copyin) {
 			char* addr = (char*)(read_input(&input_pos) + SYZ_DATA_OFFSET);
 			uint64 typ = read_input(&input_pos);
+#if GOOS_windows
+			nyx_log_exec_stage("copyin_begin", instr_off, (uint64)(uintptr_t)addr, typ);
+#endif
 			switch (typ) {
 			case arg_const: {
 				uint64 size, bf, bf_off, bf_len;
 				uint64 arg = read_const_arg(&input_pos, &size, &bf, &bf_off, &bf_len);
+#if GOOS_windows
+				nyx_log_exec_stage("copyin_const", (uint64)(uintptr_t)addr, size, arg, bf);
+#endif
 				copyin(addr, arg, size, bf, bf_off, bf_len);
 				break;
 			}
 			case arg_addr32:
 			case arg_addr64: {
 				uint64 val = read_input(&input_pos) + SYZ_DATA_OFFSET;
+#if GOOS_windows
+				nyx_log_exec_stage("copyin_addr", (uint64)(uintptr_t)addr, typ, val);
+#endif
 				if (typ == arg_addr32)
 					NONFAILING(*(uint32*)addr = val);
 				else
@@ -1071,16 +1158,27 @@ void execute_one()
 				uint64 size = meta & 0xff;
 				uint64 bf = meta >> 8;
 				uint64 val = read_result(&input_pos);
+#if GOOS_windows
+				nyx_log_exec_stage("copyin_result", (uint64)(uintptr_t)addr, size, bf, val);
+#endif
 				copyin(addr, val, size, bf, 0, 0);
 				break;
 			}
 			case arg_data: {
 				uint64 size = read_input(&input_pos);
 				size &= ~(1ull << 63); // readable flag
+#if GOOS_windows
+				nyx_log_exec_stage("copyin_data_begin", (uint64)(uintptr_t)addr, size,
+					       input_pos - input_data);
+#endif
 				if (input_pos + size > input_data + kMaxInput)
 					fail("data arg overflow");
 				NONFAILING(memcpy(addr, input_pos, size));
 				input_pos += size;
+#if GOOS_windows
+				nyx_log_exec_stage("copyin_data_done", (uint64)(uintptr_t)addr, size,
+					       input_pos - input_data);
+#endif
 				break;
 			}
 			case arg_csum: {
@@ -1133,6 +1231,10 @@ void execute_one()
 			default:
 				failmsg("bad argument type", "type=%llu", typ);
 			}
+#if GOOS_windows
+			nyx_log_exec_stage("copyin_done", instr_off, (uint64)(uintptr_t)addr, typ,
+					   input_pos - input_data);
+#endif
 			continue;
 		}
 		if (call_num == instr_copyout) {
@@ -1164,8 +1266,14 @@ void execute_one()
 			args[i] = read_arg(&input_pos);
 		for (uint64 i = num_args; i < kMaxArgs; i++)
 			args[i] = 0;
+#if GOOS_windows
+		nyx_log_exec_stage("schedule_begin", call_index, call_num, copyout_index, num_args);
+#endif
 		thread_t* th = schedule_call(call_index++, call_num, copyout_index,
 					     num_args, args, input_pos, call_props);
+#if GOOS_windows
+		nyx_log_exec_stage("schedule_done", th->id, th->call_num, th->num_args, running);
+#endif
 
 		if (call_props.async && flag_threaded) {
 			// Don't wait for an async call to finish. We'll wait at the end.
@@ -1191,10 +1299,28 @@ void execute_one()
 			// Execute directly.
 			if (th != &threads[0])
 				fail("using non-main thread in non-thread mode");
+#if GOOS_windows
+			nyx_log_exec_stage("direct_pre_ready_reset", th->id, th->call_num);
+#endif
 			event_reset(&th->ready);
+#if GOOS_windows
+			nyx_log_exec_stage("direct_post_ready_reset", th->id, th->call_num);
+			nyx_log_exec_stage("direct_pre_execute_call", th->id, th->call_num);
+#endif
 			execute_call(th);
+#if GOOS_windows
+			nyx_log_exec_stage("direct_post_execute_call", th->id, th->call_num,
+					   (uint64)th->res, th->reserrno);
+#endif
 			event_set(&th->done);
+#if GOOS_windows
+			nyx_log_exec_stage("direct_post_done_set", th->id, th->call_num);
+#endif
 			handle_completion(th);
+#if GOOS_windows
+			nyx_log_exec_stage("direct_post_completion", th->id, th->call_num, running,
+					   completed);
+#endif
 		}
 		memset(&call_props, 0, sizeof(call_props));
 	}
@@ -1594,6 +1720,9 @@ static int nyx_mode_loop(int argc, char** argv)
 	if (!nyx_fetch_host_config(&host_cfg))
 		fail("failed to fetch Nyx host config");
 
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+
 	auto* payload = static_cast<kAFL_payload*>(VirtualAlloc(nullptr, host_cfg.payload_buffer_size,
 								MEM_COMMIT | MEM_RESERVE,
 								PAGE_READWRITE));
@@ -1601,12 +1730,7 @@ static int nyx_mode_loop(int argc, char** argv)
 		fail("failed to allocate Nyx payload buffer");
 	memset(payload, 0, host_cfg.payload_buffer_size);
 
-	uint64_t cr3 = 0;
-	if (nyx_query_cr3(&cr3))
-		nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
 	nyx_hypercall(HYPERCALL_KAFL_USER_SUBMIT_MODE, KAFL_MODE_64);
-	if (!nyx_submit_module_range("ntoskrnl.exe"))
-		fail("failed to submit ntoskrnl.exe range");
 
 	nyx_agent_config_t agent_cfg = {};
 	agent_cfg.agent_magic = NYX_AGENT_MAGIC;
@@ -1615,11 +1739,10 @@ static int nyx_mode_loop(int argc, char** argv)
 	agent_cfg.coverage_bitmap_size = host_cfg.bitmap_size;
 	nyx_hypercall(HYPERCALL_KAFL_SET_AGENT_CONFIG, (uint64_t)(uintptr_t)&agent_cfg);
 	nyx_hypercall(HYPERCALL_KAFL_GET_PAYLOAD, (uint64_t)(uintptr_t)payload);
+	if (!nyx_submit_module_range("ntoskrnl.exe"))
+		fail("failed to submit ntoskrnl.exe range");
 
-	std::vector<uint8_t> output_mem(kMaxOutput);
-	output_data = reinterpret_cast<OutputData*>(output_mem.data());
-	output_size = output_mem.size();
-	output_data->size.store(output_size, std::memory_order_relaxed);
+	std::vector<uint8_t> output_mem;
 	uint64_t freshness = 1;
 	bool have_handshake = false;
 	handshake_req hs = {};
@@ -1637,8 +1760,17 @@ static int nyx_mode_loop(int argc, char** argv)
 			fail("Nyx payload body overflow");
 
 		const uint8_t* body = payload->data + sizeof(*header);
+		nyx_hprintf("nyx payload header kind=%u body=%u total=%d\n",
+			    (unsigned)header->kind,
+			    (unsigned)header->body_size,
+			    (int)payload->size);
 		if (header->kind == SYZ_NYX_KIND_HANDSHAKE) {
+			nyx_hprintf("nyx handshake body ready body=%u total=%d\n",
+				    (unsigned)header->body_size,
+				    (int)payload->size);
 			auto* msg = flatbuffers::GetRoot<rpc::SnapshotHandshake>(body);
+			nyx_hprintf("nyx handshake root parsed body=%u\n",
+				    (unsigned)header->body_size);
 			hs = {
 			    .magic = kInMagic,
 			    .use_cover_edges = msg->cover_edges(),
@@ -1650,9 +1782,30 @@ static int nyx_mode_loop(int argc, char** argv)
 			    .program_timeout_ms = static_cast<uint64>(msg->program_timeout_ms()),
 			    .slowdown_scale = static_cast<uint64>(msg->slowdown()),
 			};
+			nyx_hprintf("nyx handshake begin env=0x%llx features=0x%llx slowdown=%llu timeouts=%llu/%llu\n",
+				    (unsigned long long)msg->env_flags(),
+				    (unsigned long long)msg->features(),
+				    (unsigned long long)msg->slowdown(),
+				    (unsigned long long)msg->syscall_timeout_ms(),
+				    (unsigned long long)msg->program_timeout_ms());
 			parse_handshake(hs);
+			setup_coverage();
+#if !SYZ_NYX_WINDOWS_DEMO
+			uint64_t cr3 = 0;
+			if (nyx_query_cr3(&cr3)) {
+				nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
+					    (unsigned long long)cr3);
+				nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
+			} else {
+				nyx_hprintf("nyx handshake query_cr3 failed\n");
+			}
+#else
+			nyx_hprintf("nyx handshake skipping query_cr3 in demo mode\n");
+#endif
 			have_handshake = true;
+			nyx_hprintf("nyx handshake dumping ack\n");
 			nyx_dump_ack();
+			nyx_hprintf("nyx handshake ack dumped\n");
 			continue;
 		}
 
@@ -1673,30 +1826,47 @@ static int nyx_mode_loop(int argc, char** argv)
 		    .all_extra_signal = msg->all_extra_signal(),
 		};
 		parse_execute(req);
+		input_data = const_cast<uint8*>(msg->prog_data() ? msg->prog_data()->Data() : nullptr);
+		nyx_hprintf("nyx exec req=%lld proc=%d body=%u prog=%u calls=%d threaded=%d exec_flags=0x%llx\n",
+			    (long long)meta->request_id, meta->proc_id, header->body_size,
+			    msg->prog_data() ? msg->prog_data()->size() : 0, msg->num_calls(),
+			    flag_threaded, (unsigned long long)req.exec_flags);
+		nyx_log_exec_preview(input_data, msg->prog_data() ? msg->prog_data()->size() : 0);
 
 		memset(results, 0, sizeof(results));
 		running = 0;
 		last_scheduled = nullptr;
+		if (output_mem.empty()) {
+			output_mem.resize(kMaxOutput);
+			output_data = reinterpret_cast<OutputData*>(output_mem.data());
+			output_size = output_mem.size();
+		}
 		output_data->Reset();
 		output_data->size.store(output_size, std::memory_order_relaxed);
 		output_data->num_calls.store(msg->num_calls(), std::memory_order_relaxed);
-		input_data = const_cast<uint8*>(msg->prog_data()->Data());
 
 		cov_cmd.call_index = 0;
 		cov_cmd.slot_id = 0;
 		cov_cmd.flags = 0;
 
 		uint64_t exec_start = current_time_ms();
+		nyx_hprintf("nyx exec stage=pre_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd);
-		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+		nyx_hprintf("nyx exec stage=post_cov_reset request=%lld\n", (long long)meta->request_id);
+		nyx_hprintf("nyx exec stage=pre_execute_one request=%lld\n", (long long)meta->request_id);
 		execute_one();
-		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+		nyx_hprintf("nyx exec stage=post_execute_one request=%lld\n", (long long)meta->request_id);
+		nyx_hprintf("nyx exec stage=post_release request=%lld\n", (long long)meta->request_id);
+		nyx_hprintf("nyx exec returned request=%lld\n", (long long)meta->request_id);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)&cov_cmd);
+		nyx_hprintf("nyx cov dumped request=%lld\n", (long long)meta->request_id);
 
 		auto result = finish_output(output_data, meta->proc_id, meta->request_id, msg->num_calls(),
 					    (current_time_ms() - exec_start) * 1000 * 1000,
 					    freshness++, 0, false, nullptr);
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
+			    (long long)meta->request_id, (unsigned)result.size());
 	}
 }
 #endif
@@ -1748,6 +1918,12 @@ void* worker_thread(void* arg)
 void execute_call(thread_t* th)
 {
 	const call_t* call = &syscalls[th->call_num];
+#if GOOS_windows
+	if (call->call == nullptr) {
+		failmsg("null syscall entry", "call=%d name=%s", th->call_num,
+			call->name ? call->name : "<null>");
+	}
+#endif
 	debug("#%d [%llums] -> %s(",
 	      th->id, current_time_ms() - start_time_ms, call->name);
 	for (int i = 0; i < th->num_args; i++) {
@@ -1772,7 +1948,15 @@ void execute_call(thread_t* th)
 	// Arrange for res = -1 and errno = EFAULT result for such case.
 	th->res = -1;
 	errno = EFAULT;
+#if GOOS_windows
+	nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+#endif
 	NONFAILING(th->res = execute_syscall(call, th->args));
+#if GOOS_windows
+	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+	nyx_log_exec_stage("execute_call_post_release", th->id, th->call_num, (uint64)th->res, errno);
+#endif
 	th->reserrno = errno;
 	// Our pseudo-syscalls may misbehave.
 	if ((th->res == -1 && th->reserrno == 0) || call->attrs.ignore_return)
