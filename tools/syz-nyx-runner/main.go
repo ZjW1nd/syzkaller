@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -78,8 +79,13 @@ func reorderArgsForFlags(args []string) []string {
 		"-payload-size":        true,
 		"-bitmap-size":         true,
 		"-memory":              true,
+		"-hard-timeout":        true,
 		"-standalone-syscall":  true,
 		"-standalone-seed":     true,
+		"-standalone-rounds":   true,
+		"-standalone-syscall-timeout-ms": true,
+		"-standalone-program-timeout-ms": true,
+		"-vv":                  true,
 		"-qemu-arg":            true,
 		"--qemu-path":          true,
 		"--image":              true,
@@ -87,8 +93,13 @@ func reorderArgsForFlags(args []string) []string {
 		"--payload-size":       true,
 		"--bitmap-size":        true,
 		"--memory":             true,
+		"--hard-timeout":       true,
 		"--standalone-syscall": true,
 		"--standalone-seed":    true,
+		"--standalone-rounds":  true,
+		"--standalone-syscall-timeout-ms": true,
+		"--standalone-program-timeout-ms": true,
+		"--vv":                 true,
 		"--qemu-arg":           true,
 	}
 	var flags []string
@@ -732,6 +743,44 @@ func hash32(a uint32) uint32 {
 	return a
 }
 
+func describeExecProgram(data []byte) string {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return fmt.Sprintf("decode_target_err=%v", err)
+	}
+	decoded, err := target.DeserializeExec(data, nil)
+	if err != nil {
+		return fmt.Sprintf("decode_err=%v", err)
+	}
+	sum := sha1.Sum(data)
+	if len(decoded.Calls) == 0 {
+		return fmt.Sprintf("sha1=%x calls=0", sum[:6])
+	}
+	call := decoded.Calls[0]
+	if call.Meta == nil {
+		return fmt.Sprintf("sha1=%x calls=%d call0=<nil>", sum[:6], len(decoded.Calls))
+	}
+	parts := []string{
+		fmt.Sprintf("sha1=%x", sum[:6]),
+		fmt.Sprintf("calls=%d", len(decoded.Calls)),
+		fmt.Sprintf("call0=%s", call.Meta.Name),
+	}
+	for i, arg := range call.Args {
+		if i >= 4 {
+			break
+		}
+		switch a := arg.(type) {
+		case prog.ExecArgConst:
+			parts = append(parts, fmt.Sprintf("arg%d=0x%x", i, a.Value))
+		case prog.ExecArgResult:
+			parts = append(parts, fmt.Sprintf("arg%d=result(index=%d,default=0x%x)", i, a.Index, a.Default))
+		default:
+			parts = append(parts, fmt.Sprintf("arg%d=%T", i, arg))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 type runner struct {
 	id             int
 	addr           string
@@ -810,9 +859,13 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if req.Type != flatrpc.RequestTypeProgram {
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
 	}
-	execFlags := req.ExecOpts.ExecFlags
+	// Current Windows Nyx baseline only supports single-vCPU/single-thread execution
+	// reliably. Keep manager-driven requests on that same lane until the threading
+	// story is implemented end-to-end.
+	execFlags := req.ExecOpts.ExecFlags &^ flatrpc.ExecFlagThreaded
 	log.Logf(0, "runner exec request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
 		req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
+	log.Logf(0, "runner exec program: id=%d %s", req.Id, describeExecProgram(req.Data))
 	if err := r.ensureHandshake(req); err != nil {
 		return nil, err
 	}
@@ -881,6 +934,23 @@ func hasExtraSignal(all []int32) bool {
 	return false
 }
 
+func countNewSignal(calls []*flatrpc.CallInfo, seen map[uint64]struct{}) int {
+	n := 0
+	for _, call := range calls {
+		if call == nil {
+			continue
+		}
+		for _, sig := range call.Signal {
+			if _, ok := seen[sig]; ok {
+				continue
+			}
+			seen[sig] = struct{}{}
+			n++
+		}
+	}
+	return n
+}
+
 func (r *runner) loop() error {
 	for {
 		msg, err := flatrpc.Recv[*flatrpc.HostMessageRaw](r.conn)
@@ -938,7 +1008,7 @@ func (r *runner) loop() error {
 }
 
 func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threaded bool,
-	syscallTimeoutMs, programTimeoutMs int) error {
+	syscallTimeoutMs, programTimeoutMs, rounds int) error {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		return fmt.Errorf("get target: %w", err)
@@ -951,21 +1021,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 	if err != nil {
 		return err
 	}
-	if bootstrap {
-		log.Logf(0, "standalone bootstrap program for %s:\n%s", syscallName, string(p.Serialize()))
-	} else {
-		log.Logf(0, "standalone program for %s (seed=%d):\n%s", syscallName, seed, string(p.Serialize()))
-	}
-	execData, err := p.SerializeForExec()
-	if err != nil {
-		return fmt.Errorf("serialize standalone program for exec: %w", err)
-	}
-	execCalls, err := prog.ExecCallCount(execData)
-	if err != nil {
-		return fmt.Errorf("count standalone exec calls: %w", err)
-	}
-	log.Logf(0, "standalone exec encoding: bytes=%d calls=%d", len(execData), execCalls)
-
+	ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{meta: true})
 	connectReply := &flatrpc.ConnectReply{
 		Cover:            true,
 		CoverEdges:       true,
@@ -982,7 +1038,6 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 	req := &flatrpc.ExecRequest{
 		Id:   1,
 		Type: flatrpc.RequestTypeProgram,
-		Data: execData,
 		ExecOpts: &flatrpc.ExecOpts{
 			EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
 			ExecFlags:  execFlags,
@@ -994,22 +1049,64 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 		vm:           vm,
 		connectReply: connectReply,
 	}
-	execMsg, err := r.runRequest(req)
-	if err != nil {
-		return err
+	if rounds <= 0 {
+		rounds = 1
 	}
-	res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
-	if !ok || res.Info == nil {
-		return fmt.Errorf("unexpected executor message type %T", execMsg.Msg.Value)
-	}
-	log.Logf(0, "standalone exec finished: calls=%d cover_records=%d", len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
-	for i, call := range res.Info.Calls {
-		if call == nil {
-			log.Logf(0, "call[%d]: <nil>", i)
-			continue
+	corpus := []*prog.Prog{p.Clone()}
+	seenSignal := make(map[uint64]struct{})
+	for round := 0; round < rounds; round++ {
+		var cur *prog.Prog
+		fmt.Fprintf(os.Stderr, "standalone round=%d begin rounds=%d corpus=%d\n", round+1, rounds, len(corpus))
+		roundSeed := seed + int64(round)
+		if round == 0 {
+			cur = p.Clone()
+			if bootstrap {
+				log.Logf(0, "standalone bootstrap program for %s:\n%s", syscallName, string(cur.Serialize()))
+			} else {
+				log.Logf(0, "standalone seed program for %s (seed=%d):\n%s", syscallName, seed, string(cur.Serialize()))
+			}
+		} else {
+			base := corpus[mrand.New(mrand.NewSource(roundSeed)).Intn(len(corpus))].Clone()
+			base.Mutate(mrand.NewSource(roundSeed), 1, ct, nil, corpus)
+			cur = base
+			log.Logf(0, "standalone mutated program round=%d seed=%d corpus=%d:\n%s",
+				round+1, roundSeed, len(corpus), string(cur.Serialize()))
 		}
-		log.Logf(0, "call[%d]: errno=%d flags=0x%x cover=%d signal=%d comps=%d",
-			i, call.Error, call.Flags, len(call.Cover), len(call.Signal), len(call.Comps))
+		execData, err := cur.SerializeForExec()
+		if err != nil {
+			return fmt.Errorf("serialize standalone program for exec: %w", err)
+		}
+		execCalls, err := prog.ExecCallCount(execData)
+		if err != nil {
+			return fmt.Errorf("count standalone exec calls: %w", err)
+		}
+		log.Logf(0, "standalone exec encoding round=%d: bytes=%d calls=%d", round+1, len(execData), execCalls)
+		log.Logf(0, "standalone exec program round=%d: %s", round+1, describeExecProgram(execData))
+		req.Data = execData
+		req.Id = int64(round + 1)
+		execMsg, err := r.runRequest(req)
+		if err != nil {
+			return err
+		}
+		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
+		if !ok || res.Info == nil {
+			return fmt.Errorf("unexpected executor message type %T", execMsg.Msg.Value)
+		}
+		newSignal := countNewSignal(res.Info.Calls, seenSignal)
+		log.Logf(0, "standalone exec finished round=%d: calls=%d cover_records=%d new_signal=%d corpus=%d",
+			round+1, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls), newSignal, len(corpus))
+		for i, call := range res.Info.Calls {
+			if call == nil {
+				log.Logf(0, "call[%d]: <nil>", i)
+				continue
+			}
+			log.Logf(0, "call[%d]: errno=%d flags=0x%x cover=%d signal=%d comps=%d",
+				i, call.Error, call.Flags, len(call.Cover), len(call.Signal), len(call.Comps))
+		}
+		if newSignal > 0 {
+			corpus = append(corpus, cur.Clone())
+			log.Logf(0, "standalone corpus accepted round=%d new_size=%d", round+1, len(corpus))
+		}
 	}
 	return nil
 }
@@ -1044,6 +1141,7 @@ func main() {
 		standalone         = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
 		standaloneSyscall  = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
 		standaloneSeed     = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
+		standaloneRounds   = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
 		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
 		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
 		standaloneThreaded = flag.Bool("standalone-threaded", false, "set ExecFlagThreaded in standalone mode")
@@ -1076,7 +1174,7 @@ func main() {
 	}
 	if *standalone {
 		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneThreaded,
-			*standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs); err != nil {
+			*standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
 			log.Fatalf("standalone Nyx request failed: %v", err)
 		}
 		return

@@ -546,6 +546,11 @@ static void mmap_input();
 #if GOOS_windows
 static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 {
+#if SYZ_NYX_WINDOWS_DEMO
+	(void)prog_data;
+	(void)prog_size;
+	return;
+#else
 	if (!prog_data || prog_size == 0) {
 		nyx_hprintf("nyx exec preview: empty program data\n");
 		return;
@@ -584,17 +589,27 @@ static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 		    (unsigned long long)args[1],
 		    (unsigned long long)args[2],
 		    (unsigned long long)args[3]);
+#endif
 }
 
 static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, uint64 a2 = 0,
 			       uint64 a3 = 0)
 {
+#if SYZ_NYX_WINDOWS_DEMO
+	(void)stage;
+	(void)a0;
+	(void)a1;
+	(void)a2;
+	(void)a3;
+	return;
+#else
 	nyx_hprintf("nyx exec execute_one stage=%s a0=0x%llx a1=0x%llx a2=0x%llx a3=0x%llx\n",
 		    stage,
 		    (unsigned long long)a0,
 		    (unsigned long long)a1,
 		    (unsigned long long)a2,
 		    (unsigned long long)a3);
+#endif
 }
 #endif
 
@@ -1712,6 +1727,188 @@ static bool nyx_dump_ack()
 	return nyx_dump_bytes(NYX_HANDSHAKE_ACK_BASENAME, ok, sizeof(ok) - 1, false);
 }
 
+#if SYZ_NYX_WINDOWS_DEMO
+struct nyx_demo_program_t {
+	bool valid;
+	uint64 call_num;
+	uint64 args[kMaxArgs];
+	uint64 num_args;
+};
+
+static nyx_demo_program_t nyx_demo_parse_program(const uint8* prog_data, uint32 prog_size)
+{
+	nyx_demo_program_t parsed = {};
+	if (!prog_data || prog_size == 0)
+		return parsed;
+	uint8* saved_input = input_data;
+	input_data = const_cast<uint8*>(prog_data);
+	uint8* pos = input_data;
+
+	uint64 total_calls = read_input(&pos);
+	(void)total_calls;
+	for (;;) {
+		uint64 call_num = read_input(&pos);
+		if (call_num == instr_eof)
+			break;
+		if (call_num == instr_copyin) {
+			char* addr = (char*)(read_input(&pos) + SYZ_DATA_OFFSET);
+			uint64 typ = read_input(&pos);
+			switch (typ) {
+			case arg_const: {
+				uint64 size, bf, bf_off, bf_len;
+				uint64 arg = read_const_arg(&pos, &size, &bf, &bf_off, &bf_len);
+				copyin(addr, arg, size, bf, bf_off, bf_len);
+				break;
+			}
+			case arg_addr32:
+			case arg_addr64: {
+				uint64 val = read_input(&pos) + SYZ_DATA_OFFSET;
+				if (typ == arg_addr32)
+					NONFAILING(*(uint32*)addr = val);
+				else
+					NONFAILING(*(uint64*)addr = val);
+				break;
+			}
+			case arg_result: {
+				uint64 meta = read_input(&pos);
+				uint64 size = meta & 0xff;
+				uint64 bf = meta >> 8;
+				uint64 val = read_result(&pos);
+				copyin(addr, val, size, bf, 0, 0);
+				break;
+			}
+			case arg_data: {
+				uint64 size = read_input(&pos);
+				size &= ~(1ull << 63);
+				if (pos + size > input_data + prog_size)
+					fail("demo data arg overflow");
+				NONFAILING(memcpy(addr, pos, size));
+				pos += size;
+				break;
+			}
+			default:
+				failmsg("bad demo argument type", "type=%llu", typ);
+			}
+			continue;
+		}
+		if (call_num == instr_copyout) {
+			read_input(&pos);
+			read_input(&pos);
+			read_input(&pos);
+			continue;
+		}
+		if (call_num == instr_setprops) {
+			read_input(&pos);
+			continue;
+		}
+		uint64 copyout_index = read_input(&pos);
+		(void)copyout_index;
+		uint64 num_args = read_input(&pos);
+		if (num_args > kMaxArgs)
+			failmsg("demo command has bad number of arguments", "args=%llu", num_args);
+		for (uint64 i = 0; i < num_args; i++)
+			parsed.args[i] = read_arg(&pos);
+		parsed.call_num = call_num;
+		parsed.num_args = num_args;
+		parsed.valid = true;
+		break;
+	}
+	input_data = saved_input;
+	return parsed;
+}
+
+static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
+							   int32_t proc_id,
+							   uint64 req_id,
+							   uint64 freshness,
+							   const rpc::SnapshotRequest* msg,
+							   const kafl_syz_cov_cmd_t* cov_cmd)
+{
+	auto parsed = nyx_demo_parse_program(msg->prog_data() ? msg->prog_data()->Data() : nullptr,
+					     msg->prog_data() ? msg->prog_data()->size() : 0);
+	if (!parsed.valid)
+		fail("demo failed to parse exec program");
+	if (parsed.call_num >= ARRAY_SIZE(syscalls))
+		failmsg("demo invalid syscall number", "call_num=%llu", parsed.call_num);
+	const call_t* call = &syscalls[parsed.call_num];
+	if (!call->name)
+		failmsg("demo unsupported syscall", "call=%llu name=%s", parsed.call_num,
+			call->name ? call->name : "<null>");
+
+	uint64 exec_start = current_time_ms();
+	output_builder.emplace(output, output_size, !flag_snapshot);
+	cover_t dummy = {};
+
+	if (strcmp(call->name, "VirtualAlloc") == 0) {
+		void* addr = (void*)(uintptr_t)parsed.args[0];
+		SIZE_T size = (SIZE_T)parsed.args[1];
+		DWORD alloc_type = (DWORD)parsed.args[2];
+		DWORD protect = (DWORD)parsed.args[3];
+		nyx_hprintf("nyx demo exec VirtualAlloc addr=0x%llx size=0x%llx type=0x%lx protect=0x%lx request=%lld\n",
+			    (unsigned long long)(uintptr_t)addr,
+			    (unsigned long long)size,
+			    (unsigned long)alloc_type,
+			    (unsigned long)protect,
+			    (long long)req_id);
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)cov_cmd);
+		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+		void* result = VirtualAlloc(addr, size, alloc_type, protect);
+		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)cov_cmd);
+		nyx_hprintf("nyx demo exec VirtualAlloc done result=0x%llx request=%lld\n",
+			    (unsigned long long)(uintptr_t)result, (long long)req_id);
+		write_output(0, &dummy, rpc::CallFlag::Executed | rpc::CallFlag::Finished,
+			     result ? 0 : EINVAL, false);
+		return finish_output(output, proc_id, req_id, 1,
+				     (current_time_ms() - exec_start) * 1000 * 1000,
+				     freshness, 0, false, nullptr);
+	}
+	if (strcmp(call->name, "NtQuerySystemInformation") != 0)
+		failmsg("demo unsupported syscall", "call=%llu name=%s", parsed.call_num,
+			call->name ? call->name : "<null>");
+
+	uint32 info_class = (uint32)parsed.args[0];
+	void* orig_buf = (void*)(uintptr_t)parsed.args[1];
+	uint32 buffer_size = (uint32)parsed.args[2];
+	ULONG* orig_ret_len = (ULONG*)(uintptr_t)parsed.args[3];
+	if (buffer_size == 0)
+		buffer_size = 0x1000;
+	if (buffer_size > 0x10000)
+		buffer_size = 0x10000;
+	void* buffer = VirtualAlloc(nullptr, buffer_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (!buffer)
+		fail("demo VirtualAlloc syscall buffer failed");
+	if (orig_buf)
+		memcpy(buffer, orig_buf, buffer_size);
+	ULONG ret_len = orig_ret_len ? *orig_ret_len : 0;
+
+	nyx_hprintf("nyx demo exec class=%u size=0x%x buf=0x%llx retlen_ptr=0x%llx request=%lld\n",
+		    info_class, buffer_size,
+		    (unsigned long long)(uintptr_t)orig_buf,
+		    (unsigned long long)(uintptr_t)orig_ret_len,
+		    (long long)req_id);
+	nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)cov_cmd);
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+	NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)info_class,
+						 buffer, buffer_size, &ret_len);
+	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+	nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)cov_cmd);
+	if (orig_buf)
+		memcpy(orig_buf, buffer, buffer_size);
+	if (orig_ret_len)
+		*orig_ret_len = ret_len;
+	nyx_hprintf("nyx demo exec done class=%u size=0x%x status=0x%08lx ret=%lu request=%lld\n",
+		    info_class, buffer_size, (unsigned long)status, ret_len, (long long)req_id);
+	VirtualFree(buffer, 0, MEM_RELEASE);
+
+	uint32 error = NT_SUCCESS(status) ? 0 : EINVAL;
+	write_output(0, &dummy, rpc::CallFlag::Executed | rpc::CallFlag::Finished, error, false);
+	return finish_output(output, proc_id, req_id, 1,
+			     (current_time_ms() - exec_start) * 1000 * 1000,
+			     freshness, 0, false, nullptr);
+}
+#endif
+
 static int nyx_mode_loop(int argc, char** argv)
 {
 	(void)argc;
@@ -1741,6 +1938,8 @@ static int nyx_mode_loop(int argc, char** argv)
 	nyx_hypercall(HYPERCALL_KAFL_GET_PAYLOAD, (uint64_t)(uintptr_t)payload);
 	if (!nyx_submit_module_range("ntoskrnl.exe"))
 		fail("failed to submit ntoskrnl.exe range");
+
+	nyx_hprintf("nyx executor build marker=20260427b demo=%d\n", (int)SYZ_NYX_WINDOWS_DEMO);
 
 	std::vector<uint8_t> output_mem;
 	uint64_t freshness = 1;
@@ -1849,6 +2048,20 @@ static int nyx_mode_loop(int argc, char** argv)
 		cov_cmd.slot_id = 0;
 		cov_cmd.flags = 0;
 
+#if SYZ_NYX_WINDOWS_DEMO
+		nyx_hprintf("nyx demo direct path forced calls=%u prog=%u\n",
+			    msg->num_calls(),
+			    msg->prog_data() ? msg->prog_data()->size() : 0);
+		auto demo_result = nyx_demo_execute_request(output_data, meta->proc_id,
+						    meta->request_id, freshness++,
+						    msg, &cov_cmd);
+		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
+		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
+			    (long long)meta->request_id, (unsigned)demo_result.size());
+		continue;
+#endif
+		nyx_hprintf("nyx generic branch selected calls=%u\n", msg->num_calls());
+
 		uint64_t exec_start = current_time_ms();
 		nyx_hprintf("nyx exec stage=pre_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd);
@@ -1949,12 +2162,21 @@ void execute_call(thread_t* th)
 	th->res = -1;
 	errno = EFAULT;
 #if GOOS_windows
+#if SYZ_NYX_WINDOWS_DEMO
+	if (call->name && strcmp(call->name, "NtQuerySystemInformation") == 0 &&
+	    !demo_prepare_syscall(call, th->args))
+		failmsg("demo_prepare_syscall failed", "call=%d name=%s", th->call_num,
+			call->name ? call->name : "<null>");
+#endif
 	nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
 #endif
 	NONFAILING(th->res = execute_syscall(call, th->args));
 #if GOOS_windows
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+#if SYZ_NYX_WINDOWS_DEMO
+	demo_finish_syscall(call, th->args);
+#endif
 	nyx_log_exec_stage("execute_call_post_release", th->id, th->call_num, (uint64)th->res, errno);
 #endif
 	th->reserrno = errno;
