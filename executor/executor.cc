@@ -1728,11 +1728,16 @@ static bool nyx_dump_ack()
 }
 
 #if SYZ_NYX_WINDOWS_DEMO
-struct nyx_demo_program_t {
-	bool valid;
+struct nyx_demo_call_t {
 	uint64 call_num;
 	uint64 args[kMaxArgs];
 	uint64 num_args;
+};
+
+struct nyx_demo_program_t {
+	uint64 total_calls;
+	uint64 num_calls;
+	nyx_demo_call_t calls[kMaxCalls];
 };
 
 static nyx_demo_program_t nyx_demo_parse_program(const uint8* prog_data, uint32 prog_size)
@@ -1744,8 +1749,7 @@ static nyx_demo_program_t nyx_demo_parse_program(const uint8* prog_data, uint32 
 	input_data = const_cast<uint8*>(prog_data);
 	uint8* pos = input_data;
 
-	uint64 total_calls = read_input(&pos);
-	(void)total_calls;
+	parsed.total_calls = read_input(&pos);
 	for (;;) {
 		uint64 call_num = read_input(&pos);
 		if (call_num == instr_eof)
@@ -1806,71 +1810,75 @@ static nyx_demo_program_t nyx_demo_parse_program(const uint8* prog_data, uint32 
 		uint64 num_args = read_input(&pos);
 		if (num_args > kMaxArgs)
 			failmsg("demo command has bad number of arguments", "args=%llu", num_args);
+		if (parsed.num_calls >= kMaxCalls)
+			failmsg("demo program has too many calls", "num_calls=%llu", parsed.num_calls);
+		auto& call = parsed.calls[parsed.num_calls++];
+		call.call_num = call_num;
+		call.num_args = num_args;
 		for (uint64 i = 0; i < num_args; i++)
-			parsed.args[i] = read_arg(&pos);
-		parsed.call_num = call_num;
-		parsed.num_args = num_args;
-		parsed.valid = true;
-		break;
+			call.args[i] = read_arg(&pos);
 	}
 	input_data = saved_input;
 	return parsed;
 }
 
-static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
-							   int32_t proc_id,
-							   uint64 req_id,
-							   uint64 freshness,
-							   const rpc::SnapshotRequest* msg,
-							   const kafl_syz_cov_cmd_t* cov_cmd)
+
+static bool nyx_demo_execute_one_call(OutputData* output, const nyx_demo_call_t& call,
+				       uint64 call_index, uint64 req_id,
+				       kafl_syz_cov_cmd_t* cov_cmd, cover_t* dummy)
 {
-	auto parsed = nyx_demo_parse_program(msg->prog_data() ? msg->prog_data()->Data() : nullptr,
-					     msg->prog_data() ? msg->prog_data()->size() : 0);
-	if (!parsed.valid)
-		fail("demo failed to parse exec program");
-	if (parsed.call_num >= ARRAY_SIZE(syscalls))
-		failmsg("demo invalid syscall number", "call_num=%llu", parsed.call_num);
-	const call_t* call = &syscalls[parsed.call_num];
-	if (!call->name)
-		failmsg("demo unsupported syscall", "call=%llu name=%s", parsed.call_num,
-			call->name ? call->name : "<null>");
+	if (call.call_num >= ARRAY_SIZE(syscalls))
+		failmsg("demo invalid syscall number", "call_index=%llu call_num=%llu",
+			call_index, call.call_num);
+	const call_t* c = &syscalls[call.call_num];
+	if (!c->name)
+		failmsg("demo unsupported syscall", "call_index=%llu call_num=%llu name=%s",
+			call_index, call.call_num, c->name ? c->name : "<null>");
 
-	uint64 exec_start = current_time_ms();
-	output_builder.emplace(output, output_size, !flag_snapshot);
-	cover_t dummy = {};
+	cov_cmd->call_index = (uint32)call_index;
+	cov_cmd->slot_id = 0;
+	cov_cmd->flags = 0;
 
-	if (strcmp(call->name, "VirtualAlloc") == 0) {
-		void* addr = (void*)(uintptr_t)parsed.args[0];
-		SIZE_T size = (SIZE_T)parsed.args[1];
-		DWORD alloc_type = (DWORD)parsed.args[2];
-		DWORD protect = (DWORD)parsed.args[3];
-		nyx_hprintf("nyx demo exec VirtualAlloc addr=0x%llx size=0x%llx type=0x%lx protect=0x%lx request=%lld\n",
+	if (strcmp(c->name, "VirtualAlloc") == 0) {
+		void* addr = (void*)(uintptr_t)call.args[0];
+		SIZE_T size = (SIZE_T)call.args[1];
+		DWORD alloc_type = (DWORD)call.args[2];
+		DWORD protect = (DWORD)call.args[3];
+		nyx_hprintf("nyx demo exec call=%llu VirtualAlloc addr=0x%llx size=0x%llx type=0x%lx protect=0x%lx request=%lld\n",
+			    (unsigned long long)call_index,
 			    (unsigned long long)(uintptr_t)addr,
 			    (unsigned long long)size,
 			    (unsigned long)alloc_type,
 			    (unsigned long)protect,
 			    (long long)req_id);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)cov_cmd);
-		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
 		void* result = VirtualAlloc(addr, size, alloc_type, protect);
 		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)cov_cmd);
-		nyx_hprintf("nyx demo exec VirtualAlloc done result=0x%llx request=%lld\n",
-			    (unsigned long long)(uintptr_t)result, (long long)req_id);
-		write_output(0, &dummy, rpc::CallFlag::Executed | rpc::CallFlag::Finished,
+		nyx_hprintf("nyx demo exec call=%llu VirtualAlloc done result=0x%llx request=%lld\n",
+			    (unsigned long long)call_index,
+			    (unsigned long long)(uintptr_t)result,
+			    (long long)req_id);
+		write_output((uint32)call_index, dummy,
+			     rpc::CallFlag::Executed | rpc::CallFlag::Finished,
 			     result ? 0 : EINVAL, false);
-		return finish_output(output, proc_id, req_id, 1,
-				     (current_time_ms() - exec_start) * 1000 * 1000,
-				     freshness, 0, false, nullptr);
+		return true;
 	}
-	if (strcmp(call->name, "NtQuerySystemInformation") != 0)
-		failmsg("demo unsupported syscall", "call=%llu name=%s", parsed.call_num,
-			call->name ? call->name : "<null>");
 
-	uint32 info_class = (uint32)parsed.args[0];
-	void* orig_buf = (void*)(uintptr_t)parsed.args[1];
-	uint32 buffer_size = (uint32)parsed.args[2];
-	ULONG* orig_ret_len = (ULONG*)(uintptr_t)parsed.args[3];
+	if (strcmp(c->name, "NtQuerySystemInformation") != 0) {
+		nyx_hprintf("nyx demo exec call=%llu unsupported syscall=%s\n",
+			    (unsigned long long)call_index, c->name);
+		write_output((uint32)call_index, dummy,
+			     rpc::CallFlag::Executed | rpc::CallFlag::Finished,
+			     ENOSYS, false);
+		return true;
+	}
+
+	uint32 info_class = (uint32)call.args[0];
+	void* orig_buf = (void*)(uintptr_t)call.args[1];
+	uint32 buffer_size = (uint32)call.args[2];
+	ULONG* orig_ret_len = (ULONG*)(uintptr_t)call.args[3];
 	if (buffer_size == 0)
 		buffer_size = 0x1000;
 	if (buffer_size > 0x10000)
@@ -1882,13 +1890,13 @@ static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
 		memcpy(buffer, orig_buf, buffer_size);
 	ULONG ret_len = orig_ret_len ? *orig_ret_len : 0;
 
-	nyx_hprintf("nyx demo exec class=%u size=0x%x buf=0x%llx retlen_ptr=0x%llx request=%lld\n",
-		    info_class, buffer_size,
+	nyx_hprintf("nyx demo exec call=%llu class=%u size=0x%x buf=0x%llx retlen_ptr=0x%llx request=%lld\n",
+		    (unsigned long long)call_index, info_class, buffer_size,
 		    (unsigned long long)(uintptr_t)orig_buf,
 		    (unsigned long long)(uintptr_t)orig_ret_len,
 		    (long long)req_id);
 	nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)cov_cmd);
-	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
 	NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)info_class,
 						 buffer, buffer_size, &ret_len);
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
@@ -1897,13 +1905,45 @@ static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
 		memcpy(orig_buf, buffer, buffer_size);
 	if (orig_ret_len)
 		*orig_ret_len = ret_len;
-	nyx_hprintf("nyx demo exec done class=%u size=0x%x status=0x%08lx ret=%lu request=%lld\n",
-		    info_class, buffer_size, (unsigned long)status, ret_len, (long long)req_id);
+	nyx_hprintf("nyx demo exec call=%llu done class=%u size=0x%x status=0x%08lx ret=%lu request=%lld\n",
+		    (unsigned long long)call_index, info_class, buffer_size,
+		    (unsigned long)status, ret_len, (long long)req_id);
 	VirtualFree(buffer, 0, MEM_RELEASE);
 
 	uint32 error = NT_SUCCESS(status) ? 0 : EINVAL;
-	write_output(0, &dummy, rpc::CallFlag::Executed | rpc::CallFlag::Finished, error, false);
-	return finish_output(output, proc_id, req_id, 1,
+	write_output((uint32)call_index, dummy,
+		     rpc::CallFlag::Executed | rpc::CallFlag::Finished, error, false);
+	return true;
+}
+
+static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
+							   int32_t proc_id,
+							   uint64 req_id,
+							   uint64 freshness,
+							   const rpc::SnapshotRequest* msg,
+							   const kafl_syz_cov_cmd_t* cov_cmd_in)
+{
+	auto parsed = nyx_demo_parse_program(msg->prog_data() ? msg->prog_data()->Data() : nullptr,
+					     msg->prog_data() ? msg->prog_data()->size() : 0);
+	if (parsed.num_calls == 0)
+		fail("demo failed to parse exec program (no calls)");
+
+	nyx_hprintf("nyx demo exec multi-call total=%llu parsed=%llu request=%lld\n",
+		    (unsigned long long)parsed.total_calls,
+		    (unsigned long long)parsed.num_calls,
+		    (long long)req_id);
+
+	uint64 exec_start = current_time_ms();
+	output_builder.emplace(output, output_size, !flag_snapshot);
+	output_data->num_calls.store((uint32)parsed.num_calls, std::memory_order_relaxed);
+	cover_t dummy = {};
+	kafl_syz_cov_cmd_t cov_cmd_local = *cov_cmd_in;
+
+	for (uint64 i = 0; i < parsed.num_calls; i++)
+		nyx_demo_execute_one_call(output, parsed.calls[i], i, req_id,
+					   &cov_cmd_local, &dummy);
+
+	return finish_output(output, proc_id, req_id, (uint32)parsed.num_calls,
 			     (current_time_ms() - exec_start) * 1000 * 1000,
 			     freshness, 0, false, nullptr);
 }
@@ -1917,7 +1957,7 @@ static int nyx_mode_loop(int argc, char** argv)
 	if (!nyx_fetch_host_config(&host_cfg))
 		fail("failed to fetch Nyx host config");
 
-	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 
 	auto* payload = static_cast<kAFL_payload*>(VirtualAlloc(nullptr, host_cfg.payload_buffer_size,
@@ -2169,7 +2209,7 @@ void execute_call(thread_t* th)
 			call->name ? call->name : "<null>");
 #endif
 	nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
-	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
 #endif
 	NONFAILING(th->res = execute_syscall(call, th->args));
 #if GOOS_windows

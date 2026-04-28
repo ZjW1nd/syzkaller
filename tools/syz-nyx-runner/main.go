@@ -1021,7 +1021,11 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 	if err != nil {
 		return err
 	}
-	ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{meta: true})
+	enabled := map[*prog.Syscall]bool{meta: true}
+	if va, ok := target.SyscallMap["VirtualAlloc"]; ok {
+		enabled[va] = true
+	}
+	ct := target.BuildChoiceTable(nil, enabled)
 	connectReply := &flatrpc.ConnectReply{
 		Cover:            true,
 		CoverEdges:       true,
@@ -1113,14 +1117,19 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 
 func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*prog.Prog, bool, error) {
 	if meta.Name == "NtQuerySystemInformation" {
-		src := []byte("NtQuerySystemInformation(0x0, &(0x7f0000000000)=\"\"/4096, 0x1000, &(0x7f0000001000)=0x0)\n")
-		p, err := target.Deserialize(src, prog.Strict)
+		// Multi-call seed: VirtualAlloc + NtQuerySystemInformation
+		src := []byte("VirtualAlloc(0x0, 0x1000, 0x3000, 0x40)\nNtQuerySystemInformation(0x0, &(0x7f0000000000)=\"\"/4096, 0x1000, &(0x7f0000001000)=0x0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone bootstrap program for %s: %w", meta.Name, err)
+			return nil, false, fmt.Errorf("build standalone multi-call bootstrap program: %w", err)
 		}
 		return p, true, nil
 	}
-	ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{meta: true})
+	enabled := map[*prog.Syscall]bool{meta: true}
+	if va, ok := target.SyscallMap["VirtualAlloc"]; ok {
+		enabled[va] = true
+	}
+	ct := target.BuildChoiceTable(nil, enabled)
 	return target.GenSampleProg(meta, mrand.NewSource(seed), ct), false, nil
 }
 
