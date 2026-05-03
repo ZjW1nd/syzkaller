@@ -1,12 +1,12 @@
 #define WINVER 0x0A00
 #define _WIN32_WINNT 0x0A00
 
+#include <psapi.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 #include <windows.h>
 #include <winternl.h>
-#include <psapi.h>
-#include <stdio.h>
-#include <stdint.h>
-#include <string.h>
 
 #include "nyx_api.h"
 
@@ -68,7 +68,7 @@ static bool submit_module_range(const char* module_name, uint32_t filter_index)
 	enable_debug_privilege();
 	ULONG len = 1 << 20;
 	auto* modules = (PRTL_PROCESS_MODULES)VirtualAlloc(nullptr, len,
-		MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+							   MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	if (!modules) {
 		hprintf("VirtualAlloc modules failed err=%lu\n", GetLastError());
 		return false;
@@ -84,7 +84,7 @@ static bool submit_module_range(const char* module_name, uint32_t filter_index)
 	bool ok = false;
 	for (ULONG i = 0; i < modules->NumberOfModules; i++) {
 		char* file_name = (char*)modules->Modules[i].FullPathName +
-			modules->Modules[i].OffsetToFileName;
+				  modules->Modules[i].OffsetToFileName;
 		if (_stricmp(file_name, module_name) != 0)
 			continue;
 		uint64_t base = (uint64_t)modules->Modules[i].ImageBase;
@@ -110,12 +110,12 @@ static bool submit_module_range(const char* module_name, uint32_t filter_index)
 static uint32_t pick_class(const kAFL_payload* payload)
 {
 	static const uint32_t classes[] = {
-		0,   // SystemBasicInformation
-		5,   // SystemProcessInformation
-		11,  // SystemModuleInformation
-		16,  // SystemHandleInformation
-		35,  // SystemKernelDebuggerInformation
-		57,  // SystemProcessorPerformanceInformation
+	    0, // SystemBasicInformation
+	    5, // SystemProcessInformation
+	    11, // SystemModuleInformation
+	    16, // SystemHandleInformation
+	    35, // SystemKernelDebuggerInformation
+	    57, // SystemProcessorPerformanceInformation
 	};
 	uint32_t seed = 0;
 	if (payload->size > 0) {
@@ -145,7 +145,7 @@ static void execute_payload(kAFL_payload* payload)
 	kAFL_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uintptr_t)&cov);
 	kAFL_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);
 	NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)info_class,
-		buffer, buffer_size, &ret_len);
+						   buffer, buffer_size, &ret_len);
 	kAFL_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 	kAFL_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uintptr_t)&cov);
 
@@ -175,7 +175,7 @@ int main()
 	if (payload_size < 0x1000)
 		payload_size = 0x1000;
 	kAFL_payload* payload = (kAFL_payload*)VirtualAlloc(nullptr, payload_size,
-		MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+							    MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	if (!payload)
 		habort("VirtualAlloc payload failed");
 	memset(payload, 0, payload_size);

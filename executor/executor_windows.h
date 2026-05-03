@@ -1,14 +1,10 @@
 // Copyright 2017 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-#include <winsock2.h>
-#include <mswsock.h>
-#include <ws2tcpip.h>
-#include <io.h>
-#include <windows.h>
-#include <winternl.h>
 #include <bcrypt.h>
 #include <imm.h>
+#include <io.h>
+#include <mswsock.h>
 #include <ncrypt.h>
 #include <ole2.h>
 #include <oleauto.h>
@@ -17,8 +13,12 @@
 #include <shellapi.h>
 #include <urlmon.h>
 #include <wincrypt.h>
+#include <windows.h>
 #include <winscard.h>
+#include <winsock2.h>
 #include <winspool.h>
+#include <winternl.h>
+#include <ws2tcpip.h>
 
 #include "nocover.h"
 

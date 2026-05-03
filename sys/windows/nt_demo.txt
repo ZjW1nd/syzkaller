@@ -1,8 +1,9 @@
-# Minimal native NT syscall demo surface for Nyx-based Windows kernel fuzzing.
+# Windows NT syscall demo surface for Nyx kernel fuzzing.
 
 include <windows.h>
 include <winternl.h>
 
+# System information — native NT syscalls
 NtQuerySystemInformation(SystemInformationClass int32, SystemInformation ptr[inout, array[int8]], SystemInformationLength len[SystemInformation], ReturnLength ptr[inout, int32])
 NtQueryInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation], ReturnLength ptr[inout, int32])
 NtSetInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation])

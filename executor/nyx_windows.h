@@ -1,9 +1,9 @@
 // Copyright 2026 syzkaller project authors. All rights reserved.
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
+#include <psapi.h>
 #include <stdarg.h>
 #include <stdio.h>
-#include <psapi.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 
@@ -122,7 +122,10 @@ typedef struct _RTL_PROCESS_MODULES {
 static inline uint64_t nyx_hypercall(uint64_t p1, uint64_t p2)
 {
 	uint64_t nr = HYPERCALL_KAFL_RAX_ID;
-	asm volatile("vmcall" : "=a"(nr) : "a"(nr), "b"(p1), "c"(p2) : "memory");
+	asm volatile("vmcall"
+		     : "=a"(nr)
+		     : "a"(nr), "b"(p1), "c"(p2)
+		     : "memory");
 	return nr;
 }
 

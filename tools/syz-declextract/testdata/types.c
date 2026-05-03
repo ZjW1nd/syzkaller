@@ -35,11 +35,11 @@ struct anon_struct {
 	struct {
 		int a;
 		int b;
-	}* ptr;
+	} * ptr;
 	struct {
 		int a;
 		int b;
-	}* ptr_array[4];
+	} * ptr_array[4];
 };
 
 enum bitfield_enum { a,

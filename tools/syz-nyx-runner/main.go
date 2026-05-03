@@ -859,10 +859,8 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if req.Type != flatrpc.RequestTypeProgram {
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
 	}
-	// Current Windows Nyx baseline only supports single-vCPU/single-thread execution
-	// reliably. Keep manager-driven requests on that same lane until the threading
-	// story is implemented end-to-end.
-	execFlags := req.ExecOpts.ExecFlags &^ flatrpc.ExecFlagThreaded
+		// Threaded flag: preserved for both standalone-generic and manager paths
+		execFlags := req.ExecOpts.ExecFlags
 	log.Logf(0, "runner exec request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
 		req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
 	log.Logf(0, "runner exec program: id=%d %s", req.Id, describeExecProgram(req.Data))
@@ -1022,8 +1020,10 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 		return err
 	}
 	enabled := map[*prog.Syscall]bool{meta: true}
-	if va, ok := target.SyscallMap["VirtualAlloc"]; ok {
-		enabled[va] = true
+	for _, name := range []string{"VirtualAlloc", "CloseHandle", "CreateFile2", "ReadFile", "WriteFile", "FlushFileBuffers", "DeleteFileA"} {
+		if s, ok := target.SyscallMap[name]; ok {
+			enabled[s] = true
+		}
 	}
 	ct := target.BuildChoiceTable(nil, enabled)
 	connectReply := &flatrpc.ConnectReply{
@@ -1060,7 +1060,6 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 	seenSignal := make(map[uint64]struct{})
 	for round := 0; round < rounds; round++ {
 		var cur *prog.Prog
-		fmt.Fprintf(os.Stderr, "standalone round=%d begin rounds=%d corpus=%d\n", round+1, rounds, len(corpus))
 		roundSeed := seed + int64(round)
 		if round == 0 {
 			cur = p.Clone()
@@ -1118,10 +1117,10 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*prog.Prog, bool, error) {
 	if meta.Name == "NtQuerySystemInformation" {
 		// Multi-call seed: VirtualAlloc + NtQuerySystemInformation
-		src := []byte("VirtualAlloc(0x0, 0x1000, 0x3000, 0x40)\nNtQuerySystemInformation(0x0, &(0x7f0000000000)=\"\"/4096, 0x1000, &(0x7f0000001000)=0x0)\n")
+		src := []byte("VirtualAlloc(0x0, 0x1000, 0x3000, 0x40)\nNtQuerySystemInformation(0x0, &(0x7f0000000000)=\"\"/4096, 0x1000, &(0x7f0000001000)=0x0) (async)\nCloseHandle(0xffffffffffffffff) (async)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone multi-call bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone 3-call bootstrap program: %w", err)
 		}
 		return p, true, nil
 	}
@@ -1153,7 +1152,7 @@ func main() {
 		standaloneRounds   = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
 		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
 		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
-		standaloneThreaded = flag.Bool("standalone-threaded", false, "set ExecFlagThreaded in standalone mode")
+		standaloneThreaded = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
 	flag.Parse()

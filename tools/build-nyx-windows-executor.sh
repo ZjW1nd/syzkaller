@@ -40,6 +40,7 @@ set -x
 	-I. \
 	-Iexecutor/_include \
 	-DSYZ_NYX_WINDOWS_DEMO=1 \
+	-DSYZ_NYX_USE_GENERIC_PATH=1 \
 	-DGOOS_windows=1 \
 	-DGOARCH_amd64=1 \
 	-DHOSTGOOS_linux=1 \

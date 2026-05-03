@@ -502,12 +502,9 @@ static void parse_handshake(const handshake_req& req);
 static void mmap_input();
 
 #if GOOS_windows
-#include <winsock2.h>
-#include <mswsock.h>
-#include <ws2tcpip.h>
-#include <windows.h>
 #include <bcrypt.h>
 #include <imm.h>
+#include <mswsock.h>
 #include <ncrypt.h>
 #include <ole2.h>
 #include <oleauto.h>
@@ -516,8 +513,11 @@ static void mmap_input();
 #include <shellapi.h>
 #include <urlmon.h>
 #include <wincrypt.h>
+#include <windows.h>
 #include <winscard.h>
+#include <winsock2.h>
 #include <winspool.h>
+#include <ws2tcpip.h>
 #endif
 
 #if GOOS_windows && SYZ_NYX_WINDOWS_DEMO
@@ -623,8 +623,6 @@ static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, 
 #else
 #define MAP_FIXED_EXCLUSIVE MAP_FIXED // The check is not supported.
 #endif
-
-
 
 class CoverAccessScope final
 {
@@ -1184,7 +1182,7 @@ void execute_one()
 				size &= ~(1ull << 63); // readable flag
 #if GOOS_windows
 				nyx_log_exec_stage("copyin_data_begin", (uint64)(uintptr_t)addr, size,
-					       input_pos - input_data);
+						   input_pos - input_data);
 #endif
 				if (input_pos + size > input_data + kMaxInput)
 					fail("data arg overflow");
@@ -1192,7 +1190,7 @@ void execute_one()
 				input_pos += size;
 #if GOOS_windows
 				nyx_log_exec_stage("copyin_data_done", (uint64)(uintptr_t)addr, size,
-					       input_pos - input_data);
+						   input_pos - input_data);
 #endif
 				break;
 			}
@@ -1822,10 +1820,9 @@ static nyx_demo_program_t nyx_demo_parse_program(const uint8* prog_data, uint32 
 	return parsed;
 }
 
-
 static bool nyx_demo_execute_one_call(OutputData* output, const nyx_demo_call_t& call,
-				       uint64 call_index, uint64 req_id,
-				       kafl_syz_cov_cmd_t* cov_cmd, cover_t* dummy)
+				      uint64 call_index, uint64 req_id,
+				      kafl_syz_cov_cmd_t* cov_cmd, cover_t* dummy)
 {
 	if (call.call_num >= ARRAY_SIZE(syscalls))
 		failmsg("demo invalid syscall number", "call_index=%llu call_num=%llu",
@@ -1852,7 +1849,7 @@ static bool nyx_demo_execute_one_call(OutputData* output, const nyx_demo_call_t&
 			    (unsigned long)protect,
 			    (long long)req_id);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)cov_cmd);
-		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
+		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
 		void* result = VirtualAlloc(addr, size, alloc_type, protect);
 		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)cov_cmd);
@@ -1896,9 +1893,9 @@ static bool nyx_demo_execute_one_call(OutputData* output, const nyx_demo_call_t&
 		    (unsigned long long)(uintptr_t)orig_ret_len,
 		    (long long)req_id);
 	nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)cov_cmd);
-	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
 	NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)info_class,
-						 buffer, buffer_size, &ret_len);
+						   buffer, buffer_size, &ret_len);
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 	nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)cov_cmd);
 	if (orig_buf)
@@ -1941,7 +1938,7 @@ static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
 
 	for (uint64 i = 0; i < parsed.num_calls; i++)
 		nyx_demo_execute_one_call(output, parsed.calls[i], i, req_id,
-					   &cov_cmd_local, &dummy);
+					  &cov_cmd_local, &dummy);
 
 	return finish_output(output, proc_id, req_id, (uint32)parsed.num_calls,
 			     (current_time_ms() - exec_start) * 1000 * 1000,
@@ -1957,7 +1954,7 @@ static int nyx_mode_loop(int argc, char** argv)
 	if (!nyx_fetch_host_config(&host_cfg))
 		fail("failed to fetch Nyx host config");
 
-	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 
 	auto* payload = static_cast<kAFL_payload*>(VirtualAlloc(nullptr, host_cfg.payload_buffer_size,
@@ -2088,13 +2085,13 @@ static int nyx_mode_loop(int argc, char** argv)
 		cov_cmd.slot_id = 0;
 		cov_cmd.flags = 0;
 
-#if SYZ_NYX_WINDOWS_DEMO
+#if SYZ_NYX_WINDOWS_DEMO && !SYZ_NYX_USE_GENERIC_PATH
 		nyx_hprintf("nyx demo direct path forced calls=%u prog=%u\n",
 			    msg->num_calls(),
 			    msg->prog_data() ? msg->prog_data()->size() : 0);
 		auto demo_result = nyx_demo_execute_request(output_data, meta->proc_id,
-						    meta->request_id, freshness++,
-						    msg, &cov_cmd);
+							    meta->request_id, freshness++,
+							    msg, &cov_cmd);
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)demo_result.size());
@@ -2209,11 +2206,19 @@ void execute_call(thread_t* th)
 			call->name ? call->name : "<null>");
 #endif
 	nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
-	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, GetCurrentThreadId());
+	{
+		kafl_syz_cov_cmd_t cov_cmd_ = {(uint32)th->call_index, 0, 0};
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd_);
+	}
+	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
 #endif
 	NONFAILING(th->res = execute_syscall(call, th->args));
 #if GOOS_windows
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+	{
+		kafl_syz_cov_cmd_t cov_cmd_ = {(uint32)th->call_index, 0, 0};
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)&cov_cmd_);
+	}
 #if SYZ_NYX_WINDOWS_DEMO
 	demo_finish_syscall(call, th->args);
 #endif

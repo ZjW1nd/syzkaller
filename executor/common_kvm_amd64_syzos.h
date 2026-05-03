@@ -309,7 +309,8 @@ guest_uexit(uint64 exit_code)
 	// We write to X86_SYZOS_ADDR_UEXIT (0x40100).
 	// This allows the L1 hypervisor to reliably read RAX during an EPT violation.
 	volatile uint64* ptr = (volatile uint64*)X86_SYZOS_ADDR_UEXIT;
-	asm volatile("movq %0, (%1)" ::"a"(exit_code), "r"(ptr) : "memory");
+	asm volatile("movq %0, (%1)" ::"a"(exit_code), "r"(ptr)
+		     : "memory");
 }
 
 GUEST_CODE static noinline void guest_handle_cpuid(uint32 eax, uint32 ecx)
@@ -344,7 +345,9 @@ GUEST_CODE static noinline uint64 rdmsr(uint64 msr_id)
 	// The RDMSR instruction takes the MSR address in ecx.
 	// It puts the lower 32 bits of the MSR value into eax, and the upper.
 	// 32 bits of the MSR value into edx.
-	asm volatile("rdmsr" : "=a"(low), "=d"(high) : "c"(msr_id));
+	asm volatile("rdmsr"
+		     : "=a"(low), "=d"(high)
+		     : "c"(msr_id));
 	return ((uint64)high << 32) | low;
 }
 
@@ -362,27 +365,32 @@ GUEST_CODE static noinline void guest_handle_wr_crn(struct api_call_2* cmd)
 	volatile uint64 reg = cmd->args[0];
 	if (reg == 0) {
 		// Move value to CR0.
-		asm volatile("movq %0, %%cr0" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%cr0" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 2) {
 		// Move value to CR2.
-		asm volatile("movq %0, %%cr2" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%cr2" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 3) {
 		// Move value to CR3.
-		asm volatile("movq %0, %%cr3" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%cr3" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 4) {
 		// Move value to CR4.
-		asm volatile("movq %0, %%cr4" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%cr4" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 8) {
 		// Move value to CR8 (TPR - Task Priority Register).
-		asm volatile("movq %0, %%cr8" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%cr8" ::"r"(value)
+			     : "memory");
 		return;
 	}
 }
@@ -393,35 +401,43 @@ GUEST_CODE static noinline void guest_handle_wr_drn(struct api_call_2* cmd)
 	uint64 value = cmd->args[1];
 	volatile uint64 reg = cmd->args[0];
 	if (reg == 0) {
-		asm volatile("movq %0, %%dr0" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr0" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 1) {
-		asm volatile("movq %0, %%dr1" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr1" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 2) {
-		asm volatile("movq %0, %%dr2" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr2" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 3) {
-		asm volatile("movq %0, %%dr3" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr3" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 4) {
-		asm volatile("movq %0, %%dr4" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr4" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 5) {
-		asm volatile("movq %0, %%dr5" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr5" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 6) {
-		asm volatile("movq %0, %%dr6" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr6" ::"r"(value)
+			     : "memory");
 		return;
 	}
 	if (reg == 7) {
-		asm volatile("movq %0, %%dr7" ::"r"(value) : "memory");
+		asm volatile("movq %0, %%dr7" ::"r"(value)
+			     : "memory");
 		return;
 	}
 }
@@ -435,19 +451,25 @@ GUEST_CODE static noinline void guest_handle_in_dx(struct api_call_2* cmd)
 	if (size == 1) {
 		uint8 unused;
 		// Reads 1 byte from the port in DX into AL.
-		asm volatile("inb %1, %0" : "=a"(unused) : "d"(port));
+		asm volatile("inb %1, %0"
+			     : "=a"(unused)
+			     : "d"(port));
 		return;
 	}
 	if (size == 2) {
 		uint16 unused;
 		// Reads 2 bytes from the port in DX into AX.
-		asm volatile("inw %1, %0" : "=a"(unused) : "d"(port));
+		asm volatile("inw %1, %0"
+			     : "=a"(unused)
+			     : "d"(port));
 		return;
 	}
 	if (size == 4) {
 		uint32 unused;
 		// Reads 4 bytes from the port in DX into EAX.
-		asm volatile("inl %1, %0" : "=a"(unused) : "d"(port));
+		asm volatile("inl %1, %0"
+			     : "=a"(unused)
+			     : "d"(port));
 	}
 	return;
 }
@@ -540,27 +562,32 @@ GUEST_CODE static cpu_vendor_id get_cpu_vendor(void)
 GUEST_CODE static inline uint64 read_cr0(void)
 {
 	uint64 val;
-	asm volatile("mov %%cr0, %0" : "=r"(val));
+	asm volatile("mov %%cr0, %0"
+		     : "=r"(val));
 	return val;
 }
 
 GUEST_CODE static inline uint64 read_cr3(void)
 {
 	uint64 val;
-	asm volatile("mov %%cr3, %0" : "=r"(val));
+	asm volatile("mov %%cr3, %0"
+		     : "=r"(val));
 	return val;
 }
 
 GUEST_CODE static inline uint64 read_cr4(void)
 {
 	uint64 val;
-	asm volatile("mov %%cr4, %0" : "=r"(val));
+	asm volatile("mov %%cr4, %0"
+		     : "=r"(val));
 	return val;
 }
 
 GUEST_CODE static inline void write_cr4(uint64 val)
 {
-	asm volatile("mov %0, %%cr4" : : "r"(val));
+	asm volatile("mov %0, %%cr4"
+		     :
+		     : "r"(val));
 }
 
 GUEST_CODE static noinline void vmwrite(uint64 field, uint64 value)
@@ -650,7 +677,9 @@ nested_enable_vmx_intel(uint64 cpu_id)
 	if ((feature_control & 1) == 0) {
 		// If unlocked, set Lock bit (bit 0) and Enable VMX outside SMX bit (bit 2).
 		feature_control |= 0b101;
-		asm volatile("wrmsr" : : "d"(0x0), "c"(X86_MSR_IA32_FEATURE_CONTROL), "A"(feature_control));
+		asm volatile("wrmsr"
+			     :
+			     : "d"(0x0), "c"(X86_MSR_IA32_FEATURE_CONTROL), "A"(feature_control));
 	}
 
 	// Store revision ID at the beginning of VMXON.
@@ -1060,8 +1089,10 @@ __attribute__((naked)) GUEST_CODE static void nested_vm_exit_handler_intel_asm(v
       jmp after_vmentry_label
 	)"
 
-		     : : [l2_regs_size] "i"(sizeof(struct l2_guest_regs)),
-			 [vm_exit_reason] "i"(VMCS_VM_EXIT_REASON) : "memory", "cc", "rbx", "rdi", "rsi");
+		     :
+		     : [l2_regs_size] "i"(sizeof(struct l2_guest_regs)),
+		       [vm_exit_reason] "i"(VMCS_VM_EXIT_REASON)
+		     : "memory", "cc", "rbx", "rdi", "rsi");
 }
 
 #define VMEXIT_RDTSC 0x6e
@@ -1315,8 +1346,10 @@ GUEST_CODE static noinline void init_vmcb_guest_state(uint64 cpu_id, uint64 vm_i
 		uint16 limit;
 		uint64 base;
 	} __attribute__((packed)) gdtr, idtr;
-	asm volatile("sgdt %0" : "=m"(gdtr));
-	asm volatile("sidt %0" : "=m"(idtr));
+	asm volatile("sgdt %0"
+		     : "=m"(gdtr));
+	asm volatile("sidt %0"
+		     : "=m"(idtr));
 	vmcb_write64(vmcb_addr, VMCB_GUEST_GDTR_BASE, gdtr.base);
 	vmcb_write32(vmcb_addr, VMCB_GUEST_GDTR_LIM, gdtr.limit);
 	vmcb_write64(vmcb_addr, VMCB_GUEST_IDTR_BASE, idtr.base);
@@ -1767,7 +1800,10 @@ guest_handle_nested_amd_invlpga(struct api_call_2* cmd, uint64 cpu_id)
 	// ASID (Address Space ID) - only lower 16 bits matter usually, but register is 32-bit.
 	uint32 asid = (uint32)cmd->args[1];
 
-	asm volatile("invlpga" : : "a"(linear_addr), "c"(asid) : "memory");
+	asm volatile("invlpga"
+		     :
+		     : "a"(linear_addr), "c"(asid)
+		     : "memory");
 }
 
 GUEST_CODE static noinline void
@@ -1775,7 +1811,8 @@ guest_handle_nested_amd_stgi()
 {
 	if (get_cpu_vendor() != CPU_VENDOR_AMD)
 		return;
-	asm volatile("stgi" ::: "memory");
+	asm volatile("stgi" ::
+			 : "memory");
 }
 
 GUEST_CODE static noinline void
@@ -1783,7 +1820,8 @@ guest_handle_nested_amd_clgi()
 {
 	if (get_cpu_vendor() != CPU_VENDOR_AMD)
 		return;
-	asm volatile("clgi" ::: "memory");
+	asm volatile("clgi" ::
+			 : "memory");
 }
 
 GUEST_CODE static noinline void
@@ -1845,7 +1883,8 @@ guest_handle_nested_amd_vmload(struct api_call_1* cmd, uint64 cpu_id)
 	uint64 vm_id = cmd->arg;
 	uint64 vmcb_pa = X86_SYZOS_ADDR_VMCS_VMCB(cpu_id, vm_id);
 
-	asm volatile("vmload %%rax" ::"a"(vmcb_pa) : "memory");
+	asm volatile("vmload %%rax" ::"a"(vmcb_pa)
+		     : "memory");
 }
 
 GUEST_CODE static noinline void
@@ -1856,7 +1895,8 @@ guest_handle_nested_amd_vmsave(struct api_call_1* cmd, uint64 cpu_id)
 	uint64 vm_id = cmd->arg;
 	uint64 vmcb_pa = X86_SYZOS_ADDR_VMCS_VMCB(cpu_id, vm_id);
 
-	asm volatile("vmsave %%rax" ::"a"(vmcb_pa) : "memory");
+	asm volatile("vmsave %%rax" ::"a"(vmcb_pa)
+		     : "memory");
 }
 
 #endif // EXECUTOR_COMMON_KVM_AMD64_SYZOS_H

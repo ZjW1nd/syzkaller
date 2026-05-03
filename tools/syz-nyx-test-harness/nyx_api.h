@@ -1,8 +1,8 @@
 #pragma once
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdarg.h>
 
 #define HYPERCALL_KAFL_RAX_ID 0x01f
 #define HYPERCALL_KAFL_ACQUIRE 0
@@ -64,7 +64,10 @@ typedef struct {
 static inline uint64_t kAFL_hypercall(uint64_t p1, uint64_t p2)
 {
 	uint64_t nr = HYPERCALL_KAFL_RAX_ID;
-	asm volatile("vmcall" : "=a"(nr) : "a"(nr), "b"(p1), "c"(p2) : "memory");
+	asm volatile("vmcall"
+		     : "=a"(nr)
+		     : "a"(nr), "b"(p1), "c"(p2)
+		     : "memory");
 	return nr;
 }
 

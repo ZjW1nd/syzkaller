@@ -43,7 +43,10 @@ struct nla_policy {
 	};
 };
 
-#define NLA_POLICY_NESTED(policy) {.type = NLA_NESTED, .nested_policy = policy, .len = sizeof(policy) / sizeof(policy[0])}
+#define NLA_POLICY_NESTED(policy)                                                                      \
+	{                                                                                              \
+		.type = NLA_NESTED, .nested_policy = policy, .len = sizeof(policy) / sizeof(policy[0]) \
+	}
 
 #define GENL_ADMIN_PERM 0x01
 #define GENL_UNS_ADMIN_PERM 0x10
