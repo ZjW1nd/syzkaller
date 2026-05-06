@@ -9,29 +9,46 @@ NTSTATUS NTAPI NtCreateFile(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS
 NTSTATUS NTAPI NtReadFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG, PLARGE_INTEGER, PULONG);
 NTSTATUS NTAPI NtWriteFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, PVOID, ULONG, PLARGE_INTEGER, PULONG);
 NTSTATUS NTAPI NtFsControlFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID, PIO_STATUS_BLOCK, ULONG, PVOID, ULONG, PVOID, ULONG);
+NTSTATUS NTAPI NtDelayExecution(BOOLEAN, PLARGE_INTEGER);
+NTSTATUS NTAPI NtYieldExecution();
+NTSTATUS NTAPI NtQueryTimerResolution(PULONG, PULONG, PULONG);
+NTSTATUS NTAPI NtSetTimerResolution(ULONG, BOOLEAN, PULONG);
+NTSTATUS NTAPI NtQuerySystemTime(PLARGE_INTEGER);
+NTSTATUS NTAPI NtQueryPerformanceCounter(PLARGE_INTEGER, PLARGE_INTEGER);
+NTSTATUS NTAPI NtPowerInformation(POWER_INFORMATION_LEVEL, PVOID, ULONG, PVOID, ULONG);
+NTSTATUS NTAPI NtFlushInstructionCache(HANDLE, PVOID, ULONG);
+NTSTATUS NTAPI NtFlushWriteBuffer();
+NTSTATUS NTAPI NtQueryDefaultLocale(BOOLEAN, PLCID);
+NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 }
 
-// NTFS syscall IDs (after syz-sysgen)
-// Actual indices depend on sorted sys/windows/*.txt — placeholders below
-#define W32_VIRTUALALLOC 2654
-#define W32_NTQINFO_PROC 1794
-#define W32_NTQINFO_SYS 1795
-#define W32_NTSETINFO_PROC 1796
-#define W32_NTCREATEFILE 1800
-#define W32_NTREADFILE 1801
-#define W32_NTWRITEFILE 1802
-#define W32_NTCLOSE 1803
-// Win32 file I/O — indices computed from syscalls.h line positions
-// offset = line - 71528 (windows section start); idx = offset - 4
+// NTFS syscall IDs — from prog.GetTarget("windows","amd64").SyscallMap
+// Generated: go build ./tools/idxcheck/ && /tmp/idxcheck
+#define W32_VIRTUALALLOC 2665
+#define W32_NTQINFO_PROC 1800
+#define W32_NTQINFO_SYS 1802
+#define W32_NTSETINFO_PROC 1805
+#define W32_NTDELAYEXEC 1794
+#define W32_NTYIELDEXEC 1807
+#define W32_NTQUERYTIMERRES 1804
+#define W32_NTSETTIMERRES 1806
+#define W32_NTQUERYSYSTIME 1803
+#define W32_NTQUERYPERFCTR 1801
+#define W32_NTPOWERINFO 1797
+#define W32_NTFLUSHICACHE 1795
+#define W32_NTFLUSHWBUF 1796
+#define W32_NTQUERYDEFLOCALE 1798
+#define W32_NTQUERYDEFUILANG 1799
+// Win32 file I/O
 #define W32_CLOSEHANDLE 294
 #define W32_CREATEFILE2 381
 #define W32_DELETEFILEA 639
 #define W32_FLUSHFILEBUFFERS 883
-#define W32_READFILE 1944
-#define W32_SETFILEINFOBYHANDLE 2330
-#define W32_WRITEFILE 2752
+#define W32_READFILE 1955
+#define W32_SETFILEINFOBYHANDLE 2341
+#define W32_WRITEFILE 2763
 
-static call_t syscalls[2756];
+static call_t syscalls[2800];
 
 static void init_demo_syscalls()
 {
@@ -50,4 +67,16 @@ static void init_demo_syscalls()
 	syscalls[W32_READFILE] = call_t{"ReadFile", 0, {}, (syscall_t)ReadFile};
 	syscalls[W32_SETFILEINFOBYHANDLE] = call_t{"SetFileInformationByHandle", 0, {}, (syscall_t)SetFileInformationByHandle};
 	syscalls[W32_WRITEFILE] = call_t{"WriteFile", 0, {}, (syscall_t)WriteFile};
+	// New no-context NT syscalls
+	syscalls[W32_NTDELAYEXEC] = call_t{"NtDelayExecution", 0, {}, (syscall_t)NtDelayExecution};
+	syscalls[W32_NTYIELDEXEC] = call_t{"NtYieldExecution", 0, {}, (syscall_t)NtYieldExecution};
+	syscalls[W32_NTQUERYTIMERRES] = call_t{"NtQueryTimerResolution", 0, {}, (syscall_t)NtQueryTimerResolution};
+	syscalls[W32_NTSETTIMERRES] = call_t{"NtSetTimerResolution", 0, {}, (syscall_t)NtSetTimerResolution};
+	syscalls[W32_NTQUERYSYSTIME] = call_t{"NtQuerySystemTime", 0, {}, (syscall_t)NtQuerySystemTime};
+	syscalls[W32_NTQUERYPERFCTR] = call_t{"NtQueryPerformanceCounter", 0, {}, (syscall_t)NtQueryPerformanceCounter};
+	syscalls[W32_NTPOWERINFO] = call_t{"NtPowerInformation", 0, {}, (syscall_t)NtPowerInformation};
+	syscalls[W32_NTFLUSHICACHE] = call_t{"NtFlushInstructionCache", 0, {}, (syscall_t)NtFlushInstructionCache};
+	syscalls[W32_NTFLUSHWBUF] = call_t{"NtFlushWriteBuffer", 0, {}, (syscall_t)NtFlushWriteBuffer};
+	syscalls[W32_NTQUERYDEFLOCALE] = call_t{"NtQueryDefaultLocale", 0, {}, (syscall_t)NtQueryDefaultLocale};
+	syscalls[W32_NTQUERYDEFUILANG] = call_t{"NtQueryDefaultUILanguage", 0, {}, (syscall_t)NtQueryDefaultUILanguage};
 }

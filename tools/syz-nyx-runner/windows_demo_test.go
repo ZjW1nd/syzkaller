@@ -46,8 +46,18 @@ func loadDemoSyscallTable(t *testing.T) map[string]int {
 	if err != nil {
 		t.Fatalf("read demo syscall table: %v", err)
 	}
-	re := regexp.MustCompile(`syscalls\[(\d+)\]\s*=\s*call_t\{\"([^\"]+)\"`)
-	matches := re.FindAllStringSubmatch(string(data), -1)
+	src := string(data)
+	defines := make(map[string]int)
+	defineRe := regexp.MustCompile(`#define\s+(W32_[A-Z0-9_]+)\s+(\d+)`)
+	for _, match := range defineRe.FindAllStringSubmatch(src, -1) {
+		id, err := strconv.Atoi(match[2])
+		if err != nil {
+			t.Fatalf("parse syscall ID %q: %v", match[2], err)
+		}
+		defines[match[1]] = id
+	}
+	re := regexp.MustCompile(`syscalls\[(W32_[A-Z0-9_]+|\d+)\]\s*=\s*call_t\{\"([^\"]+)\"`)
+	matches := re.FindAllStringSubmatch(src, -1)
 	if len(matches) == 0 {
 		t.Fatalf("no demo syscall entries found in %s", path)
 	}
@@ -55,7 +65,11 @@ func loadDemoSyscallTable(t *testing.T) map[string]int {
 	for _, match := range matches {
 		id, err := strconv.Atoi(match[1])
 		if err != nil {
-			t.Fatalf("parse syscall ID %q: %v", match[1], err)
+			var ok bool
+			id, ok = defines[match[1]]
+			if !ok {
+				t.Fatalf("unknown syscall macro %q in %s", match[1], path)
+			}
 		}
 		table[match[2]] = id
 	}
@@ -125,9 +139,36 @@ func TestStandaloneBootstrapProgramForNtQuerySystemInformation(t *testing.T) {
 	if !bootstrap {
 		t.Fatal("NtQuerySystemInformation should use deterministic bootstrap program")
 	}
+	wantCalls := []struct {
+		name  string
+		async bool
+	}{
+		{"VirtualAlloc", false},
+		{"NtQuerySystemInformation", false},
+		{"NtQueryTimerResolution", false},
+		{"NtQuerySystemTime", false},
+		{"NtQueryPerformanceCounter", false},
+		{"NtDelayExecution", true},
+		{"CloseHandle", true},
+		{"NtYieldExecution", true},
+		{"NtFlushWriteBuffer", true},
+	}
+	if len(p.Calls) != len(wantCalls) {
+		t.Fatalf("bootstrap program has %d calls, want %d", len(p.Calls), len(wantCalls))
+	}
+	for i, want := range wantCalls {
+		if got := p.Calls[i].Meta.Name; got != want.name {
+			t.Fatalf("bootstrap call[%d] = %q, want %q", i, got, want.name)
+		}
+		if got := p.Calls[i].Props.Async; got != want.async {
+			t.Fatalf("bootstrap call[%d] async=%v, want %v", i, got, want.async)
+		}
+	}
 	serialized := string(p.Serialize())
-	if !strings.Contains(serialized, "NtQuerySystemInformation(0x0, &(0x7f0000000000)") ||
-		!strings.Contains(serialized, "0x1000") {
+	if !strings.Contains(serialized, "NtQuerySystemInformation(") ||
+		!strings.Contains(serialized, "NtDelayExecution(") ||
+		!strings.Contains(serialized, "0xfffffffffff85ee0") ||
+		!strings.Contains(serialized, "NtFlushWriteBuffer() (async)") {
 		t.Fatalf("unexpected bootstrap program:\n%s", serialized)
 	}
 	execData, err := p.SerializeForExec()
@@ -138,11 +179,13 @@ func TestStandaloneBootstrapProgramForNtQuerySystemInformation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DeserializeExec: %v", err)
 	}
-	if len(decoded.Calls) != 1 {
-		t.Fatalf("decoded bootstrap program into %d calls, want 1", len(decoded.Calls))
+	if len(decoded.Calls) != len(wantCalls) {
+		t.Fatalf("decoded bootstrap program into %d calls, want %d", len(decoded.Calls), len(wantCalls))
 	}
-	if decoded.Calls[0].Meta == nil || decoded.Calls[0].Meta.Name != "NtQuerySystemInformation" {
-		t.Fatalf("decoded bootstrap call mismatch: %#v", decoded.Calls[0].Meta)
+	for i, want := range wantCalls {
+		if decoded.Calls[i].Meta == nil || decoded.Calls[i].Meta.Name != want.name {
+			t.Fatalf("decoded bootstrap call[%d] mismatch: got %#v want %q", i, decoded.Calls[i].Meta, want.name)
+		}
 	}
 }
 
@@ -275,25 +318,40 @@ func TestNyxModeLoopLogsBeforeHandshakeDecode(t *testing.T) {
 	}
 }
 
+func assertNoNyxLoggingBetweenAcquireAndRelease(t *testing.T, src string) {
+	t.Helper()
+	const acquireNeedle = "nyx_hypercall(HYPERCALL_KAFL_ACQUIRE,"
+	const releaseNeedle = "nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);"
+	found := 0
+	for start := 0; start < len(src); {
+		acquireRel := strings.Index(src[start:], acquireNeedle)
+		if acquireRel == -1 {
+			break
+		}
+		acquire := start + acquireRel
+		releaseRel := strings.Index(src[acquire:], releaseNeedle)
+		if releaseRel == -1 {
+			t.Fatal("Nyx RELEASE hypercall not found after ACQUIRE")
+		}
+		window := src[acquire : acquire+releaseRel]
+		if strings.Contains(window, "nyx_hprintf(") || strings.Contains(window, "nyx_log_exec_stage(") {
+			t.Fatal("executor contains Nyx logging between ACQUIRE and RELEASE")
+		}
+		found++
+		start = acquire + releaseRel + len(releaseNeedle)
+	}
+	if found == 0 {
+		t.Fatal("Nyx ACQUIRE hypercall not found in executor.cc")
+	}
+}
+
 func TestExecutorAvoidsNyxHprintfBetweenAcquireAndRelease(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read executor.cc: %v", err)
 	}
-	src := string(data)
-	acquire := strings.Index(src, "nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);")
-	if acquire == -1 {
-		t.Fatal("Nyx ACQUIRE hypercall not found in executor.cc")
-	}
-	releaseRel := strings.Index(src[acquire:], "nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);")
-	if releaseRel == -1 {
-		t.Fatal("Nyx RELEASE hypercall not found after ACQUIRE in executor.cc")
-	}
-	window := src[acquire : acquire+releaseRel]
-	if strings.Contains(window, "nyx_hprintf(") || strings.Contains(window, "nyx_log_exec_stage(") {
-		t.Fatal("executor contains Nyx logging between ACQUIRE and RELEASE")
-	}
+	assertNoNyxLoggingBetweenAcquireAndRelease(t, string(data))
 }
 
 func TestExecutePathsAvoidNyxHprintf(t *testing.T) {
@@ -304,17 +362,19 @@ func TestExecutePathsAvoidNyxHprintf(t *testing.T) {
 	}
 	src := string(data)
 	body := extractFunctionBody(t, src, "void execute_call(thread_t* th)")
-	acquire := strings.Index(body, "nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, 0);")
-	if acquire == -1 {
-		t.Fatal("execute_call ACQUIRE hypercall not found")
+	assertNoNyxLoggingBetweenAcquireAndRelease(t, body)
+	if !strings.Contains(body, "GetCurrentThreadId()") {
+		t.Fatal("execute_call ACQUIRE path does not capture the current thread ID")
 	}
-	releaseRel := strings.Index(body[acquire:], "nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);")
-	if releaseRel == -1 {
-		t.Fatal("execute_call RELEASE hypercall not found after ACQUIRE")
+	if !strings.Contains(body, "__readgsqword(0x30)") {
+		t.Fatal("execute_call ACQUIRE path does not capture the thread TEB")
 	}
-	window := body[acquire : acquire+releaseRel]
-	if strings.Contains(window, "nyx_hprintf(") || strings.Contains(window, "nyx_log_exec_stage(") {
-		t.Fatal("execute_call should not log between ACQUIRE and RELEASE")
+	release := strings.Index(body, "nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);")
+	if release == -1 {
+		t.Fatal("execute_call RELEASE hypercall not found")
+	}
+	if strings.Contains(body[release:], "HYPERCALL_KAFL_SYZ_COV_DUMP") {
+		t.Fatal("execute_call should rely on RELEASE handling for per-call coverage dump")
 	}
 }
 

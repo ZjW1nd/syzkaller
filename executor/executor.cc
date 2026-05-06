@@ -2215,10 +2215,7 @@ void execute_call(thread_t* th)
 	NONFAILING(th->res = execute_syscall(call, th->args));
 #if GOOS_windows
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
-	{
-		kafl_syz_cov_cmd_t cov_cmd_ = {(uint32)th->call_index, 0, 0};
-		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)&cov_cmd_);
-	}
+	// Per-call coverage is dumped by the RELEASE handler in QEMU.
 #if SYZ_NYX_WINDOWS_DEMO
 	demo_finish_syscall(call, th->args);
 #endif

@@ -81,9 +81,8 @@ static bool demo_prepare_syscall(const call_t* c, intptr_t a[kMaxArgs])
 static void demo_finish_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {
 	if (!demo_ntqsi_state.active || !c->name ||
-	    strcmp(c->name, "NtQuerySystemInformation") != 0) {
+	    strcmp(c->name, "NtQuerySystemInformation") != 0)
 		return;
-	}
 
 	ULONG buf_size = static_cast<ULONG>(a[2]);
 	if (demo_ntqsi_state.orig_buf && demo_ntqsi_state.tmp_buf)

@@ -3,7 +3,30 @@
 include <windows.h>
 include <winternl.h>
 
+type LARGE_INTEGER int64
+
 # System information — native NT syscalls
 NtQuerySystemInformation(SystemInformationClass int32, SystemInformation ptr[inout, array[int8]], SystemInformationLength len[SystemInformation], ReturnLength ptr[inout, int32])
 NtQueryInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation], ReturnLength ptr[inout, int32])
 NtSetInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation])
+
+# Timer / wait — no handles needed
+NtDelayExecution(Alertable bool32, Interval ptr[in, LARGE_INTEGER])
+NtYieldExecution()
+NtQueryTimerResolution(MinimumResolution ptr[out, int32], MaximumResolution ptr[out, int32], ActualResolution ptr[out, int32])
+NtSetTimerResolution(DesiredResolution int32, SetResolution bool32, ActualResolution ptr[out, int32])
+
+# Timekeeping
+NtQuerySystemTime(SystemTime ptr[out, LARGE_INTEGER])
+NtQueryPerformanceCounter(PerformanceCount ptr[out, LARGE_INTEGER], PerformanceFrequency ptr[out, LARGE_INTEGER])
+
+# Power management
+NtPowerInformation(InformationLevel int32, InputBuffer ptr[in, array[int8]], InputBufferLength int32, OutputBuffer ptr[out, array[int8]], OutputBufferLength int32)
+
+# Cache / buffer — for current process
+NtFlushInstructionCache(ProcessHandle HANDLE, BaseAddress ptr[in, LARGE_INTEGER], FlushSize int32)
+NtFlushWriteBuffer()
+
+# Locale
+NtQueryDefaultLocale(UserProfile bool32, DefaultLocaleId ptr[out, int32])
+NtQueryDefaultUILanguage(DefaultUILanguageId ptr[out, int32])

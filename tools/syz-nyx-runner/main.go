@@ -73,34 +73,34 @@ func (m *multiFlag) Set(value string) error {
 
 func reorderArgsForFlags(args []string) []string {
 	takesValue := map[string]bool{
-		"-qemu-path":           true,
-		"-image":               true,
-		"-workdir":             true,
-		"-payload-size":        true,
-		"-bitmap-size":         true,
-		"-memory":              true,
-		"-hard-timeout":        true,
-		"-standalone-syscall":  true,
-		"-standalone-seed":     true,
-		"-standalone-rounds":   true,
-		"-standalone-syscall-timeout-ms": true,
-		"-standalone-program-timeout-ms": true,
-		"-vv":                  true,
-		"-qemu-arg":            true,
-		"--qemu-path":          true,
-		"--image":              true,
-		"--workdir":            true,
-		"--payload-size":       true,
-		"--bitmap-size":        true,
-		"--memory":             true,
-		"--hard-timeout":       true,
-		"--standalone-syscall": true,
-		"--standalone-seed":    true,
-		"--standalone-rounds":  true,
+		"-qemu-path":                      true,
+		"-image":                          true,
+		"-workdir":                        true,
+		"-payload-size":                   true,
+		"-bitmap-size":                    true,
+		"-memory":                         true,
+		"-hard-timeout":                   true,
+		"-standalone-syscall":             true,
+		"-standalone-seed":                true,
+		"-standalone-rounds":              true,
+		"-standalone-syscall-timeout-ms":  true,
+		"-standalone-program-timeout-ms":  true,
+		"-vv":                             true,
+		"-qemu-arg":                       true,
+		"--qemu-path":                     true,
+		"--image":                         true,
+		"--workdir":                       true,
+		"--payload-size":                  true,
+		"--bitmap-size":                   true,
+		"--memory":                        true,
+		"--hard-timeout":                  true,
+		"--standalone-syscall":            true,
+		"--standalone-seed":               true,
+		"--standalone-rounds":             true,
 		"--standalone-syscall-timeout-ms": true,
 		"--standalone-program-timeout-ms": true,
-		"--vv":                 true,
-		"--qemu-arg":           true,
+		"--vv":                            true,
+		"--qemu-arg":                      true,
 	}
 	var flags []string
 	var pos []string
@@ -256,11 +256,11 @@ type nyxVM struct {
 	payloadSize int
 	bitmapSize  int
 
-	qemuPath string
-	qemuArgs []string
-	image    string
-	memoryMB int
-	debug    bool
+	qemuPath    string
+	qemuArgs    []string
+	image       string
+	memoryMB    int
+	debug       bool
 	hardTimeout time.Duration
 
 	payloadFile *os.File
@@ -859,8 +859,8 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if req.Type != flatrpc.RequestTypeProgram {
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
 	}
-		// Threaded flag: preserved for both standalone-generic and manager paths
-		execFlags := req.ExecOpts.ExecFlags
+	// Threaded flag: preserved for both standalone-generic and manager paths
+	execFlags := req.ExecOpts.ExecFlags
 	log.Logf(0, "runner exec request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
 		req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
 	log.Logf(0, "runner exec program: id=%d %s", req.Id, describeExecProgram(req.Data))
@@ -1020,7 +1020,11 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 		return err
 	}
 	enabled := map[*prog.Syscall]bool{meta: true}
-	for _, name := range []string{"VirtualAlloc", "CloseHandle", "CreateFile2", "ReadFile", "WriteFile", "FlushFileBuffers", "DeleteFileA"} {
+	for _, name := range []string{"VirtualAlloc", "CloseHandle", "CreateFile2", "ReadFile", "WriteFile", "FlushFileBuffers", "DeleteFileA",
+		"NtDelayExecution", "NtYieldExecution", "NtQueryTimerResolution", "NtSetTimerResolution",
+		"NtQuerySystemTime", "NtQueryPerformanceCounter", "NtPowerInformation",
+		"NtFlushInstructionCache", "NtFlushWriteBuffer",
+		"NtQueryDefaultLocale", "NtQueryDefaultUILanguage"} {
 		if s, ok := target.SyscallMap[name]; ok {
 			enabled[s] = true
 		}
@@ -1116,11 +1120,21 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 
 func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*prog.Prog, bool, error) {
 	if meta.Name == "NtQuerySystemInformation" {
-		// Multi-call seed: VirtualAlloc + NtQuerySystemInformation
-		src := []byte("VirtualAlloc(0x0, 0x1000, 0x3000, 0x40)\nNtQuerySystemInformation(0x0, &(0x7f0000000000)=\"\"/4096, 0x1000, &(0x7f0000001000)=0x0) (async)\nCloseHandle(0xffffffffffffffff) (async)\n")
+		// Keep one async worker blocked long enough to encourage a real
+		// scheduler handoff and exercise the per-thread PT path.
+		src := []byte(
+			"VirtualAlloc(0x0, 0x1000, 0x3000, 0x40)\n" +
+				"NtQuerySystemInformation(0x0, &(0x7f0000000000)=\"\"/4096, 0x1000, &(0x7f0000001000)=0x0)\n" +
+				"NtQueryTimerResolution(&(0x7f0000002000)=0x0, &(0x7f0000002004)=0x0, &(0x7f0000002008)=0x0)\n" +
+				"NtQuerySystemTime(&(0x7f0000002010)=0x0)\n" +
+				"NtQueryPerformanceCounter(&(0x7f0000002020)=0x0, &(0x7f0000002030)=0x0)\n" +
+				"NtDelayExecution(0x0, &(0x7f0000002040)=0xfffffffffff85ee0) (async)\n" +
+				"CloseHandle(0xffffffffffffffff) (async)\n" +
+				"NtYieldExecution() (async)\n" +
+				"NtFlushWriteBuffer() (async)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone 3-call bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone 9-call bootstrap program: %w", err)
 		}
 		return p, true, nil
 	}
@@ -1137,22 +1151,22 @@ func main() {
 
 	var qemuArgs multiFlag
 	var (
-		qemuPath           = flag.String("qemu-path", "", "qemu binary path")
-		image              = flag.String("image", "", "boot image path")
-		workdir            = flag.String("workdir", "", "nyx runner workdir")
-		purge              = flag.Bool("purge", false, "remove the existing workdir before starting")
-		hardTimeout        = flag.Duration("hard-timeout", 3*time.Minute, "Nyx/KVM hard timeout fallback (max 255s)")
-		payloadSize        = flag.Int("payload-size", int(flatrpc.ConstMaxInputSize)+4, "nyx payload buffer size")
-		bitmapSize         = flag.Int("bitmap-size", 0x10000, "nyx bitmap size")
-		memoryMB           = flag.Int("memory", 2048, "guest memory size in MB")
-		debug              = flag.Bool("debug", false, "inherit qemu stdout/stderr")
-		standalone         = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
-		standaloneSyscall  = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
-		standaloneSeed     = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
-		standaloneRounds   = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
+		qemuPath                   = flag.String("qemu-path", "", "qemu binary path")
+		image                      = flag.String("image", "", "boot image path")
+		workdir                    = flag.String("workdir", "", "nyx runner workdir")
+		purge                      = flag.Bool("purge", false, "remove the existing workdir before starting")
+		hardTimeout                = flag.Duration("hard-timeout", 3*time.Minute, "Nyx/KVM hard timeout fallback (max 255s)")
+		payloadSize                = flag.Int("payload-size", int(flatrpc.ConstMaxInputSize)+4, "nyx payload buffer size")
+		bitmapSize                 = flag.Int("bitmap-size", 0x10000, "nyx bitmap size")
+		memoryMB                   = flag.Int("memory", 2048, "guest memory size in MB")
+		debug                      = flag.Bool("debug", false, "inherit qemu stdout/stderr")
+		standalone                 = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
+		standaloneSyscall          = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
+		standaloneSeed             = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
+		standaloneRounds           = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
 		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
 		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
-		standaloneThreaded = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
+		standaloneThreaded         = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
 	flag.Parse()
