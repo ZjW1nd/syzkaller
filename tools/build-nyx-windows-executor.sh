@@ -15,6 +15,46 @@ command -v "$CXX" >/dev/null 2>&1 || {
 mkdir -p ./bin/windows_amd64
 
 REV="${REV:-manual}"
+NYX_WINDOWS_DEMO="${NYX_WINDOWS_DEMO:-0}"
+NYX_WINDOWS_SPARSE_TABLE="${NYX_WINDOWS_SPARSE_TABLE:-1}"
+NYX_USE_GENERIC_PATH="${NYX_USE_GENERIC_PATH:-1}"
+NYX_WINDOWS_SUBMIT_CR3="${NYX_WINDOWS_SUBMIT_CR3:-1}"
+
+case "$NYX_WINDOWS_DEMO" in
+	0|1)
+		;;
+	*)
+		echo "[ERR] NYX_WINDOWS_DEMO must be 0 or 1, got: $NYX_WINDOWS_DEMO" >&2
+		exit 1
+		;;
+esac
+
+case "$NYX_WINDOWS_SPARSE_TABLE" in
+	0|1)
+		;;
+	*)
+		echo "[ERR] NYX_WINDOWS_SPARSE_TABLE must be 0 or 1, got: $NYX_WINDOWS_SPARSE_TABLE" >&2
+		exit 1
+		;;
+esac
+
+case "$NYX_USE_GENERIC_PATH" in
+	0|1)
+		;;
+	*)
+		echo "[ERR] NYX_USE_GENERIC_PATH must be 0 or 1, got: $NYX_USE_GENERIC_PATH" >&2
+		exit 1
+		;;
+esac
+
+case "$NYX_WINDOWS_SUBMIT_CR3" in
+	0|1)
+		;;
+	*)
+		echo "[ERR] NYX_WINDOWS_SUBMIT_CR3 must be 0 or 1, got: $NYX_WINDOWS_SUBMIT_CR3" >&2
+		exit 1
+		;;
+esac
 
 set -x
 "$CXX" -o ./bin/windows_amd64/syz-executor.exe executor/executor.cc \
@@ -39,8 +79,10 @@ set -x
 	-Wl,--disable-dynamicbase \
 	-I. \
 	-Iexecutor/_include \
-	-DSYZ_NYX_WINDOWS_DEMO=1 \
-	-DSYZ_NYX_USE_GENERIC_PATH=1 \
+	-DSYZ_NYX_WINDOWS_DEMO="$NYX_WINDOWS_DEMO" \
+	-DSYZ_NYX_WINDOWS_SPARSE_TABLE="$NYX_WINDOWS_SPARSE_TABLE" \
+	-DSYZ_NYX_USE_GENERIC_PATH="$NYX_USE_GENERIC_PATH" \
+	-DSYZ_NYX_WINDOWS_SUBMIT_CR3="$NYX_WINDOWS_SUBMIT_CR3" \
 	-DGOOS_windows=1 \
 	-DGOARCH_amd64=1 \
 	-DHOSTGOOS_linux=1 \

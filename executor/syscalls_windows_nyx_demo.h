@@ -1,4 +1,4 @@
-// Minimal sparse syscall table for the Windows Nyx demo pipeline.
+// Minimal sparse syscall table for the Windows Nyx pipeline.
 // The indices must match the IDs in prog.GetTarget("windows", "amd64").
 
 #include <winternl.h>
@@ -24,33 +24,37 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 
 // NTFS syscall IDs — from prog.GetTarget("windows","amd64").SyscallMap
 // Generated: go build ./tools/idxcheck/ && /tmp/idxcheck
-#define W32_VIRTUALALLOC 2665
-#define W32_NTQINFO_PROC 1800
-#define W32_NTQINFO_SYS 1802
-#define W32_NTSETINFO_PROC 1805
+#define W32_VIRTUALALLOC 2668
+#define W32_NTQINFO_PROC 1801
+#define W32_NTQINFO_SYS 1803
+#define W32_NTSETINFO_PROC 1807
 #define W32_NTDELAYEXEC 1794
-#define W32_NTYIELDEXEC 1807
-#define W32_NTQUERYTIMERRES 1804
-#define W32_NTSETTIMERRES 1806
-#define W32_NTQUERYSYSTIME 1803
-#define W32_NTQUERYPERFCTR 1801
-#define W32_NTPOWERINFO 1797
+#define W32_NTYIELDEXEC 1810
+#define W32_NTQUERYTIMERRES 1805
+#define W32_NTSETTIMERRES 1808
+#define W32_NTQUERYSYSTIME 1804
+#define W32_NTQUERYPERFCTR 1802
+#define W32_NTPOWERINFO 1798
 #define W32_NTFLUSHICACHE 1795
 #define W32_NTFLUSHWBUF 1796
-#define W32_NTQUERYDEFLOCALE 1798
-#define W32_NTQUERYDEFUILANG 1799
+#define W32_NTQUERYDEFLOCALE 1799
+#define W32_NTQUERYDEFUILANG 1800
+#define W32_NTFSCONTROLFILE 1797
+#define W32_NTREADFILE 1806
+#define W32_NTWRITEFILE 1809
 // Win32 file I/O
 #define W32_CLOSEHANDLE 294
+#define W32_CREATEFILEA 382
 #define W32_CREATEFILE2 381
 #define W32_DELETEFILEA 639
 #define W32_FLUSHFILEBUFFERS 883
-#define W32_READFILE 1955
-#define W32_SETFILEINFOBYHANDLE 2341
-#define W32_WRITEFILE 2763
+#define W32_READFILE 1958
+#define W32_SETFILEINFOBYHANDLE 2344
+#define W32_WRITEFILE 2766
 
 static call_t syscalls[2800];
 
-static void init_demo_syscalls()
+static void init_nyx_syscalls()
 {
 	static bool initialized;
 	if (initialized)
@@ -61,6 +65,7 @@ static void init_demo_syscalls()
 	syscalls[W32_NTQINFO_SYS] = call_t{"NtQuerySystemInformation", 0, {}, (syscall_t)NtQuerySystemInformation};
 	syscalls[W32_NTSETINFO_PROC] = call_t{"NtSetInformationProcess", 0, {}, (syscall_t)NtSetInformationProcess};
 	syscalls[W32_CLOSEHANDLE] = call_t{"CloseHandle", 0, {}, (syscall_t)CloseHandle};
+	syscalls[W32_CREATEFILEA] = call_t{"CreateFileA", 0, {}, (syscall_t)CreateFileA};
 	syscalls[W32_CREATEFILE2] = call_t{"CreateFile2", 0, {}, (syscall_t)CreateFile2};
 	syscalls[W32_DELETEFILEA] = call_t{"DeleteFileA", 0, {}, (syscall_t)DeleteFileA};
 	syscalls[W32_FLUSHFILEBUFFERS] = call_t{"FlushFileBuffers", 0, {}, (syscall_t)FlushFileBuffers};
@@ -79,4 +84,7 @@ static void init_demo_syscalls()
 	syscalls[W32_NTFLUSHWBUF] = call_t{"NtFlushWriteBuffer", 0, {}, (syscall_t)NtFlushWriteBuffer};
 	syscalls[W32_NTQUERYDEFLOCALE] = call_t{"NtQueryDefaultLocale", 0, {}, (syscall_t)NtQueryDefaultLocale};
 	syscalls[W32_NTQUERYDEFUILANG] = call_t{"NtQueryDefaultUILanguage", 0, {}, (syscall_t)NtQueryDefaultUILanguage};
+	syscalls[W32_NTFSCONTROLFILE] = call_t{"NtFsControlFile", 0, {}, (syscall_t)NtFsControlFile};
+	syscalls[W32_NTREADFILE] = call_t{"NtReadFile", 0, {}, (syscall_t)NtReadFile};
+	syscalls[W32_NTWRITEFILE] = call_t{"NtWriteFile", 0, {}, (syscall_t)NtWriteFile};
 }

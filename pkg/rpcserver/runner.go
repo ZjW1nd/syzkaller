@@ -174,7 +174,13 @@ func (runner *Runner) ConnectionLoop() error {
 			default:
 			}
 		}
-		for len(runner.requests)-len(runner.executing) < 2*runner.procs {
+		// Keep only a small bounded number of total in-flight requests. If we only
+		// bound the "queued but not yet executing" window, runners that promptly
+		// acknowledge ExecutingMessage can accumulate an arbitrarily long tail of
+		// already-issued requests. That defeats fuzzer-side priority queues
+		// (notably triage/deflake) because new high-priority requests cannot
+		// preempt the long tail until it fully drains.
+		for len(runner.requests) < 2*runner.procs {
 			req := runner.source.Next(runner.id)
 			if req == nil {
 				break
@@ -406,6 +412,7 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 	delete(runner.requests, msg.Id)
 	delete(runner.executing, msg.Id)
 	if req.Type == flatrpc.RequestTypeProgram && msg.Info != nil {
+		rawSignals, rawCover, rawNonEmpty := summarizeProgInfo(msg.Info)
 		for len(msg.Info.Calls) < len(req.Prog.Calls) {
 			msg.Info.Calls = append(msg.Info.Calls, &flatrpc.CallInfo{
 				Error: 999,
@@ -435,6 +442,12 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 			// filtered out.
 			addFallbackSignal(req.Prog, msg.Info)
 		}
+		if runner.sysTarget != nil && runner.sysTarget.OS == targets.Windows {
+			postSignals, postCover, postNonEmpty := summarizeProgInfo(msg.Info)
+			log.Logf(0, "rpcserver exec result: id=%d calls=%d raw_nonempty=%d raw_signal=%d raw_cover=%d post_nonempty=%d post_signal=%d post_cover=%d hanged=%v",
+				msg.Id, len(msg.Info.Calls), rawNonEmpty, rawSignals, rawCover,
+				postNonEmpty, postSignals, postCover, msg.Hanged)
+		}
 	}
 	status := queue.Success
 	var resErr error
@@ -460,6 +473,23 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 		Err:    resErr,
 	})
 	return nil
+}
+
+func summarizeProgInfo(info *flatrpc.ProgInfo) (signal, cover, nonEmpty int) {
+	if info == nil {
+		return 0, 0, 0
+	}
+	for _, call := range info.Calls {
+		if call == nil {
+			continue
+		}
+		signal += len(call.Signal)
+		cover += len(call.Cover)
+		if len(call.Signal) != 0 || len(call.Cover) != 0 {
+			nonEmpty++
+		}
+	}
+	return signal, cover, nonEmpty
 }
 
 func (runner *Runner) convertCallInfo(call *flatrpc.CallInfo) {

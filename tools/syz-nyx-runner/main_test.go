@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/syzkaller/pkg/flatrpc"
 )
@@ -109,7 +110,7 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 		},
 	}
 
-	if err := injectCoverage(req, execMsg, false, path); err != nil {
+	if err := injectCoverage(req, execMsg, false, false, path); err != nil {
 		t.Fatalf("injectCoverage failed: %v", err)
 	}
 	if got := res.Info.Calls[0].Cover; len(got) != 2 || got[0] != 0x10 || got[1] != 0x20 {
@@ -126,6 +127,24 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 	}
 	if got := res.Info.Calls[2].Signal; len(got) != 2 || got[0] != 0x30 || got[1] != 0x40 {
 		t.Fatalf("call 2 signal mismatch: %#v", got)
+	}
+}
+
+func TestNormalizeWindowsNyxEnvFlags(t *testing.T) {
+	raw := flatrpc.ExecEnvSandboxAndroid |
+		flatrpc.ExecEnvEnableNetReset |
+		flatrpc.ExecEnvEnableCgroups |
+		flatrpc.ExecEnvEnableCloseFds |
+		flatrpc.ExecEnvEnableWifi |
+		flatrpc.ExecEnvDelayKcovMmap |
+		flatrpc.ExecEnvExtraCover |
+		flatrpc.ExecEnvDebug
+	got := normalizeWindowsNyxEnvFlags(raw)
+	want := flatrpc.ExecEnvDebug |
+		flatrpc.ExecEnvSignal |
+		flatrpc.ExecEnvSandboxNone
+	if got != want {
+		t.Fatalf("normalized env mismatch: got 0x%x want 0x%x", uint64(got), uint64(want))
 	}
 }
 
@@ -156,5 +175,57 @@ func TestReorderArgsForFlags(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("arg %d mismatch: got %q want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestDeriveHardTimeoutUsesProgramTimeout(t *testing.T) {
+	got := deriveHardTimeout(5000, 3*time.Minute)
+	want := 15 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestDeriveHardTimeoutHonorsFallbackUpperBound(t *testing.T) {
+	got := deriveHardTimeout(120000, 1*time.Minute)
+	want := 1 * time.Minute
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestDeriveHardTimeoutFallsBackWithoutProgramTimeout(t *testing.T) {
+	got := deriveHardTimeout(0, 45*time.Second)
+	want := 45 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestExecResultHanged(t *testing.T) {
+	hanged := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
+			Value: &flatrpc.ExecResult{
+				Hanged: true,
+			},
+		},
+	}
+	if !execResultHanged(hanged) {
+		t.Fatal("expected hanged exec result to be detected")
+	}
+	ok := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
+			Value: &flatrpc.ExecResult{
+				Hanged: false,
+			},
+		},
+	}
+	if execResultHanged(ok) {
+		t.Fatal("unexpected hanged detection for successful exec result")
+	}
+	if execResultHanged(nil) {
+		t.Fatal("nil message must not be treated as hanged")
 	}
 }

@@ -4,6 +4,7 @@
 package fuzzer
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
@@ -120,4 +121,46 @@ func TestDeflake(t *testing.T) {
 			assert.ElementsMatch(t, info.newStableSignal.ToRaw(), test.Info.newStableSignal.ToRaw())
 		})
 	}
+}
+
+type recordingExecutor struct {
+	submitted chan *queue.Request
+	result    *queue.Result
+}
+
+func (e *recordingExecutor) Submit(req *queue.Request) {
+	e.submitted <- req
+	req.Done(e.result)
+}
+
+func TestTriageExecuteSignalsReadyAfterSubmit(t *testing.T) {
+	exec := &recordingExecutor{
+		submitted: make(chan *queue.Request, 1),
+		result:    &queue.Result{Status: queue.Hanged},
+	}
+	job := &triageJob{
+		fuzzer: &Fuzzer{
+			ctx:    context.Background(),
+			Config: &Config{},
+			Cover:  newCover(),
+		},
+		queue: exec,
+		ready: make(chan struct{}),
+		info:  &JobInfo{},
+	}
+	req := &queue.Request{}
+	done := make(chan struct{})
+	go func() {
+		job.execute(req, progInTriage)
+		close(done)
+	}()
+
+	<-job.ready
+	select {
+	case got := <-exec.submitted:
+		assert.Same(t, req, got)
+	default:
+		t.Fatal("triage request was not submitted before ready was signaled")
+	}
+	<-done
 }

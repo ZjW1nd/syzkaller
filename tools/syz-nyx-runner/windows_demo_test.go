@@ -1,10 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -76,6 +78,45 @@ func loadDemoSyscallTable(t *testing.T) map[string]int {
 	return table
 }
 
+func loadWindowsNyxConfigSyscalls(t *testing.T) []string {
+	t.Helper()
+	path := filepath.Join("windows-nyx-none.cfg")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read windows nyx config: %v", err)
+	}
+	var cfg struct {
+		EnabledSyscalls  []string `json:"enable_syscalls"`
+		NoMutateSyscalls []string `json:"no_mutate_syscalls"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse windows nyx config: %v", err)
+	}
+	if len(cfg.EnabledSyscalls) == 0 {
+		t.Fatalf("windows nyx config %s has no enable_syscalls", path)
+	}
+	return cfg.EnabledSyscalls
+}
+
+func loadWindowsNyxNoMutateSyscalls(t *testing.T) []string {
+	t.Helper()
+	path := filepath.Join("windows-nyx-none.cfg")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read windows nyx config: %v", err)
+	}
+	var cfg struct {
+		NoMutateSyscalls []string `json:"no_mutate_syscalls"`
+	}
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse windows nyx config: %v", err)
+	}
+	if len(cfg.NoMutateSyscalls) == 0 {
+		t.Fatalf("windows nyx config %s has no no_mutate_syscalls", path)
+	}
+	return cfg.NoMutateSyscalls
+}
+
 func TestWindowsDemoSyscallTableMatchesTargetIDs(t *testing.T) {
 	table := loadDemoSyscallTable(t)
 	target, err := prog.GetTarget("windows", "amd64")
@@ -89,6 +130,34 @@ func TestWindowsDemoSyscallTableMatchesTargetIDs(t *testing.T) {
 		}
 		if meta.ID != wantID {
 			t.Fatalf("demo syscall %q has target ID %d, want %d", name, meta.ID, wantID)
+		}
+	}
+}
+
+func TestWindowsNyxConfigSyscallsPresentInSparseTable(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range loadWindowsNyxConfigSyscalls(t) {
+		if _, ok := table[name]; !ok {
+			t.Fatalf("windows nyx config syscall %q missing from sparse Nyx table", name)
+		}
+		if target.SyscallMap[name] == nil {
+			t.Fatalf("windows nyx config syscall %q missing from windows/amd64 target", name)
+		}
+	}
+}
+
+func TestWindowsNyxNoMutateSyscallsPresentInEnabledSet(t *testing.T) {
+	enabled := make(map[string]bool)
+	for _, name := range loadWindowsNyxConfigSyscalls(t) {
+		enabled[name] = true
+	}
+	for _, name := range loadWindowsNyxNoMutateSyscalls(t) {
+		if !enabled[name] {
+			t.Fatalf("no_mutate syscall %q is not enabled in windows nyx config", name)
 		}
 	}
 }
@@ -120,6 +189,22 @@ func TestWindowsDemoExecEncodingUsesTargetIDs(t *testing.T) {
 		if got := decoded.Calls[0].Meta.ID; got != wantID {
 			t.Fatalf("decoded %s with target ID %d, want %d", name, got, wantID)
 		}
+	}
+}
+
+func TestNyxQueryCR3TargetsCurrentProcess(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "nyx_windows.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read nyx_windows.h: %v", err)
+	}
+	src := string(data)
+	body := extractFunctionBody(t, src, "static bool nyx_query_cr3(uint64_t* out_cr3)")
+	if !strings.Contains(body, "GetCurrentProcessId()") {
+		t.Fatalf("nyx_query_cr3 should target the current process PID, body:\n%s", body)
+	}
+	if strings.Contains(body, "nyx_system_pid()") {
+		t.Fatalf("nyx_query_cr3 still references nyx_system_pid(), body:\n%s", body)
 	}
 }
 
@@ -223,6 +308,50 @@ func TestStandaloneBootstrapProgramFitsReferenceNyxPayload(t *testing.T) {
 	}
 }
 
+func TestStandaloneNtFsControlFileProgramUsesHandleCreator(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range []string{"NtFsControlFile", "NtReadFile", "NtWriteFile"} {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("%s missing from windows/amd64 target", name)
+		}
+		p, bootstrap, err := standaloneProgram(target, meta, 1)
+		if err != nil {
+			t.Fatalf("standaloneProgram(%s): %v", name, err)
+		}
+		if !bootstrap {
+			t.Fatalf("%s should use deterministic bootstrap program", name)
+		}
+		serialized := string(p.Serialize())
+		if !strings.Contains(serialized, name+"(") {
+			t.Fatalf("generated program does not contain %s:\n%s", name, serialized)
+		}
+		if !strings.Contains(serialized, "CreateFileA(") {
+			t.Fatalf("generated program does not contain CreateFileA handle creator for %s:\n%s", name, serialized)
+		}
+	}
+}
+
+func TestFilterCoveragePCsDropsUserAddressesOn64BitKernel(t *testing.T) {
+	pcs := []uint64{
+		0xfffff8059d89c200,
+		0x7ffca8583534,
+		0,
+		0xfffff8059d89c234,
+	}
+	got := filterCoveragePCs(slices.Clone(pcs), true)
+	want := []uint64{
+		0xfffff8059d89c200,
+		0xfffff8059d89c234,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("filterCoveragePCs() = %#x, want %#x", got, want)
+	}
+}
+
 func TestExecutorInitializesInputDataBeforeNyxPreview(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
@@ -316,6 +445,54 @@ func TestNyxModeLoopLogsBeforeHandshakeDecode(t *testing.T) {
 	if rootLog < rootCall {
 		t.Fatal("Nyx handshake root-parsed log appears before GetRoot call")
 	}
+}
+
+func TestNyxModeLoopRequestsReloadAfterResultDump(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "executor.cc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	src := string(data)
+	check := func(label, block string) {
+		t.Helper()
+		dump := strings.Index(block, "nyx_dump_exec_result(")
+		if dump == -1 {
+			t.Fatalf("%s: nyx_dump_exec_result not found", label)
+		}
+		reload := strings.Index(block, "nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);")
+		if reload == -1 {
+			t.Fatalf("%s: request-reload hypercall not found", label)
+		}
+		log := strings.Index(block, "nyx_hprintf(\"nyx result dumped request=%lld bytes=%u\\n\"")
+		if log == -1 {
+			t.Fatalf("%s: result-dumped log not found", label)
+		}
+		if !(dump < reload && reload < log) {
+			t.Fatalf("%s: expected dump < request-reload < result-log, got dump=%d reload=%d log=%d",
+				label, dump, reload, log)
+		}
+	}
+
+	demoStart := strings.Index(src, "auto demo_result = nyx_demo_execute_request(")
+	if demoStart == -1 {
+		t.Fatal("demo result block not found in executor.cc")
+	}
+	demoEndRel := strings.Index(src[demoStart:], "continue;")
+	if demoEndRel == -1 {
+		t.Fatal("demo result block end not found in executor.cc")
+	}
+	check("demo", src[demoStart:demoStart+demoEndRel])
+
+	genericStart := strings.Index(src, "auto result = finish_output(")
+	if genericStart == -1 {
+		t.Fatal("generic result block not found in executor.cc")
+	}
+	genericEndRel := strings.Index(src[genericStart:], "}\n}")
+	if genericEndRel == -1 {
+		t.Fatal("generic result block end not found in executor.cc")
+	}
+	check("generic", src[genericStart:genericStart+genericEndRel])
 }
 
 func assertNoNyxLoggingBetweenAcquireAndRelease(t *testing.T, src string) {

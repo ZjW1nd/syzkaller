@@ -131,6 +131,10 @@ func (fuzzer *Fuzzer) execute(executor queue.Executor, req *queue.Request) *queu
 	return fuzzer.executeWithFlags(executor, req, 0)
 }
 
+func (fuzzer *Fuzzer) isWindowsTarget() bool {
+	return fuzzer.target != nil && fuzzer.target.OS == "windows"
+}
+
 func (fuzzer *Fuzzer) executeWithFlags(executor queue.Executor, req *queue.Request, flags ProgFlags) *queue.Result {
 	fuzzer.enqueue(executor, req, flags, 0)
 	return req.Wait(fuzzer.ctx)
@@ -172,6 +176,7 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 				flags:    flags,
 				queue:    queue.Append(),
 				calls:    triage,
+				ready:    make(chan struct{}),
 				info: &JobInfo{
 					Name: req.Prog.String(),
 					Type: "triage",
@@ -181,7 +186,12 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 				job.info.Calls = append(job.info.Calls, job.p.CallName(id))
 			}
 			slices.Sort(job.info.Calls)
+			if fuzzer.isWindowsTarget() {
+				fuzzer.Logf(0, "windows triage job queued: calls=%v flags=0x%x attempt=%d status=%s",
+					job.info.Calls, flags, attempt, res.Status)
+			}
 			fuzzer.startJob(stat, job)
+			<-job.ready
 		}
 	}
 
@@ -237,6 +247,10 @@ func (fuzzer *Fuzzer) triageProgCall(p *prog.Prog, info *flatrpc.CallInfo, call 
 	}
 	prio := signalPrio(p, info, call)
 	newMaxSignal := fuzzer.Cover.addRawMaxSignal(info.Signal, prio)
+	if fuzzer.target != nil && fuzzer.target.OS == "windows" && (len(info.Signal) != 0 || len(info.Cover) != 0) {
+		fuzzer.Logf(0, "windows triage: call=%d name=%s signal=%d cover=%d prio=%d new=%d errno=%d flags=0x%x",
+			call, p.CallName(call), len(info.Signal), len(info.Cover), prio, newMaxSignal.Len(), info.Error, info.Flags)
+	}
 	if newMaxSignal.Empty() {
 		return
 	}
@@ -342,6 +356,14 @@ func (fuzzer *Fuzzer) Next() *queue.Request {
 	if req == nil {
 		// The fuzzer is not supposed to issue nil requests.
 		panic("nil request from the fuzzer")
+	}
+	if fuzzer.isWindowsTarget() && len(req.ReturnAllSignal) != 0 {
+		progCalls := 0
+		if req.Prog != nil {
+			progCalls = len(req.Prog.Calls)
+		}
+		fuzzer.Logf(0, "windows source next: prog_calls=%d return_all_signal=%v",
+			progCalls, req.ReturnAllSignal)
 	}
 	return req
 }
@@ -489,6 +511,13 @@ func DefaultExecOpts(cfg *mgrconfig.Config, features flatrpc.Feature, debug bool
 	exec := flatrpc.ExecFlagThreaded
 	if !cfg.RawCover {
 		exec |= flatrpc.ExecFlagDedupCover
+	}
+	if cfg.TargetOS == "windows" && cfg.VMLess {
+		// The Windows Nyx path only reports PT-derived feedback through the
+		// explicit per-request result channel, so the default Linux-style
+		// "threaded + dedup only" execution would otherwise produce no signal
+		// for regular fuzzing requests after machine-check completes.
+		exec |= flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover
 	}
 	return flatrpc.ExecOpts{
 		EnvFlags:   env,

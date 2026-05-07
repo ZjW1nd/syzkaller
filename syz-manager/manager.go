@@ -1226,16 +1226,24 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 			corpusUpdates, mgr.coverFilters.Areas)
 		mgr.http.Corpus.Store(mgr.corpus)
 
-		rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
-		fuzzerObj := fuzzer.NewFuzzer(context.Background(), &fuzzer.Config{
-			Corpus:         mgr.corpus,
-			Snapshot:       mgr.cfg.Snapshot,
-			Coverage:       mgr.cfg.Cover,
-			FaultInjection: features&flatrpc.FeatureFault != 0,
-			Comparisons:    features&flatrpc.FeatureComparisons != 0,
-			Collide:        true,
-			EnabledCalls:   enabledSyscalls,
-			NoMutateCalls:  mgr.cfg.NoMutateCalls,
+			rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+			collide := true
+			if mgr.cfg.TargetOS == "windows" && mgr.cfg.VMLess {
+				// The current Windows Nyx path still trips over double-exec/async
+				// collide programs that exceed the normal per-program call budget
+				// and can wedge the guest before triage has a chance to run.
+				// Keep the regular single-program fuzzing path enabled first.
+				collide = false
+			}
+			fuzzerObj := fuzzer.NewFuzzer(context.Background(), &fuzzer.Config{
+				Corpus:         mgr.corpus,
+				Snapshot:       mgr.cfg.Snapshot,
+				Coverage:       mgr.cfg.Cover,
+				FaultInjection: features&flatrpc.FeatureFault != 0,
+				Comparisons:    features&flatrpc.FeatureComparisons != 0,
+				Collide:        collide,
+				EnabledCalls:   enabledSyscalls,
+				NoMutateCalls:  mgr.cfg.NoMutateCalls,
 			FetchRawCover:  mgr.cfg.RawCover,
 			Logf: func(level int, msg string, args ...any) {
 				if level != 0 {

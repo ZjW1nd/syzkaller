@@ -2,8 +2,10 @@
 // Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
 #include <bcrypt.h>
+#include <commdlg.h>
 #include <imm.h>
 #include <io.h>
+#include <lzexpand.h>
 #include <mswsock.h>
 #include <ncrypt.h>
 #include <ole2.h>
@@ -35,8 +37,8 @@ static void os_init(int argc, char** argv, void* data, size_t data_size)
 		*(volatile char*)((char*)data + i) = 0;
 }
 
-#if SYZ_NYX_WINDOWS_DEMO
-typedef struct demo_ntqsi_state_t {
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+typedef struct nyx_ntqsi_state_t {
 	bool active;
 	void* orig_buf;
 	ULONG* orig_ret_len;
@@ -44,13 +46,13 @@ typedef struct demo_ntqsi_state_t {
 	ULONG tmp_ret_len;
 	intptr_t orig_arg1;
 	intptr_t orig_arg3;
-} demo_ntqsi_state_t;
+} nyx_ntqsi_state_t;
 
-static demo_ntqsi_state_t demo_ntqsi_state;
+static nyx_ntqsi_state_t nyx_ntqsi_state;
 
-static bool demo_prepare_syscall(const call_t* c, intptr_t a[kMaxArgs])
+static bool nyx_prepare_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {
-	memset(&demo_ntqsi_state, 0, sizeof(demo_ntqsi_state));
+	memset(&nyx_ntqsi_state, 0, sizeof(nyx_ntqsi_state));
 	if (!c->name || strcmp(c->name, "NtQuerySystemInformation") != 0)
 		return false;
 
@@ -58,45 +60,45 @@ static bool demo_prepare_syscall(const call_t* c, intptr_t a[kMaxArgs])
 	ULONG buf_size = static_cast<ULONG>(a[2]);
 	auto* orig_ret_len = reinterpret_cast<ULONG*>(a[3]);
 
-	demo_ntqsi_state.orig_buf = orig_buf;
-	demo_ntqsi_state.orig_ret_len = orig_ret_len;
-	demo_ntqsi_state.orig_arg1 = a[1];
-	demo_ntqsi_state.orig_arg3 = a[3];
-	demo_ntqsi_state.tmp_ret_len = orig_ret_len ? *orig_ret_len : 0;
+	nyx_ntqsi_state.orig_buf = orig_buf;
+	nyx_ntqsi_state.orig_ret_len = orig_ret_len;
+	nyx_ntqsi_state.orig_arg1 = a[1];
+	nyx_ntqsi_state.orig_arg3 = a[3];
+	nyx_ntqsi_state.tmp_ret_len = orig_ret_len ? *orig_ret_len : 0;
 
 	if (orig_buf && buf_size) {
-		demo_ntqsi_state.tmp_buf =
+		nyx_ntqsi_state.tmp_buf =
 		    VirtualAlloc(nullptr, buf_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-		if (!demo_ntqsi_state.tmp_buf)
+		if (!nyx_ntqsi_state.tmp_buf)
 			return false;
-		memcpy(demo_ntqsi_state.tmp_buf, orig_buf, buf_size);
+		memcpy(nyx_ntqsi_state.tmp_buf, orig_buf, buf_size);
 	}
 
-	a[1] = reinterpret_cast<intptr_t>(demo_ntqsi_state.tmp_buf);
-	a[3] = orig_ret_len ? reinterpret_cast<intptr_t>(&demo_ntqsi_state.tmp_ret_len) : 0;
-	demo_ntqsi_state.active = true;
+	a[1] = reinterpret_cast<intptr_t>(nyx_ntqsi_state.tmp_buf);
+	a[3] = orig_ret_len ? reinterpret_cast<intptr_t>(&nyx_ntqsi_state.tmp_ret_len) : 0;
+	nyx_ntqsi_state.active = true;
 	return true;
 }
 
-static void demo_finish_syscall(const call_t* c, intptr_t a[kMaxArgs])
+static void nyx_finish_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {
-	if (!demo_ntqsi_state.active || !c->name ||
+	if (!nyx_ntqsi_state.active || !c->name ||
 	    strcmp(c->name, "NtQuerySystemInformation") != 0)
 		return;
 
 	ULONG buf_size = static_cast<ULONG>(a[2]);
-	if (demo_ntqsi_state.orig_buf && demo_ntqsi_state.tmp_buf)
-		memcpy(demo_ntqsi_state.orig_buf, demo_ntqsi_state.tmp_buf, buf_size);
-	if (demo_ntqsi_state.orig_ret_len)
-		*demo_ntqsi_state.orig_ret_len = demo_ntqsi_state.tmp_ret_len;
-	if (demo_ntqsi_state.tmp_buf)
-		VirtualFree(demo_ntqsi_state.tmp_buf, 0, MEM_RELEASE);
-	a[1] = demo_ntqsi_state.orig_arg1;
-	a[3] = demo_ntqsi_state.orig_arg3;
-	memset(&demo_ntqsi_state, 0, sizeof(demo_ntqsi_state));
+	if (nyx_ntqsi_state.orig_buf && nyx_ntqsi_state.tmp_buf)
+		memcpy(nyx_ntqsi_state.orig_buf, nyx_ntqsi_state.tmp_buf, buf_size);
+	if (nyx_ntqsi_state.orig_ret_len)
+		*nyx_ntqsi_state.orig_ret_len = nyx_ntqsi_state.tmp_ret_len;
+	if (nyx_ntqsi_state.tmp_buf)
+		VirtualFree(nyx_ntqsi_state.tmp_buf, 0, MEM_RELEASE);
+	a[1] = nyx_ntqsi_state.orig_arg1;
+	a[3] = nyx_ntqsi_state.orig_arg3;
+	memset(&nyx_ntqsi_state, 0, sizeof(nyx_ntqsi_state));
 }
 
-static intptr_t execute_demo_syscall(const call_t* c, intptr_t a[kMaxArgs])
+static intptr_t execute_nyx_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {
 	if (c->name && strcmp(c->name, "NtQuerySystemInformation") == 0) {
 		return NtQuerySystemInformation(static_cast<SYSTEM_INFORMATION_CLASS>(a[0]),
@@ -111,8 +113,8 @@ static intptr_t execute_demo_syscall(const call_t* c, intptr_t a[kMaxArgs])
 
 static intptr_t execute_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {
-#if SYZ_NYX_WINDOWS_DEMO
-	return execute_demo_syscall(c, a);
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+	return execute_nyx_syscall(c, a);
 #elif defined(__GNUC__)
 	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
 #else

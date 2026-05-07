@@ -21,6 +21,7 @@ import (
 	"github.com/google/syzkaller/pkg/csource"
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer/queue"
+	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/pkg/rpcserver"
 	"github.com/google/syzkaller/pkg/testutil"
 	"github.com/google/syzkaller/pkg/vminfo"
@@ -89,6 +90,25 @@ func TestFuzz(t *testing.T) {
 	for _, p := range fuzzer.Config.Corpus.Programs() {
 		t.Logf("-----")
 		t.Logf("%s", p.Serialize())
+	}
+}
+
+func TestDefaultExecOptsWindowsVMLessCollectsFeedback(t *testing.T) {
+	cfg := &mgrconfig.Config{
+		Cover:   true,
+		Sandbox: "none",
+		Derived: mgrconfig.Derived{
+			TargetOS: "windows",
+			VMLess:   true,
+		},
+	}
+	opts := DefaultExecOpts(cfg, flatrpc.FeatureCoverage, false)
+	want := flatrpc.ExecFlagThreaded |
+		flatrpc.ExecFlagDedupCover |
+		flatrpc.ExecFlagCollectSignal |
+		flatrpc.ExecFlagCollectCover
+	if opts.ExecFlags != want {
+		t.Fatalf("unexpected exec flags: got=%v want=%v", opts.ExecFlags, want)
 	}
 }
 

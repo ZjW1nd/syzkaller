@@ -6,19 +6,20 @@ Nyx/QEMU Windows guest that runs `syz-executor exec nyx`.
 Current v1 expectations:
 
 - the Windows guest auto-starts `syz-executor exec nyx`
-- the guest image contains the minimal CR3 helper
+- the guest image may expose the optional CR3 helper; the executor will
+  continue without CR3 submission when it is unavailable
 - the host starts `syz-manager` with `type: "none"` and `reproduce: false`
 - the host starts `syz-nyx-runner` manually
 
-A minimal manager config is provided in `demo-windows-none.cfg`.
+A minimal manager config is provided in `windows-nyx-none.cfg`.
 
 Example:
 
 ```bash
-./bin/syz-manager -config demo.cfg
+./bin/syz-manager -config tools/syz-nyx-runner/windows-nyx-none.cfg
 ./bin/syz-nyx-runner \
   --qemu-path /path/to/qemu-system-x86_64 \
-  --workdir /tmp/syz-nyx-demo \
+  --workdir /tmp/syz-nyx \
   --image /path/to/windows.qcow2 \
   --qemu-arg=-enable-kvm \
   --qemu-arg=-cpu \

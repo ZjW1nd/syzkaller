@@ -37,6 +37,7 @@ const (
 	nyxMiscOffset           = nyxStateOffset + 512
 	nyxResultExecDoneOffset = nyxStateOffset + 1
 	nyxResultExecCodeOffset = nyxStateOffset + 2
+	nyxResultReloadedOffset = nyxStateOffset + 3
 	nyxResultPtOverflowOff  = nyxStateOffset + 4
 	nyxResultPageFaultOff   = nyxStateOffset + 5
 	nyxResultPageAddrOff    = nyxStateOffset + 8
@@ -219,6 +220,7 @@ func (a *qemuAux) misc() []byte {
 func (a *qemuAux) clearTransientResult() {
 	a.data[nyxResultExecDoneOffset] = 0
 	a.data[nyxResultExecCodeOffset] = 0
+	a.data[nyxResultReloadedOffset] = 0
 	a.data[nyxResultPtOverflowOff] = 0
 	a.data[nyxResultPageFaultOff] = 0
 	for i := 0; i < 8; i++ {
@@ -239,6 +241,25 @@ func (a *qemuAux) dumpPage(addr uint64) {
 	a.data[128+256] = 1
 	a.data[128+256+10] = 1
 	binary.LittleEndian.PutUint64(a.data[128+256+11:128+256+19], addr)
+}
+
+func deriveHardTimeout(programTimeoutMs int32, fallback time.Duration) time.Duration {
+	if fallback <= 0 {
+		fallback = 3 * time.Minute
+	}
+	if programTimeoutMs <= 0 {
+		return fallback
+	}
+	programTimeout := time.Duration(programTimeoutMs) * time.Millisecond
+	slack := programTimeout
+	if slack < 10*time.Second {
+		slack = 10 * time.Second
+	}
+	hardTimeout := programTimeout + slack
+	if hardTimeout > fallback {
+		return fallback
+	}
+	return hardTimeout
 }
 
 type nyxVM struct {
@@ -263,6 +284,7 @@ type nyxVM struct {
 	debug       bool
 	hardTimeout time.Duration
 
+	ctx         context.Context
 	payloadFile *os.File
 	payloadMM   []byte
 	control     net.Conn
@@ -306,6 +328,7 @@ func alignUp(v, align int) int {
 }
 
 func (vm *nyxVM) start(ctx context.Context) error {
+	vm.ctx = ctx
 	if err := os.MkdirAll(vm.workdir, 0o755); err != nil {
 		return err
 	}
@@ -328,6 +351,15 @@ func (vm *nyxVM) start(ctx context.Context) error {
 			return err
 		}
 		_ = f.Close()
+	}
+	for _, path := range []string{
+		vm.controlPath,
+		vm.auxPath,
+		vm.coverPath,
+		filepath.Join(vm.dumpDir, nyxHandshakeAck),
+		filepath.Join(vm.dumpDir, nyxExecResult),
+	} {
+		_ = os.Remove(path)
 	}
 	for _, file := range []struct {
 		path string
@@ -463,20 +495,36 @@ func (vm *nyxVM) stepUntilReady() error {
 func (vm *nyxVM) close() {
 	if vm.aux != nil {
 		vm.aux.close()
+		vm.aux = nil
 	}
 	if vm.control != nil {
 		_ = vm.control.Close()
+		vm.control = nil
 	}
 	if vm.payloadMM != nil {
 		_ = unix.Munmap(vm.payloadMM)
+		vm.payloadMM = nil
 	}
 	if vm.payloadFile != nil {
 		_ = vm.payloadFile.Close()
+		vm.payloadFile = nil
 	}
 	if vm.process != nil && vm.process.Process != nil {
 		_ = vm.process.Process.Kill()
 		_ = vm.process.Wait()
 	}
+	vm.process = nil
+	_ = os.Remove(vm.controlPath)
+	_ = os.Remove(vm.auxPath)
+}
+
+func (vm *nyxVM) restart() error {
+	ctx := vm.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	vm.close()
+	return vm.start(ctx)
 }
 
 func (vm *nyxVM) runQemu() error {
@@ -632,7 +680,19 @@ func authHash(value uint64) uint64 {
 	return (value * 73856093) ^ 83492791
 }
 
-func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage, coverEdges bool, coverPath string) error {
+func normalizeWindowsNyxEnvFlags(env flatrpc.ExecEnv) flatrpc.ExecEnv {
+	/* The Windows Nyx executor gets per-request coverage from explicit PT
+	 * hypercalls, while executor-side nocover stubs make KCOV feature knobs
+	 * inert. Keep only the handshake bits that are meaningful on Windows and
+	 * pin the sandbox/coverage mode so manager-side Linux feature probing does
+	 * not keep reconfiguring the guest between otherwise identical requests. */
+	const keep = flatrpc.ExecEnvDebug |
+		flatrpc.ExecEnvReadOnlyCoverage |
+		flatrpc.ExecEnvResetState
+	return (env & keep) | flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone
+}
+
+func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage, coverEdges, kernel64Bit bool, coverPath string) error {
 	res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
 	if !ok || res.Info == nil || len(res.Info.Calls) == 0 {
 		return nil
@@ -647,7 +707,11 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage, 
 			return fmt.Errorf("coverage record for call %d out of range (%d calls)",
 				rec.CallIndex, len(res.Info.Calls))
 		}
-		callCover[rec.CallIndex] = append(callCover[rec.CallIndex], rec.PCs...)
+		pcs := filterCoveragePCs(rec.PCs, kernel64Bit)
+		if len(pcs) == 0 {
+			continue
+		}
+		callCover[rec.CallIndex] = append(callCover[rec.CallIndex], pcs...)
 	}
 	for callIndex, pcs := range callCover {
 		call := res.Info.Calls[callIndex]
@@ -659,6 +723,28 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage, 
 		}
 	}
 	return nil
+}
+
+func filterCoveragePCs(pcs []uint64, kernel64Bit bool) []uint64 {
+	if len(pcs) == 0 {
+		return nil
+	}
+	ret := pcs[:0]
+	for _, pc := range pcs {
+		if pc == 0 {
+			continue
+		}
+		if kernel64Bit && !isLikelyKernelPC64(pc) {
+			continue
+		}
+		ret = append(ret, pc)
+	}
+	return ret
+}
+
+func isLikelyKernelPC64(pc uint64) bool {
+	const canonicalKernelBase = 0xffff800000000000
+	return pc >= canonicalKernelBase
 }
 
 func parseCoverageDump(path string) ([]nyxCovDumpRecord, error) {
@@ -791,6 +877,7 @@ type runner struct {
 	handshakeReady bool
 	lastEnvFlags   flatrpc.ExecEnv
 	lastSandboxArg int64
+	needRestart    bool
 }
 
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
@@ -823,6 +910,12 @@ func (r *runner) connect() error {
 	log.Logf(0, "runner connected: cover_edges=%v kernel64=%v slowdown=%d syscall_timeout_ms=%d program_timeout_ms=%d",
 		r.connectReply.CoverEdges, r.connectReply.Kernel64Bit, r.connectReply.Slowdown,
 		r.connectReply.SyscallTimeoutMs, r.connectReply.ProgramTimeoutMs)
+	derivedTimeout := deriveHardTimeout(r.connectReply.ProgramTimeoutMs, r.vm.hardTimeout)
+	if derivedTimeout != r.vm.hardTimeout {
+		log.Logf(0, "runner using derived hard timeout %s (fallback=%s program_timeout_ms=%d)",
+			derivedTimeout, r.vm.hardTimeout, r.connectReply.ProgramTimeoutMs)
+		r.vm.hardTimeout = derivedTimeout
+	}
 	if err := flatrpc.Send(r.conn, &flatrpc.InfoRequest{}); err != nil {
 		return err
 	}
@@ -831,10 +924,12 @@ func (r *runner) connect() error {
 }
 
 func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
-	if r.handshakeReady && r.lastEnvFlags == req.ExecOpts.EnvFlags && r.lastSandboxArg == req.ExecOpts.SandboxArg {
+	envFlags := normalizeWindowsNyxEnvFlags(req.ExecOpts.EnvFlags)
+	if r.handshakeReady && r.lastEnvFlags == envFlags && r.lastSandboxArg == req.ExecOpts.SandboxArg {
 		return nil
 	}
-	log.Logf(0, "runner sending handshake: env_flags=0x%x sandbox_arg=%d", req.ExecOpts.EnvFlags, req.ExecOpts.SandboxArg)
+	log.Logf(0, "runner sending handshake: raw_env=0x%x normalized_env=0x%x sandbox_arg=%d",
+		uint64(req.ExecOpts.EnvFlags), uint64(envFlags), req.ExecOpts.SandboxArg)
 	msg := &flatrpc.SnapshotHandshakeT{
 		CoverEdges:       r.connectReply.CoverEdges,
 		Kernel64Bit:      r.connectReply.Kernel64Bit,
@@ -842,7 +937,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 		SyscallTimeoutMs: r.connectReply.SyscallTimeoutMs,
 		ProgramTimeoutMs: r.connectReply.ProgramTimeoutMs,
 		Features:         r.connectReply.Features,
-		EnvFlags:         req.ExecOpts.EnvFlags,
+		EnvFlags:         envFlags,
 		SandboxArg:       req.ExecOpts.SandboxArg,
 	}
 	if err := r.vm.executeHandshake(packNyxPayload(nyxKindHandshake, nil, packFlatbuffer(msg))); err != nil {
@@ -850,14 +945,39 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	}
 	log.Logf(0, "runner handshake complete")
 	r.handshakeReady = true
-	r.lastEnvFlags = req.ExecOpts.EnvFlags
+	r.lastEnvFlags = envFlags
 	r.lastSandboxArg = req.ExecOpts.SandboxArg
+	return nil
+}
+
+func (r *runner) markForRestart(reason string) {
+	if r.needRestart {
+		return
+	}
+	log.Logf(0, "runner scheduling VM restart: %s", reason)
+	r.needRestart = true
+}
+
+func (r *runner) restartVM(reason string) error {
+	log.Logf(0, "runner restarting VM: %s", reason)
+	if err := r.vm.restart(); err != nil {
+		return err
+	}
+	r.handshakeReady = false
+	r.lastEnvFlags = 0
+	r.lastSandboxArg = 0
+	r.needRestart = false
 	return nil
 }
 
 func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage, error) {
 	if req.Type != flatrpc.RequestTypeProgram {
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
+	}
+	if r.needRestart {
+		if err := r.restartVM("recovering from previous hanged request"); err != nil {
+			return nil, err
+		}
 	}
 	// Threaded flag: preserved for both standalone-generic and manager paths
 	execFlags := req.ExecOpts.ExecFlags
@@ -880,7 +1000,7 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if err != nil {
 		return nil, err
 	}
-	if err := injectCoverage(req, execMsg, r.connectReply.CoverEdges, r.vm.coverPath); err != nil {
+	if err := injectCoverage(req, execMsg, r.connectReply.CoverEdges, r.connectReply.Kernel64Bit, r.vm.coverPath); err != nil {
 		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
 		if ok && res.Hanged && errors.Is(err, os.ErrNotExist) {
 			log.Logf(0, "runner exec hanged and coverage dump is absent; continuing without coverage")
@@ -888,11 +1008,22 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return nil, err
 		}
 	}
+	if execResultHanged(execMsg) {
+		r.markForRestart(fmt.Sprintf("request %d hanged", req.Id))
+	}
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
 		log.Logf(0, "runner exec complete: id=%d calls=%d cover_records=%d",
 			req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
 	}
 	return execMsg, nil
+}
+
+func execResultHanged(msg *flatrpc.ExecutorMessage) bool {
+	if msg == nil || msg.Msg == nil {
+		return false
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	return ok && res.Hanged
 }
 
 func countNonEmptyCover(calls []*flatrpc.CallInfo) int {
@@ -1020,7 +1151,8 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 		return err
 	}
 	enabled := map[*prog.Syscall]bool{meta: true}
-	for _, name := range []string{"VirtualAlloc", "CloseHandle", "CreateFile2", "ReadFile", "WriteFile", "FlushFileBuffers", "DeleteFileA",
+	for _, name := range []string{"VirtualAlloc", "CloseHandle", "CreateFileA", "CreateFile2", "ReadFile", "WriteFile", "FlushFileBuffers", "DeleteFileA",
+		"SetFileInformationByHandle", "NtFsControlFile", "NtReadFile", "NtWriteFile",
 		"NtDelayExecution", "NtYieldExecution", "NtQueryTimerResolution", "NtSetTimerResolution",
 		"NtQuerySystemTime", "NtQueryPerformanceCounter", "NtPowerInformation",
 		"NtFlushInstructionCache", "NtFlushWriteBuffer",
@@ -1138,9 +1270,59 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 		}
 		return p, true, nil
 	}
+	if meta.Name == "NtFsControlFile" {
+		src := []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtFsControlFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, 0x9c040, &(0x7f0000000200)='\\x00'/512, 0x200)\n" +
+				"CloseHandle(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone NtFsControlFile bootstrap program: %w", err)
+		}
+		return p, true, nil
+	}
+	if meta.Name == "NtReadFile" {
+		src := []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-read\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtReadFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)='\\x00'/256, 0x100, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone NtReadFile bootstrap program: %w", err)
+		}
+		return p, true, nil
+	}
+	if meta.Name == "NtWriteFile" {
+		src := []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-write\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtWriteFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)=\"abcd\", 0x4, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone NtWriteFile bootstrap program: %w", err)
+		}
+		return p, true, nil
+	}
 	enabled := map[*prog.Syscall]bool{meta: true}
 	if va, ok := target.SyscallMap["VirtualAlloc"]; ok {
 		enabled[va] = true
+	}
+	switch meta.Name {
+	case "NtReadFile", "NtWriteFile", "NtFsControlFile":
+		for _, name := range []string{
+			"CreateFileA",
+			"CreateFile2",
+			"CloseHandle",
+			"ReadFile",
+			"WriteFile",
+			"FlushFileBuffers",
+			"SetFileInformationByHandle",
+			"DeleteFileA",
+		} {
+			if s, ok := target.SyscallMap[name]; ok {
+				enabled[s] = true
+			}
+		}
 	}
 	ct := target.BuildChoiceTable(nil, enabled)
 	return target.GenSampleProg(meta, mrand.NewSource(seed), ct), false, nil

@@ -46,3 +46,15 @@ func TestDistributor(t *testing.T) {
 	q.Submit(req)
 	assert.Equal(t, req, dist.Next(1))
 }
+
+func TestDistributorIgnoresNeverActiveVMs(t *testing.T) {
+	q := Plain()
+	dist := Distribute(q)
+
+	req := &Request{
+		Avoid: []ExecutorID{{VM: 0}},
+	}
+	q.Submit(req)
+
+	assert.Equal(t, req, dist.Next(0))
+}

@@ -30,6 +30,7 @@
 #define HYPERCALL_KAFL_DUMP_FILE 37
 #define HYPERCALL_KAFL_SYZ_COV_RESET 42
 #define HYPERCALL_KAFL_SYZ_COV_DUMP 43
+#define HYPERCALL_KAFL_REQUEST_RELOAD 44
 
 #define KAFL_MODE_64 0
 #define HPRINTF_MAX_SIZE 0x1000
@@ -162,26 +163,6 @@ static bool nyx_fetch_host_config(nyx_host_config_t* host_config)
 	       host_config->host_version == NYX_HOST_VERSION;
 }
 
-static DWORD nyx_system_pid()
-{
-	DWORD pid = 4;
-	HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-	if (snap == INVALID_HANDLE_VALUE)
-		return pid;
-	PROCESSENTRY32W pe = {};
-	pe.dwSize = sizeof(pe);
-	if (Process32FirstW(snap, &pe)) {
-		do {
-			if (_wcsicmp(pe.szExeFile, L"System") == 0) {
-				pid = pe.th32ProcessID;
-				break;
-			}
-		} while (Process32NextW(snap, &pe));
-	}
-	CloseHandle(snap);
-	return pid;
-}
-
 static bool nyx_query_cr3(uint64_t* out_cr3)
 {
 	HANDLE dev = CreateFileW(FINDCR3_DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
@@ -190,8 +171,8 @@ static bool nyx_query_cr3(uint64_t* out_cr3)
 	if (dev == INVALID_HANDLE_VALUE)
 		return false;
 	DWORD bytes = 0;
-	DWORD system_pid = nyx_system_pid();
-	BOOL ok = DeviceIoControl(dev, IOCTL_SEND_PID, (LPVOID)(ULONG_PTR)system_pid, 0,
+	DWORD current_pid = GetCurrentProcessId();
+	BOOL ok = DeviceIoControl(dev, IOCTL_SEND_PID, (LPVOID)(ULONG_PTR)current_pid, 0,
 				  NULL, 0, &bytes, NULL);
 	if (!ok) {
 		CloseHandle(dev);

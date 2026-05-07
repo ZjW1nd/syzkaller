@@ -503,7 +503,9 @@ static void mmap_input();
 
 #if GOOS_windows
 #include <bcrypt.h>
+#include <commdlg.h>
 #include <imm.h>
+#include <lzexpand.h>
 #include <mswsock.h>
 #include <ncrypt.h>
 #include <ole2.h>
@@ -520,7 +522,7 @@ static void mmap_input();
 #include <ws2tcpip.h>
 #endif
 
-#if GOOS_windows && SYZ_NYX_WINDOWS_DEMO
+#if GOOS_windows && SYZ_NYX_WINDOWS_SPARSE_TABLE
 #include "syscalls_windows_nyx_demo.h"
 #else
 #include "syscalls.h"
@@ -713,10 +715,10 @@ int main(int argc, char** argv)
 	use_temporary_dir();
 	install_segv_handler();
 	current_thread = &threads[0];
-#if SYZ_NYX_WINDOWS_DEMO
-	init_demo_syscalls();
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+		init_nyx_syscalls();
 #endif
-	return nyx_mode_loop(argc, argv);
+		return nyx_mode_loop(argc, argv);
 #else
 	if (strcmp(argv[1], "runner") == 0) {
 		runner(argv, argc);
@@ -989,6 +991,13 @@ void parse_execute(const execute_req& req)
 	flag_dedup_cover = req.exec_flags & (uint64)rpc::ExecFlag::DedupCover;
 	flag_comparisons = req.exec_flags & (uint64)rpc::ExecFlag::CollectComps;
 	flag_threaded = req.exec_flags & (uint64)rpc::ExecFlag::Threaded;
+#if GOOS_windows
+	// The Windows Nyx path sources cover/signal from PT, but it does not yet
+	// provide KCOV-style comparison records. Returning an empty comps vector is
+	// enough for feature probing to mark comparisons unsupported; trying to walk
+	// the nocover-backed buffer here can wedge the guest request path.
+	flag_comparisons = false;
+#endif
 	all_call_signal = req.all_call_signal;
 	all_extra_signal = req.all_extra_signal;
 
@@ -1976,7 +1985,10 @@ static int nyx_mode_loop(int argc, char** argv)
 	if (!nyx_submit_module_range("ntoskrnl.exe"))
 		fail("failed to submit ntoskrnl.exe range");
 
-	nyx_hprintf("nyx executor build marker=20260427b demo=%d\n", (int)SYZ_NYX_WINDOWS_DEMO);
+	nyx_hprintf("nyx executor build marker=20260427b demo=%d sparse=%d generic=%d\n",
+		    (int)SYZ_NYX_WINDOWS_DEMO,
+		    (int)SYZ_NYX_WINDOWS_SPARSE_TABLE,
+		    (int)SYZ_NYX_USE_GENERIC_PATH);
 
 	std::vector<uint8_t> output_mem;
 	uint64_t freshness = 1;
@@ -2026,18 +2038,18 @@ static int nyx_mode_loop(int argc, char** argv)
 				    (unsigned long long)msg->program_timeout_ms());
 			parse_handshake(hs);
 			setup_coverage();
-#if !SYZ_NYX_WINDOWS_DEMO
+	#if SYZ_NYX_WINDOWS_SUBMIT_CR3
 			uint64_t cr3 = 0;
 			if (nyx_query_cr3(&cr3)) {
 				nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
 					    (unsigned long long)cr3);
 				nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
 			} else {
-				nyx_hprintf("nyx handshake query_cr3 failed\n");
+				nyx_hprintf("nyx handshake query_cr3 unavailable\n");
 			}
-#else
-			nyx_hprintf("nyx handshake skipping query_cr3 in demo mode\n");
-#endif
+	#else
+			nyx_hprintf("nyx handshake submit_cr3 disabled at build time\n");
+	#endif
 			have_handshake = true;
 			nyx_hprintf("nyx handshake dumping ack\n");
 			nyx_dump_ack();
@@ -2093,6 +2105,7 @@ static int nyx_mode_loop(int argc, char** argv)
 							    meta->request_id, freshness++,
 							    msg, &cov_cmd);
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
+		nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)demo_result.size());
 		continue;
@@ -2115,6 +2128,7 @@ static int nyx_mode_loop(int argc, char** argv)
 					    (current_time_ms() - exec_start) * 1000 * 1000,
 					    freshness++, 0, false, nullptr);
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+		nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)result.size());
 	}
@@ -2199,11 +2213,11 @@ void execute_call(thread_t* th)
 	th->res = -1;
 	errno = EFAULT;
 #if GOOS_windows
-#if SYZ_NYX_WINDOWS_DEMO
-	if (call->name && strcmp(call->name, "NtQuerySystemInformation") == 0 &&
-	    !demo_prepare_syscall(call, th->args))
-		failmsg("demo_prepare_syscall failed", "call=%d name=%s", th->call_num,
-			call->name ? call->name : "<null>");
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+		if (call->name && strcmp(call->name, "NtQuerySystemInformation") == 0 &&
+		    !nyx_prepare_syscall(call, th->args))
+			failmsg("nyx_prepare_syscall failed", "call=%d name=%s", th->call_num,
+				call->name ? call->name : "<null>");
 #endif
 	nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 	{
@@ -2216,8 +2230,8 @@ void execute_call(thread_t* th)
 #if GOOS_windows
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 	// Per-call coverage is dumped by the RELEASE handler in QEMU.
-#if SYZ_NYX_WINDOWS_DEMO
-	demo_finish_syscall(call, th->args);
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+		nyx_finish_syscall(call, th->args);
 #endif
 	nyx_log_exec_stage("execute_call_post_release", th->id, th->call_num, (uint64)th->res, errno);
 #endif
