@@ -87,4 +87,6 @@ set -x
 	-DGOARCH_amd64=1 \
 	-DHOSTGOOS_linux=1 \
 	-DGIT_REVISION="\"$REV\"" \
-	-lntdll
+	-lntdll \
+	-lws2_32 \
+	-lmswsock

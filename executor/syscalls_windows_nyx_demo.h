@@ -24,35 +24,53 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 
 // NTFS syscall IDs — from prog.GetTarget("windows","amd64").SyscallMap
 // Generated: go build ./tools/idxcheck/ && /tmp/idxcheck
-#define W32_VIRTUALALLOC 2668
-#define W32_NTQINFO_PROC 1801
-#define W32_NTQINFO_SYS 1803
-#define W32_NTSETINFO_PROC 1807
-#define W32_NTDELAYEXEC 1794
-#define W32_NTYIELDEXEC 1810
-#define W32_NTQUERYTIMERRES 1805
-#define W32_NTSETTIMERRES 1808
-#define W32_NTQUERYSYSTIME 1804
-#define W32_NTQUERYPERFCTR 1802
-#define W32_NTPOWERINFO 1798
-#define W32_NTFLUSHICACHE 1795
-#define W32_NTFLUSHWBUF 1796
-#define W32_NTQUERYDEFLOCALE 1799
-#define W32_NTQUERYDEFUILANG 1800
-#define W32_NTFSCONTROLFILE 1797
-#define W32_NTREADFILE 1806
-#define W32_NTWRITEFILE 1809
+#define W32_VIRTUALALLOC 2670
+#define W32_NTQINFO_PROC 1802
+#define W32_NTQINFO_SYS 1804
+#define W32_NTSETINFO_PROC 1808
+#define W32_NTDELAYEXEC 1795
+#define W32_NTYIELDEXEC 1811
+#define W32_NTQUERYTIMERRES 1806
+#define W32_NTSETTIMERRES 1809
+#define W32_NTQUERYSYSTIME 1805
+#define W32_NTQUERYPERFCTR 1803
+#define W32_NTPOWERINFO 1799
+#define W32_NTFLUSHICACHE 1796
+#define W32_NTFLUSHWBUF 1797
+#define W32_NTQUERYDEFLOCALE 1800
+#define W32_NTQUERYDEFUILANG 1801
+#define W32_NTFSCONTROLFILE 1798
+#define W32_NTREADFILE 1807
+#define W32_NTWRITEFILE 1810
 // Win32 file I/O
-#define W32_CLOSEHANDLE 294
-#define W32_CREATEFILEA 382
-#define W32_CREATEFILE2 381
-#define W32_DELETEFILEA 639
-#define W32_FLUSHFILEBUFFERS 883
-#define W32_READFILE 1958
-#define W32_SETFILEINFOBYHANDLE 2344
-#define W32_WRITEFILE 2766
+#define W32_CLOSEHANDLE 295
+#define W32_CREATEFILEA 383
+#define W32_CREATEFILE2 382
+#define W32_DELETEFILEA 640
+#define W32_FLUSHFILEBUFFERS 884
+#define W32_READFILE 1959
+#define W32_SETFILEINFOBYHANDLE 2345
+#define W32_WRITEFILE 2769
+// Winsock / afd.sys user-mode entry points
+#define W32_ACCEPTEX 5
+#define W32_TRANSMITFILE_INET 2603
+#define W32_WSACLEANUP 2715
+#define W32_WSARECVEX 2719
+#define W32_WSASTARTUP 2722
+#define W32_ACCEPT_INET 2782
+#define W32_BIND_INET 2789
+#define W32_CLOSESOCKET_ANY 2791
+#define W32_CONNECT_INET 2793
+#define W32_GETSOCKOPT_INT 2804
+#define W32_IOCTLSOCKET_FIONBIO 2810
+#define W32_LISTEN_INET 2822
+#define W32_RECV_INET 2914
+#define W32_SEND_INET 2918
+#define W32_SETSOCKOPT_INT 2921
+#define W32_SOCKET_INET_TCP 2924
+#define W32_SOCKET_INET_UDP 2925
 
-static call_t syscalls[2800];
+static call_t syscalls[3000];
 
 static void init_nyx_syscalls()
 {
@@ -72,6 +90,23 @@ static void init_nyx_syscalls()
 	syscalls[W32_READFILE] = call_t{"ReadFile", 0, {}, (syscall_t)ReadFile};
 	syscalls[W32_SETFILEINFOBYHANDLE] = call_t{"SetFileInformationByHandle", 0, {}, (syscall_t)SetFileInformationByHandle};
 	syscalls[W32_WRITEFILE] = call_t{"WriteFile", 0, {}, (syscall_t)WriteFile};
+	syscalls[W32_ACCEPTEX] = call_t{"AcceptEx$inet", 0, {}, (syscall_t)AcceptEx};
+	syscalls[W32_TRANSMITFILE_INET] = call_t{"TransmitFile$inet", 0, {}, (syscall_t)TransmitFile};
+	syscalls[W32_WSACLEANUP] = call_t{"WSACleanup", 0, {}, (syscall_t)WSACleanup};
+	syscalls[W32_WSARECVEX] = call_t{"WSARecvEx$inet", 0, {}, (syscall_t)WSARecvEx};
+	syscalls[W32_WSASTARTUP] = call_t{"WSAStartup", 0, {}, (syscall_t)WSAStartup};
+	syscalls[W32_ACCEPT_INET] = call_t{"accept$inet", 0, {}, (syscall_t)accept};
+	syscalls[W32_BIND_INET] = call_t{"bind$inet", 0, {}, (syscall_t)bind};
+	syscalls[W32_CLOSESOCKET_ANY] = call_t{"closesocket$any", 0, {}, (syscall_t)closesocket};
+	syscalls[W32_CONNECT_INET] = call_t{"connect$inet", 0, {}, (syscall_t)connect};
+	syscalls[W32_GETSOCKOPT_INT] = call_t{"getsockopt$int", 0, {}, (syscall_t)getsockopt};
+	syscalls[W32_IOCTLSOCKET_FIONBIO] = call_t{"ioctlsocket$fionbio", 0, {}, (syscall_t)ioctlsocket};
+	syscalls[W32_LISTEN_INET] = call_t{"listen$inet", 0, {}, (syscall_t)listen};
+	syscalls[W32_RECV_INET] = call_t{"recv$inet", 0, {}, (syscall_t)recv};
+	syscalls[W32_SEND_INET] = call_t{"send$inet", 0, {}, (syscall_t)send};
+	syscalls[W32_SETSOCKOPT_INT] = call_t{"setsockopt$int", 0, {}, (syscall_t)setsockopt};
+	syscalls[W32_SOCKET_INET_TCP] = call_t{"socket$inet_tcp", 0, {}, (syscall_t)socket};
+	syscalls[W32_SOCKET_INET_UDP] = call_t{"socket$inet_udp", 0, {}, (syscall_t)socket};
 	// New no-context NT syscalls
 	syscalls[W32_NTDELAYEXEC] = call_t{"NtDelayExecution", 0, {}, (syscall_t)NtDelayExecution};
 	syscalls[W32_NTYIELDEXEC] = call_t{"NtYieldExecution", 0, {}, (syscall_t)NtYieldExecution};

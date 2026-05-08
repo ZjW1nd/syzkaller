@@ -3,8 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -183,6 +188,75 @@ func TestDeriveHardTimeoutUsesProgramTimeout(t *testing.T) {
 	want := 15 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestIsExpectedManagerDisconnect(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "eof", err: io.EOF, want: true},
+		{name: "closed", err: net.ErrClosed, want: true},
+		{name: "epipe", err: fmt.Errorf("wrapped: %w", syscall.EPIPE), want: true},
+		{name: "econnreset", err: fmt.Errorf("wrapped: %w", syscall.ECONNRESET), want: true},
+		{name: "econnaborted", err: fmt.Errorf("wrapped: %w", syscall.ECONNABORTED), want: true},
+		{name: "other", err: errors.New("guest abort"), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isExpectedManagerDisconnect(tc.err); got != tc.want {
+				t.Fatalf("got %v, want %v for %v", got, tc.want, tc.err)
+			}
+		})
+	}
+}
+
+func TestRunnerLoopGracefulOnManagerEOF(t *testing.T) {
+	runnerConn, managerConn := net.Pipe()
+	defer runnerConn.Close()
+	r := &runner{conn: flatrpc.NewConn(runnerConn)}
+	done := make(chan error, 1)
+	go func() {
+		done <- r.loop()
+	}()
+	_ = managerConn.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("loop returned %v, want nil", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for loop to exit after manager EOF")
+	}
+}
+
+func TestRunnerResetForReconnect(t *testing.T) {
+	runnerConn, managerConn := net.Pipe()
+	defer managerConn.Close()
+	r := &runner{
+		conn:           flatrpc.NewConn(runnerConn),
+		connectReply:   &flatrpc.ConnectReply{},
+		handshakeReady: true,
+		lastEnvFlags:   123,
+		lastSandboxArg: 456,
+		needRestart:    true,
+	}
+	r.resetForReconnect()
+	if r.conn != nil {
+		t.Fatal("connection should be cleared")
+	}
+	if r.connectReply != nil {
+		t.Fatal("connectReply should be cleared")
+	}
+	if r.handshakeReady {
+		t.Fatal("handshakeReady should be reset")
+	}
+	if r.lastEnvFlags != 0 || r.lastSandboxArg != 0 {
+		t.Fatalf("handshake cache not reset: env=%v sandbox=%v", r.lastEnvFlags, r.lastSandboxArg)
+	}
+	if !r.needRestart {
+		t.Fatal("needRestart should be preserved across reconnect reset")
 	}
 }
 

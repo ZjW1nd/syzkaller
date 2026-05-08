@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	mrand "math/rand"
 	"net"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	flatbuffers "github.com/google/flatbuffers/go"
@@ -884,6 +886,17 @@ func newRunner(id int, addr, port string, vm *nyxVM) *runner {
 	return &runner{id: id, addr: addr, port: port, vm: vm}
 }
 
+func (r *runner) resetForReconnect() {
+	if r.conn != nil {
+		_ = r.conn.Close()
+		r.conn = nil
+	}
+	r.connectReply = nil
+	r.handshakeReady = false
+	r.lastEnvFlags = 0
+	r.lastSandboxArg = 0
+}
+
 func (r *runner) connect() error {
 	conn, err := net.Dial("tcp", net.JoinHostPort(r.addr, r.port))
 	if err != nil {
@@ -1084,6 +1097,10 @@ func (r *runner) loop() error {
 	for {
 		msg, err := flatrpc.Recv[*flatrpc.HostMessageRaw](r.conn)
 		if err != nil {
+			if isExpectedManagerDisconnect(err) {
+				log.Logf(0, "runner stopping after manager disconnect: %v", err)
+				return nil
+			}
 			return err
 		}
 		switch req := msg.Msg.Value.(type) {
@@ -1096,6 +1113,10 @@ func (r *runner) loop() error {
 				},
 			}
 			if err := flatrpc.Send(r.conn, executing); err != nil {
+				if isExpectedManagerDisconnect(err) {
+					log.Logf(0, "runner stopping after manager disconnect during Executing reply: %v", err)
+					return nil
+				}
 				return err
 			}
 			execMsg, err := r.runRequest(req)
@@ -1113,6 +1134,10 @@ func (r *runner) loop() error {
 				}
 			}
 			if err := flatrpc.Send(r.conn, execMsg); err != nil {
+				if isExpectedManagerDisconnect(err) {
+					log.Logf(0, "runner stopping after manager disconnect during ExecResult reply: %v", err)
+					return nil
+				}
 				return err
 			}
 		case *flatrpc.StateRequest:
@@ -1124,6 +1149,10 @@ func (r *runner) loop() error {
 				},
 			}
 			if err := flatrpc.Send(r.conn, state); err != nil {
+				if isExpectedManagerDisconnect(err) {
+					log.Logf(0, "runner stopping after manager disconnect during State reply: %v", err)
+					return nil
+				}
 				return err
 			}
 		case *flatrpc.SignalUpdate:
@@ -1133,6 +1162,34 @@ func (r *runner) loop() error {
 		default:
 			return fmt.Errorf("unhandled host message %T", req)
 		}
+	}
+}
+
+func isExpectedManagerDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, io.EOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED)
+}
+
+func connectWithRetry(r *runner, retryFor time.Duration) error {
+	deadline := time.Now().Add(retryFor)
+	var lastErr error
+	for {
+		if err := r.connect(); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(deadline) {
+			return lastErr
+		}
+		log.Logf(0, "runner connect failed: %v; retrying", lastErr)
+		time.Sleep(time.Second)
 	}
 }
 
@@ -1303,6 +1360,212 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 		}
 		return p, true, nil
 	}
+	switch meta.Name {
+	case "socket$inet_tcp":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone socket$inet_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "socket$inet_udp":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone socket$inet_udp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "bind$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone bind$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "listen$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone listen$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "connect$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone connect$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "send$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"send$inet(r1, 'abcd', 0x4, 0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone send$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "recv$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"ioctlsocket$fionbio(r2, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
+				"recv$inet(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone recv$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "accept$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"ioctlsocket$fionbio(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone accept$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "ioctlsocket$fionbio":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"ioctlsocket$fionbio(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "AcceptEx$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"AcceptEx$inet(r0, r2, &(0x7f0000000140)='\\x00'/512, 0x0, 0x40, 0x40, &(0x7f0000000340)=0x0, 0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone AcceptEx$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "WSARecvEx$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"send$inet(r1, 'abcd', 0x4, 0x0)\n" +
+				"WSARecvEx$inet(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, &(0x7f0000000200)=0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone WSARecvEx$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "TransmitFile$inet":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet(r0, 0x1)\n" +
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"r3 = CreateFileA(&(0x7f0000000200)='./nyx-txfile\\x00', 0xffffffff, 0x7, 0x0, 0x2, 0x80, 0xffffffffffffffff)\n" +
+				"WriteFile(r3, &(0x7f0000000240)='abcd', 0x4, &(0x7f0000000280)=0x0, 0x0)\n" +
+				"TransmitFile$inet(r2, r3, 0x4, 0x0, 0x0, 0x0, 0x0)\n" +
+				"CloseHandle(r3)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone TransmitFile$inet bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "setsockopt$int":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"setsockopt$int(r0, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone setsockopt$int bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "getsockopt$int":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"getsockopt$int(r0, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone getsockopt$int bootstrap program: %w", err)
+		}
+		return p, true, nil
+	}
 	enabled := map[*prog.Syscall]bool{meta: true}
 	if va, ok := target.SyscallMap["VirtualAlloc"]; ok {
 		enabled[va] = true
@@ -1318,6 +1581,33 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 			"FlushFileBuffers",
 			"SetFileInformationByHandle",
 			"DeleteFileA",
+		} {
+			if s, ok := target.SyscallMap[name]; ok {
+				enabled[s] = true
+			}
+		}
+	case "socket$inet_tcp", "socket$inet_udp", "bind$inet", "listen$inet", "connect$inet", "accept$inet", "send$inet", "recv$inet", "ioctlsocket$fionbio", "AcceptEx$inet", "WSARecvEx$inet", "TransmitFile$inet", "setsockopt$int", "getsockopt$int":
+		for _, name := range []string{
+			"WSAStartup",
+			"WSACleanup",
+			"socket$inet_tcp",
+			"socket$inet_udp",
+			"closesocket$any",
+			"bind$inet",
+			"listen$inet",
+			"connect$inet",
+			"accept$inet",
+			"send$inet",
+			"recv$inet",
+			"ioctlsocket$fionbio",
+			"AcceptEx$inet",
+			"WSARecvEx$inet",
+			"TransmitFile$inet",
+			"CreateFileA",
+			"WriteFile",
+			"CloseHandle",
+			"setsockopt$int",
+			"getsockopt$int",
 		} {
 			if s, ok := target.SyscallMap[name]; ok {
 				enabled[s] = true
@@ -1384,10 +1674,18 @@ func main() {
 		return
 	}
 	r := newRunner(index, flag.Arg(1), flag.Arg(2), vm)
-	if err := r.connect(); err != nil {
+	if err := connectWithRetry(r, 30*time.Second); err != nil {
 		log.Fatalf("failed to connect to manager: %v", err)
 	}
-	if err := r.loop(); err != nil {
-		log.Fatalf("runner loop failed: %v", err)
+	for {
+		if err := r.loop(); err != nil {
+			log.Fatalf("runner loop failed: %v", err)
+		}
+		log.Logf(0, "runner manager connection closed; attempting reconnect")
+		r.resetForReconnect()
+		if err := connectWithRetry(r, 30*time.Second); err != nil {
+			log.Logf(0, "runner reconnect window expired, exiting: %v", err)
+			return
+		}
 	}
 }

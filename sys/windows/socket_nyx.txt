@@ -1,0 +1,32 @@
+# Winsock-oriented surface for Nyx experiments.
+# This is still user-mode API driven, but it gives syzkaller a typed SOCKET
+# resource and basic AF_INET request shapes that route into afd.sys.
+
+resource SOCKET[int64]: -1
+type sock_port int16be[20000:20004]
+
+sockaddr_in {
+	family	const[2, int16]
+	port	sock_port
+	addr	int32be
+	zero	array[const[0, int8], 8]
+} [size[16]]
+
+socket$inet_tcp(af const[2], type const[1], protocol const[6]) SOCKET
+socket$inet_udp(af const[2], type const[2], protocol const[17]) SOCKET
+closesocket$any(s SOCKET)
+
+bind$inet(s SOCKET, addr ptr[in, sockaddr_in], namelen len[addr])
+connect$inet(s SOCKET, name ptr[in, sockaddr_in], namelen len[name])
+listen$inet(s SOCKET, backlog int32)
+accept$inet(s SOCKET, addr ptr[inout, sockaddr_in, opt], addrlen ptr[inout, len[addr, int32], opt]) SOCKET
+
+send$inet(s SOCKET, buf buffer[in], len len[buf], flags int32)
+recv$inet(s SOCKET, buf buffer[out], len len[buf], flags int32)
+
+ioctlsocket$fionbio(s SOCKET, cmd const[0x8004667e], argp ptr[inout, int32])
+setsockopt$int(s SOCKET, level int32, optname int32, optval ptr[in, int32], optlen len[optval])
+getsockopt$int(s SOCKET, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
+AcceptEx$inet(sListenSocket SOCKET, sAcceptSocket SOCKET, lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, lpdwBytesReceived ptr[inout, int32], lpOverlapped ptr[inout, intptr])
+WSARecvEx$inet(s SOCKET, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
+TransmitFile$inet(hSocket SOCKET, hFile HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, intptr], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)

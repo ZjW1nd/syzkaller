@@ -100,7 +100,7 @@ endif
 
 .PHONY: all clean host target \
 	manager executor kfuzztest ci hub agent \
-	execprog mutate prog2c trace2syz repro upgrade db nyx-runner \
+	execprog mutate prog2c trace2syz repro upgrade db nyx-runner nyx-stats \
 	nyx-harness nyx-executor \
 	usbgen symbolize cover kconf syz-build crush \
 	bin/syz-extract bin/syz-fmt \
@@ -113,7 +113,7 @@ endif
 	presubmit_arch_executor presubmit_dashboard presubmit_race presubmit_race_dashboard presubmit_old
 
 all: host target
-host: manager repro mutate prog2c db upgrade nyx-runner
+host: manager repro mutate prog2c db upgrade nyx-runner nyx-stats
 target: execprog executor check_syzos
 
 executor: descriptions
@@ -219,6 +219,9 @@ bisect: descriptions
 
 nyx-runner:
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-nyx-runner github.com/google/syzkaller/tools/syz-nyx-runner
+
+nyx-stats:
+	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/syz-nyx-stats github.com/google/syzkaller/tools/syz-nyx-stats
 
 nyx-harness:
 	$(MAKE) -C tools/syz-nyx-test-harness

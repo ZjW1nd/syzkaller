@@ -78,9 +78,12 @@ func loadDemoSyscallTable(t *testing.T) map[string]int {
 	return table
 }
 
-func loadWindowsNyxConfigSyscalls(t *testing.T) []string {
+func loadWindowsNyxConfig(t *testing.T, path string) struct {
+	EnabledSyscalls  []string `json:"enable_syscalls"`
+	NoMutateSyscalls []string `json:"no_mutate_syscalls"`
+} {
 	t.Helper()
-	path := filepath.Join("windows-nyx-none.cfg")
+	path = filepath.Join(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read windows nyx config: %v", err)
@@ -92,27 +95,23 @@ func loadWindowsNyxConfigSyscalls(t *testing.T) []string {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("parse windows nyx config: %v", err)
 	}
+	return cfg
+}
+
+func loadWindowsNyxConfigSyscalls(t *testing.T) []string {
+	t.Helper()
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-none.cfg")
 	if len(cfg.EnabledSyscalls) == 0 {
-		t.Fatalf("windows nyx config %s has no enable_syscalls", path)
+		t.Fatalf("windows nyx config %s has no enable_syscalls", "windows-nyx-none.cfg")
 	}
 	return cfg.EnabledSyscalls
 }
 
 func loadWindowsNyxNoMutateSyscalls(t *testing.T) []string {
 	t.Helper()
-	path := filepath.Join("windows-nyx-none.cfg")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read windows nyx config: %v", err)
-	}
-	var cfg struct {
-		NoMutateSyscalls []string `json:"no_mutate_syscalls"`
-	}
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		t.Fatalf("parse windows nyx config: %v", err)
-	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-none.cfg")
 	if len(cfg.NoMutateSyscalls) == 0 {
-		t.Fatalf("windows nyx config %s has no no_mutate_syscalls", path)
+		t.Fatalf("windows nyx config %s has no no_mutate_syscalls", "windows-nyx-none.cfg")
 	}
 	return cfg.NoMutateSyscalls
 }
@@ -158,6 +157,31 @@ func TestWindowsNyxNoMutateSyscallsPresentInEnabledSet(t *testing.T) {
 	for _, name := range loadWindowsNyxNoMutateSyscalls(t) {
 		if !enabled[name] {
 			t.Fatalf("no_mutate syscall %q is not enabled in windows nyx config", name)
+		}
+	}
+}
+
+func TestWindowsNyxNetworkConfigSyscallsPresentInSparseTable(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-network-none.cfg")
+	if len(cfg.EnabledSyscalls) == 0 {
+		t.Fatalf("windows nyx network config has no enable_syscalls")
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		if _, ok := table[name]; !ok {
+			t.Fatalf("windows nyx network config syscall %q missing from sparse Nyx table", name)
+		}
+		if target.SyscallMap[name] == nil {
+			t.Fatalf("windows nyx network config syscall %q missing from windows/amd64 target", name)
+		}
+	}
+	for _, name := range cfg.NoMutateSyscalls {
+		if !slices.Contains(cfg.EnabledSyscalls, name) {
+			t.Fatalf("network no_mutate syscall %q is not enabled", name)
 		}
 	}
 }
@@ -331,6 +355,76 @@ func TestStandaloneNtFsControlFileProgramUsesHandleCreator(t *testing.T) {
 		}
 		if !strings.Contains(serialized, "CreateFileA(") {
 			t.Fatalf("generated program does not contain CreateFileA handle creator for %s:\n%s", name, serialized)
+		}
+	}
+}
+
+func TestStandaloneWinsockProgramsUseSocketBootstrap(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range []string{
+		"socket$inet_tcp",
+		"socket$inet_udp",
+		"bind$inet",
+		"listen$inet",
+		"connect$inet",
+		"accept$inet",
+		"send$inet",
+		"recv$inet",
+		"ioctlsocket$fionbio",
+		"AcceptEx$inet",
+		"WSARecvEx$inet",
+		"TransmitFile$inet",
+		"setsockopt$int",
+		"getsockopt$int",
+	} {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("%s missing from windows/amd64 target", name)
+		}
+		p, bootstrap, err := standaloneProgram(target, meta, 1)
+		if err != nil {
+			t.Fatalf("standaloneProgram(%s): %v", name, err)
+		}
+		if !bootstrap {
+			t.Fatalf("%s should use deterministic bootstrap program", name)
+		}
+		serialized := string(p.Serialize())
+		if !strings.Contains(serialized, "WSAStartup(") {
+			t.Fatalf("generated program does not contain WSAStartup for %s:\n%s", name, serialized)
+		}
+		if !strings.Contains(serialized, "socket$inet_") {
+			t.Fatalf("generated program does not contain a typed socket creator for %s:\n%s", name, serialized)
+		}
+		if !strings.Contains(serialized, "closesocket$any(") {
+			t.Fatalf("generated program does not contain closesocket$any for %s:\n%s", name, serialized)
+		}
+		if (name == "accept$inet" || name == "recv$inet" || name == "ioctlsocket$fionbio") &&
+			!strings.Contains(serialized, "ioctlsocket$fionbio(") {
+			t.Fatalf("generated program does not contain nonblocking ioctlsocket$fionbio for %s:\n%s", name, serialized)
+		}
+		if (name == "connect$inet" || name == "send$inet" || name == "recv$inet" || name == "accept$inet") &&
+			strings.Count(serialized, "socket$inet_tcp(") < 2 {
+			t.Fatalf("generated program does not contain both server/client sockets for %s:\n%s", name, serialized)
+		}
+		if (name == "connect$inet" || name == "send$inet" || name == "recv$inet" || name == "accept$inet") &&
+			!strings.Contains(serialized, "bind$inet(") {
+			t.Fatalf("generated program does not contain bind$inet for %s:\n%s", name, serialized)
+		}
+		if (name == "connect$inet" || name == "send$inet" || name == "recv$inet" || name == "accept$inet") &&
+			!strings.Contains(serialized, "listen$inet(") {
+			t.Fatalf("generated program does not contain listen$inet for %s:\n%s", name, serialized)
+		}
+		if (name == "AcceptEx$inet" || name == "WSARecvEx$inet") && !strings.Contains(serialized, "accept$inet(") &&
+			!strings.Contains(serialized, "AcceptEx$inet(") {
+			t.Fatalf("generated program does not contain accept path for %s:\n%s", name, serialized)
+		}
+		if name == "TransmitFile$inet" {
+			if !strings.Contains(serialized, "CreateFileA(") || !strings.Contains(serialized, "WriteFile(") {
+				t.Fatalf("generated program does not contain file bootstrap for %s:\n%s", name, serialized)
+			}
 		}
 	}
 }
