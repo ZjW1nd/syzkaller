@@ -41,6 +41,21 @@ func extractFunctionBody(t *testing.T, src, signature string) string {
 	return ""
 }
 
+func extractCaseBody(t *testing.T, src, caseName string) string {
+	t.Helper()
+	start := strings.Index(src, `case "`+caseName+`":`)
+	if start == -1 {
+		t.Fatalf("case %q not found", caseName)
+	}
+	rest := src[start:]
+	next := strings.Index(rest[len(`case "`+caseName+`":`):], "\n\tcase ")
+	if next == -1 {
+		t.Fatalf("next case after %q not found", caseName)
+	}
+	body := rest[:len(`case "`+caseName+`":`)+next]
+	return body
+}
+
 func loadDemoSyscallTable(t *testing.T) map[string]int {
 	t.Helper()
 	path := filepath.Join("..", "..", "executor", "syscalls_windows_nyx_demo.h")
@@ -81,6 +96,11 @@ func loadDemoSyscallTable(t *testing.T) map[string]int {
 func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	EnabledSyscalls  []string `json:"enable_syscalls"`
 	NoMutateSyscalls []string `json:"no_mutate_syscalls"`
+	Experimental     struct {
+		SeedPrefix           string `json:"seed_prefix"`
+		BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
+		WindowsTargetProfile string `json:"windows_target_profile"`
+	} `json:"experimental"`
 } {
 	t.Helper()
 	path = filepath.Join(path)
@@ -91,11 +111,67 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	var cfg struct {
 		EnabledSyscalls  []string `json:"enable_syscalls"`
 		NoMutateSyscalls []string `json:"no_mutate_syscalls"`
+		Experimental     struct {
+			SeedPrefix           string `json:"seed_prefix"`
+			BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
+			WindowsTargetProfile string `json:"windows_target_profile"`
+		} `json:"experimental"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatalf("parse windows nyx config: %v", err)
 	}
 	return cfg
+}
+
+func loadWindowsAutomaticHelpers(t *testing.T) []string {
+	t.Helper()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	var helpers []string
+	for _, call := range target.Syscalls {
+		if target.CallIsAutomaticHelper(call) {
+			helpers = append(helpers, call.Name)
+		}
+	}
+	if len(helpers) == 0 {
+		t.Fatal("windows target has no AutomaticHelper syscalls")
+	}
+	return helpers
+}
+
+func requireWindowsHelpersEnabled(t *testing.T, cfgPath string, want []string) {
+	t.Helper()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, cfgPath)
+	if len(cfg.EnabledSyscalls) == 0 {
+		t.Fatalf("%s has no enable_syscalls", cfgPath)
+	}
+	enabledCalls := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("windows config syscall %q missing from windows/amd64 target", name)
+		}
+		enabledCalls[meta] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
+	for _, name := range want {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !target.CallIsAutomaticHelper(call) {
+			t.Fatalf("syscall %q is not classified as AutomaticHelper", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("automatic helper syscall %q is not transitively enabled in %s", name, cfgPath)
+		}
+	}
 }
 
 func loadWindowsNyxConfigSyscalls(t *testing.T) []string {
@@ -105,15 +181,6 @@ func loadWindowsNyxConfigSyscalls(t *testing.T) []string {
 		t.Fatalf("windows nyx config %s has no enable_syscalls", "windows-nyx-none.cfg")
 	}
 	return cfg.EnabledSyscalls
-}
-
-func loadWindowsNyxNoMutateSyscalls(t *testing.T) []string {
-	t.Helper()
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-none.cfg")
-	if len(cfg.NoMutateSyscalls) == 0 {
-		t.Fatalf("windows nyx config %s has no no_mutate_syscalls", "windows-nyx-none.cfg")
-	}
-	return cfg.NoMutateSyscalls
 }
 
 func TestWindowsDemoSyscallTableMatchesTargetIDs(t *testing.T) {
@@ -149,16 +216,88 @@ func TestWindowsNyxConfigSyscallsPresentInSparseTable(t *testing.T) {
 	}
 }
 
-func TestWindowsNyxNoMutateSyscallsPresentInEnabledSet(t *testing.T) {
-	enabled := make(map[string]bool)
-	for _, name := range loadWindowsNyxConfigSyscalls(t) {
-		enabled[name] = true
+func TestWindowsAutomaticHelpersPresentInEnabledSet(t *testing.T) {
+	requireWindowsHelpersEnabled(t, "windows-nyx-none.cfg",
+		[]string{"CloseHandle", "CreateFileA", "CreateFile2"})
+}
+
+func TestWindowsSocketResourceHierarchy(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
 	}
-	for _, name := range loadWindowsNyxNoMutateSyscalls(t) {
-		if !enabled[name] {
-			t.Fatalf("no_mutate syscall %q is not enabled in windows nyx config", name)
+	assertResource := func(callName string, index int, want string) {
+		t.Helper()
+		meta := target.SyscallMap[callName]
+		if meta == nil {
+			t.Fatalf("missing syscall %q", callName)
+		}
+		var typ prog.Type
+		if index < 0 {
+			typ = meta.Ret
+		} else {
+			typ = meta.Args[index].Type
+		}
+		res, ok := typ.(*prog.ResourceType)
+		if !ok {
+			t.Fatalf("%s[%d] has unexpected type %T", callName, index, typ)
+		}
+		if res.TypeName != want {
+			t.Fatalf("%s[%d] resource=%q want=%q", callName, index, res.TypeName, want)
 		}
 	}
+	assertResource("socket$inet_tcp", -1, "SOCKET_TCP")
+	assertResource("socket$inet_udp", -1, "SOCKET_UDP")
+	assertResource("socket$accept_tcp", -1, "SOCKET_ACCEPT")
+	assertResource("socket$listener_tcp", -1, "SOCKET_LISTENER")
+	assertResource("socket$connected_tcp", -1, "SOCKET_CONNECTED")
+	assertResource("listen$inet_tcp", 0, "SOCKET_LISTENER")
+	assertResource("accept$inet_tcp", 0, "SOCKET_LISTENER")
+	assertResource("accept$inet_tcp", -1, "SOCKET_ACCEPT")
+	assertResource("connect$inet_tcp", 0, "SOCKET_CONNECTED")
+	assertResource("send$inet_tcp", 0, "SOCKET_CONNECTED")
+	assertResource("recv$inet_tcp", 0, "SOCKET_CONNECTED")
+	assertResource("AcceptEx$inet_tcp", 0, "SOCKET_LISTENER")
+	assertResource("AcceptEx$inet_tcp", 1, "SOCKET_ACCEPT")
+	assertResource("WSARecvEx$inet_accept", 0, "SOCKET_ACCEPT")
+	assertResource("TransmitFile$inet_accept", 0, "SOCKET_ACCEPT")
+}
+
+func TestWindowsFileHandleResourceHierarchy(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	assertResource := func(callName string, index int, want string) {
+		t.Helper()
+		meta := target.SyscallMap[callName]
+		if meta == nil {
+			t.Fatalf("missing syscall %q", callName)
+		}
+		var typ prog.Type
+		if index < 0 {
+			typ = meta.Ret
+		} else {
+			typ = meta.Args[index].Type
+		}
+		res, ok := typ.(*prog.ResourceType)
+		if !ok {
+			t.Fatalf("%s[%d] has unexpected type %T", callName, index, typ)
+		}
+		if res.TypeName != want {
+			t.Fatalf("%s[%d] resource=%q want=%q", callName, index, res.TypeName, want)
+		}
+	}
+	assertResource("CreateFileA", -1, "FILE_HANDLE")
+	assertResource("CreateFile2", -1, "FILE_HANDLE")
+	assertResource("ReadFile", 0, "FILE_HANDLE")
+	assertResource("WriteFile", 0, "FILE_HANDLE")
+	assertResource("FlushFileBuffers", 0, "FILE_HANDLE")
+	assertResource("SetFileInformationByHandle", 0, "FILE_HANDLE")
+	assertResource("NtReadFile", 0, "FILE_HANDLE")
+	assertResource("NtWriteFile", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile", 0, "FILE_HANDLE")
+	assertResource("TransmitFile$inet_accept", 1, "FILE_HANDLE")
 }
 
 func TestWindowsNyxNetworkConfigSyscallsPresentInSparseTable(t *testing.T) {
@@ -179,9 +318,154 @@ func TestWindowsNyxNetworkConfigSyscallsPresentInSparseTable(t *testing.T) {
 			t.Fatalf("windows nyx network config syscall %q missing from windows/amd64 target", name)
 		}
 	}
-	for _, name := range cfg.NoMutateSyscalls {
-		if !slices.Contains(cfg.EnabledSyscalls, name) {
-			t.Fatalf("network no_mutate syscall %q is not enabled", name)
+	requireWindowsHelpersEnabled(t, "windows-nyx-network-none.cfg",
+		[]string{"WSAStartup", "WSACleanup", "socket$inet_udp", "socket$accept_tcp", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any"})
+}
+
+func TestWindowsNyxAfdConfigSyscallsPresentInSparseTable(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-none.cfg")
+	if len(cfg.EnabledSyscalls) == 0 {
+		t.Fatalf("windows nyx afd config has no enable_syscalls")
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		if _, ok := table[name]; !ok {
+			t.Fatalf("windows nyx afd config syscall %q missing from sparse Nyx table", name)
+		}
+		if target.SyscallMap[name] == nil {
+			t.Fatalf("windows nyx afd config syscall %q missing from windows/amd64 target", name)
+		}
+	}
+	requireWindowsHelpersEnabled(t, "windows-nyx-afd-none.cfg",
+		[]string{"WSAStartup", "WSACleanup", "socket$accept_tcp", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any"})
+	enabledCalls := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		enabledCalls[target.SyscallMap[name]] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
+	for _, name := range []string{"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp", "CreateFileA"} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("windows nyx afd config did not transitively enable %q", name)
+		}
+	}
+}
+
+func TestWindowsNyxAfdSessionConfigSyscallsPresentInSparseTable(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session-none.cfg")
+	if len(cfg.EnabledSyscalls) == 0 {
+		t.Fatalf("windows nyx afd-session config has no enable_syscalls")
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		if _, ok := table[name]; !ok {
+			t.Fatalf("windows nyx afd-session config syscall %q missing from sparse Nyx table", name)
+		}
+		if target.SyscallMap[name] == nil {
+			t.Fatalf("windows nyx afd-session config syscall %q missing from windows/amd64 target", name)
+		}
+	}
+	requireWindowsHelpersEnabled(t, "windows-nyx-afd-session-none.cfg",
+		[]string{"WSAStartup", "WSACleanup", "socket$accept_tcp", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any"})
+	enabledCalls := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		enabledCalls[target.SyscallMap[name]] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
+	for _, name := range []string{"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp"} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("windows nyx afd-session config did not transitively enable %q", name)
+		}
+	}
+}
+
+func TestWindowsNyxAfdAcceptRaceConfigUsesFocusedSeedPrefixes(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-accept-race-none.cfg")
+	if cfg.Experimental.SeedPrefix != "nyx_afd_accept_" {
+		t.Fatalf("accept-race seed_prefix=%q, want %q", cfg.Experimental.SeedPrefix, "nyx_afd_accept_")
+	}
+	if cfg.Experimental.BorrowingSeedPrefix != "nyx_afd_accept_" {
+		t.Fatalf("accept-race borrowing_seed_prefix=%q, want %q", cfg.Experimental.BorrowingSeedPrefix, "nyx_afd_accept_")
+	}
+	if cfg.Experimental.WindowsTargetProfile != "afd_accept_race" {
+		t.Fatalf("accept-race windows_target_profile=%q, want %q", cfg.Experimental.WindowsTargetProfile, "afd_accept_race")
+	}
+}
+
+func TestWindowsNyxAfdTransmitConfigUsesFocusedSeedPrefixes(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-transmit-none.cfg")
+	if cfg.Experimental.SeedPrefix != "nyx_afd_accept_transmit" {
+		t.Fatalf("transmit seed_prefix=%q, want %q", cfg.Experimental.SeedPrefix, "nyx_afd_accept_transmit")
+	}
+	if cfg.Experimental.BorrowingSeedPrefix != "nyx_afd_accept_transmit" {
+		t.Fatalf("transmit borrowing_seed_prefix=%q, want %q", cfg.Experimental.BorrowingSeedPrefix, "nyx_afd_accept_transmit")
+	}
+	if cfg.Experimental.WindowsTargetProfile != "afd_transmit" {
+		t.Fatalf("transmit windows_target_profile=%q, want %q", cfg.Experimental.WindowsTargetProfile, "afd_transmit")
+	}
+	want := map[string]bool{
+		"TransmitFile$inet_accept":   true,
+		"WSARecvEx$inet_accept":      true,
+		"getsockopt$int_accept":      true,
+		"ioctlsocket$fionbio_accept": true,
+		"send$inet_accept":           true,
+		"recv$inet_accept":           true,
+	}
+	for _, call := range cfg.EnabledSyscalls {
+		delete(want, call)
+	}
+	if len(want) != 0 {
+		t.Fatalf("transmit config missing enabled syscalls: %+v", want)
+	}
+}
+
+func TestWindowsNyxFsctlConfigSyscallsPresentInSparseTable(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-fsctl-none.cfg")
+	if len(cfg.EnabledSyscalls) == 0 {
+		t.Fatalf("windows nyx fsctl config has no enable_syscalls")
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		if _, ok := table[name]; !ok {
+			t.Fatalf("windows nyx fsctl config syscall %q missing from sparse Nyx table", name)
+		}
+		if target.SyscallMap[name] == nil {
+			t.Fatalf("windows nyx fsctl config syscall %q missing from windows/amd64 target", name)
+		}
+	}
+	requireWindowsHelpersEnabled(t, "windows-nyx-fsctl-none.cfg",
+		[]string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"})
+	enabledCalls := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		enabledCalls[target.SyscallMap[name]] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
+	for _, name := range []string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("windows nyx fsctl config did not transitively enable %q", name)
 		}
 	}
 }
@@ -366,19 +650,34 @@ func TestStandaloneWinsockProgramsUseSocketBootstrap(t *testing.T) {
 	}
 	for _, name := range []string{
 		"socket$inet_tcp",
+		"socket$listener_tcp",
+		"socket$connected_tcp",
 		"socket$inet_udp",
-		"bind$inet",
-		"listen$inet",
-		"connect$inet",
-		"accept$inet",
-		"send$inet",
-		"recv$inet",
-		"ioctlsocket$fionbio",
-		"AcceptEx$inet",
-		"WSARecvEx$inet",
-		"TransmitFile$inet",
-		"setsockopt$int",
-		"getsockopt$int",
+		"socket$accept_tcp",
+		"bind$inet_tcp",
+		"bind$inet_udp",
+		"listen$inet_tcp",
+		"connect$inet_tcp",
+		"connect$inet_udp",
+		"accept$inet_tcp",
+		"send$inet_tcp",
+		"send$inet_udp",
+		"send$inet_accept",
+		"recv$inet_tcp",
+		"recv$inet_udp",
+		"recv$inet_accept",
+		"ioctlsocket$fionbio_tcp",
+		"ioctlsocket$fionbio_udp",
+		"ioctlsocket$fionbio_accept",
+		"AcceptEx$inet_tcp",
+		"WSARecvEx$inet_accept",
+		"TransmitFile$inet_accept",
+		"setsockopt$int_tcp",
+		"setsockopt$int_udp",
+		"setsockopt$int_accept",
+		"getsockopt$int_tcp",
+		"getsockopt$int_udp",
+		"getsockopt$int_accept",
 	} {
 		meta := target.SyscallMap[name]
 		if meta == nil {
@@ -395,35 +694,215 @@ func TestStandaloneWinsockProgramsUseSocketBootstrap(t *testing.T) {
 		if !strings.Contains(serialized, "WSAStartup(") {
 			t.Fatalf("generated program does not contain WSAStartup for %s:\n%s", name, serialized)
 		}
-		if !strings.Contains(serialized, "socket$inet_") {
+		hasTypedSocketCreator := strings.Contains(serialized, "socket$inet_tcp(") ||
+			strings.Contains(serialized, "socket$listener_tcp(") ||
+			strings.Contains(serialized, "socket$connected_tcp(") ||
+			strings.Contains(serialized, "socket$inet_udp(") ||
+			strings.Contains(serialized, "socket$accept_tcp(")
+		if !hasTypedSocketCreator {
 			t.Fatalf("generated program does not contain a typed socket creator for %s:\n%s", name, serialized)
 		}
 		if !strings.Contains(serialized, "closesocket$any(") {
 			t.Fatalf("generated program does not contain closesocket$any for %s:\n%s", name, serialized)
 		}
-		if (name == "accept$inet" || name == "recv$inet" || name == "ioctlsocket$fionbio") &&
-			!strings.Contains(serialized, "ioctlsocket$fionbio(") {
-			t.Fatalf("generated program does not contain nonblocking ioctlsocket$fionbio for %s:\n%s", name, serialized)
+		if (name == "accept$inet_tcp" || name == "recv$inet_accept" || name == "recv$inet_tcp" ||
+			name == "recv$inet_udp" || name == "ioctlsocket$fionbio_tcp" ||
+			name == "ioctlsocket$fionbio_udp" || name == "ioctlsocket$fionbio_accept") &&
+			!strings.Contains(serialized, "ioctlsocket$fionbio_") {
+			t.Fatalf("generated program does not contain nonblocking ioctlsocket variant for %s:\n%s", name, serialized)
 		}
-		if (name == "connect$inet" || name == "send$inet" || name == "recv$inet" || name == "accept$inet") &&
-			strings.Count(serialized, "socket$inet_tcp(") < 2 {
-			t.Fatalf("generated program does not contain both server/client sockets for %s:\n%s", name, serialized)
+		if (name == "connect$inet_tcp" || name == "send$inet_tcp" || name == "send$inet_accept" ||
+			name == "recv$inet_tcp" || name == "recv$inet_accept" || name == "accept$inet_tcp") &&
+			(!strings.Contains(serialized, "socket$listener_tcp(") ||
+				!strings.Contains(serialized, "socket$connected_tcp(")) {
+			t.Fatalf("generated program does not contain both listener/connected sockets for %s:\n%s", name, serialized)
 		}
-		if (name == "connect$inet" || name == "send$inet" || name == "recv$inet" || name == "accept$inet") &&
-			!strings.Contains(serialized, "bind$inet(") {
-			t.Fatalf("generated program does not contain bind$inet for %s:\n%s", name, serialized)
+		if (name == "connect$inet_tcp" || name == "send$inet_tcp" || name == "send$inet_accept" ||
+			name == "recv$inet_tcp" || name == "recv$inet_accept" || name == "accept$inet_tcp") &&
+			!strings.Contains(serialized, "bind$inet_tcp(") {
+			t.Fatalf("generated program does not contain bind$inet_tcp for %s:\n%s", name, serialized)
 		}
-		if (name == "connect$inet" || name == "send$inet" || name == "recv$inet" || name == "accept$inet") &&
-			!strings.Contains(serialized, "listen$inet(") {
-			t.Fatalf("generated program does not contain listen$inet for %s:\n%s", name, serialized)
+		if (name == "connect$inet_tcp" || name == "send$inet_tcp" || name == "send$inet_accept" ||
+			name == "recv$inet_tcp" || name == "recv$inet_accept" || name == "accept$inet_tcp") &&
+			!strings.Contains(serialized, "listen$inet_tcp(") {
+			t.Fatalf("generated program does not contain listen$inet_tcp for %s:\n%s", name, serialized)
 		}
-		if (name == "AcceptEx$inet" || name == "WSARecvEx$inet") && !strings.Contains(serialized, "accept$inet(") &&
-			!strings.Contains(serialized, "AcceptEx$inet(") {
+		if (name == "recv$inet_tcp" || name == "recv$inet_accept") &&
+			!strings.Contains(serialized, "send$inet_tcp(") {
+			if !strings.Contains(serialized, "send$inet_accept(") {
+				t.Fatalf("generated program does not contain peer send bootstrap for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "recv$inet_udp" && !strings.Contains(serialized, "send$inet_udp(") {
+			t.Fatalf("generated program does not contain UDP peer send bootstrap for %s:\n%s", name, serialized)
+		}
+		if name == "recv$inet_tcp" {
+			sendIdx := strings.Index(serialized, "send$inet_accept(")
+			recvIdx := strings.Index(serialized, "recv$inet_tcp(")
+			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
+				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "recv$inet_accept" {
+			sendIdx := strings.Index(serialized, "send$inet_tcp(")
+			recvIdx := strings.Index(serialized, "recv$inet_accept(")
+			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
+				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "recv$inet_udp" {
+			sendIdx := strings.Index(serialized, "send$inet_udp(")
+			recvIdx := strings.Index(serialized, "recv$inet_udp(")
+			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
+				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "WSARecvEx$inet_accept" {
+			sendIdx := strings.Index(serialized, "send$inet_tcp(")
+			recvIdx := strings.Index(serialized, "WSARecvEx$inet_accept(")
+			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
+				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "send$inet_tcp" {
+			connectIdx := strings.Index(serialized, "connect$inet_tcp(")
+			sendIdx := strings.Index(serialized, "send$inet_tcp(")
+			closeIdx := strings.Index(serialized, "closesocket$any(r1)")
+			if connectIdx == -1 || sendIdx == -1 || connectIdx > sendIdx {
+				t.Fatalf("generated program does not connect before send for %s:\n%s", name, serialized)
+			}
+			if closeIdx == -1 || sendIdx > closeIdx {
+				t.Fatalf("generated program closes connected socket before send for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "send$inet_accept" {
+			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
+			sendIdx := strings.Index(serialized, "send$inet_accept(")
+			closeIdx := strings.Index(serialized, "closesocket$any(r2)")
+			if acceptIdx == -1 || sendIdx == -1 || acceptIdx > sendIdx {
+				t.Fatalf("generated program does not accept before send for %s:\n%s", name, serialized)
+			}
+			if closeIdx == -1 || sendIdx > closeIdx {
+				t.Fatalf("generated program closes accept socket before send for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "TransmitFile$inet_accept" {
+			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
+			writeIdx := strings.Index(serialized, "WriteFile(")
+			txIdx := strings.Index(serialized, "TransmitFile$inet_accept(")
+			closeIdx := strings.Index(serialized, "CloseHandle(r3)")
+			if acceptIdx == -1 || writeIdx == -1 || txIdx == -1 || acceptIdx > txIdx || writeIdx > txIdx {
+				t.Fatalf("generated program does not prepare accept session/file payload before transmit for %s:\n%s", name, serialized)
+			}
+			if closeIdx == -1 || txIdx > closeIdx {
+				t.Fatalf("generated program closes file before transmit for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "setsockopt$int_accept" {
+			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
+			optIdx := strings.Index(serialized, "setsockopt$int_accept(")
+			if acceptIdx == -1 || optIdx == -1 || acceptIdx > optIdx {
+				t.Fatalf("generated program does not accept before setsockopt for %s:\n%s", name, serialized)
+			}
+		}
+		if name == "getsockopt$int_accept" {
+			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
+			optIdx := strings.Index(serialized, "getsockopt$int_accept(")
+			if acceptIdx == -1 || optIdx == -1 || acceptIdx > optIdx {
+				t.Fatalf("generated program does not accept before getsockopt for %s:\n%s", name, serialized)
+			}
+		}
+		if (name == "AcceptEx$inet_tcp" || name == "WSARecvEx$inet_accept" || name == "TransmitFile$inet_accept") &&
+			!strings.Contains(serialized, "accept$inet_tcp(") && !strings.Contains(serialized, "AcceptEx$inet_tcp(") {
 			t.Fatalf("generated program does not contain accept path for %s:\n%s", name, serialized)
 		}
-		if name == "TransmitFile$inet" {
+		if name == "socket$listener_tcp" && !strings.Contains(serialized, "socket$listener_tcp(") {
+			t.Fatalf("generated program does not contain socket$listener_tcp for %s:\n%s", name, serialized)
+		}
+		if name == "socket$connected_tcp" && !strings.Contains(serialized, "socket$connected_tcp(") {
+			t.Fatalf("generated program does not contain socket$connected_tcp for %s:\n%s", name, serialized)
+		}
+		if name == "TransmitFile$inet_accept" {
 			if !strings.Contains(serialized, "CreateFileA(") || !strings.Contains(serialized, "WriteFile(") {
 				t.Fatalf("generated program does not contain file bootstrap for %s:\n%s", name, serialized)
+			}
+		}
+	}
+}
+
+func TestStandaloneWinsockBuilderHelpersStayWired(t *testing.T) {
+	path := filepath.Join("main.go")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(data)
+	tests := []struct {
+		caseName string
+		want     []string
+	}{
+		{
+			caseName: "send$inet_tcp",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "send$inet_accept",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "recv$inet_tcp",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "recv$inet_accept",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "WSARecvEx$inet_accept",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "TransmitFile$inet_accept",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapFilePayload()", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "connect$inet_udp",
+			want:     []string{"bootstrapUDPConnectedSession(", "bootstrapClose(\"r0\")"},
+		},
+		{
+			caseName: "send$inet_udp",
+			want:     []string{"bootstrapUDPConnectedSession(", "bootstrapClose(\"r0\")"},
+		},
+		{
+			caseName: "recv$inet_udp",
+			want:     []string{"bootstrapUDPBoundReceiverWithPeerSend(", "bootstrapClose(\"r1\")", "bootstrapClose(\"r0\")"},
+		},
+		{
+			caseName: "AcceptEx$inet_tcp",
+			want:     []string{"bootstrapTCPAcceptExSessionWithClient(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "accept$inet_tcp",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapTCPListenerNonblocking()", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "ioctlsocket$fionbio_accept",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapTCPListenerNonblocking()", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "setsockopt$int_accept",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+		{
+			caseName: "getsockopt$int_accept",
+			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapCloseAcceptSessionSockets()"},
+		},
+	}
+	for _, test := range tests {
+		body := extractCaseBody(t, src, test.caseName)
+		for _, want := range test.want {
+			if !strings.Contains(body, want) {
+				t.Fatalf("%s case does not use expected builder %q:\n%s", test.caseName, want, body)
 			}
 		}
 	}

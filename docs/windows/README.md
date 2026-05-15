@@ -2,6 +2,10 @@
 
 `Windows` support is very raw and preliminary (read, non-working).
 
+For the current target-level adaptation work that incrementally teaches syzkaller
+about Windows NT helper calls, socket/file state scaffolding, and Nyx-specific
+Windows fuzzing heuristics, see [target_adaptation.md](target_adaptation.md).
+
 There is a [closed-source port at Microsoft](https://github.com/dwizzzle/Presentations/blob/master/David%20Weston%20-%20Keeping%20Windows%20Secure%20-%20Bluehat%20IL%202019.pdf).
 
 There is a more complete

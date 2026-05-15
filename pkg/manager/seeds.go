@@ -149,6 +149,9 @@ func readInputs(cfg *mgrconfig.Config, db *db.DB, output chan *input) error {
 			return fmt.Errorf("failed to read seeds dir: %w", err)
 		}
 		for _, seed := range seeds {
+			if cfg.Experimental.SeedPrefix != "" && !strings.HasPrefix(seed.Name(), cfg.Experimental.SeedPrefix) {
+				continue
+			}
 			data, err := os.ReadFile(filepath.Join(seedDir, seed.Name()))
 			if err != nil {
 				return fmt.Errorf("failed to read seed %v: %w", seed.Name(), err)

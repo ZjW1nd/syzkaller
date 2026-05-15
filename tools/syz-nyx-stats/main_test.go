@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,9 @@ func TestCollectorSampleWritesCSV(t *testing.T) {
 		"2026/05/07 13:19:18 windows triage: call=2 name=NtFsControlFile signal=251 cover=254 prio=3 new=24 errno=0 flags=0x0",
 		"2026/05/07 13:19:18 windows corpus save: call=0 name=NtFsControlFile stable_signal=231 new_stable=76 cover=151 raw_cover=0",
 		"2026/05/07 13:30:27 candidates=16 corpus=54 coverage=9913 exec total=604 (362/min) ",
+		"2026/05/07 13:30:27 exec gen=12 exec fuzz=34 exec candidate=5 exec triage=8 exec collide=2 ",
+		"2026/05/07 13:30:27 win_tmpl_gen=5 win_tmpl_corpus=3 win_tmpl_collide=2 ",
+		"2026/05/07 13:30:27 win_rc_try=7 win_rc_hit=4 win_rc_no_candidates=2 win_rc_zero_score=1 ",
 	}
 	runnerLines := []string{
 		"2026/05/07 12:49:10 runner handshake complete",
@@ -71,8 +75,19 @@ func TestCollectorSampleWritesCSV(t *testing.T) {
 	if row.RawSignal != 10037 || row.RawCover != 21009 || row.NonZeroExec != 1 {
 		t.Fatalf("bad exec result row: %#v", row)
 	}
+	if row.ExecGen != 12 || row.ExecFuzz != 34 || row.ExecCandidate != 5 ||
+		row.ExecTriage != 8 || row.ExecCollide != 2 {
+		t.Fatalf("bad exec mode counts: %#v", row)
+	}
 	if row.NTFSTriage != 1 || row.CorpusSaves != 1 {
 		t.Fatalf("bad triage/corpus counts: %#v", row)
+	}
+	if row.WinTemplateGen != 5 || row.WinTemplateCorpus != 3 || row.WinTemplateCollide != 2 {
+		t.Fatalf("bad template counts: %#v", row)
+	}
+	if row.WinResourceCentricTry != 7 || row.WinResourceCentricHit != 4 ||
+		row.WinResourceCentricNoCandidates != 2 || row.WinResourceCentricZeroScore != 1 {
+		t.Fatalf("bad resource-centric counts: %#v", row)
 	}
 	if row.SubmitCR3Count != 1 || row.LastSubmitCR3 != "0xae1ff000" {
 		t.Fatalf("bad cr3 fields: %#v", row)
@@ -116,6 +131,7 @@ func TestRunPlotProducesArtifacts(t *testing.T) {
 	for _, name := range []string{
 		"coverage_corpus.svg",
 		"throughput.svg",
+		"exec_mix.svg",
 		"signal_cover.svg",
 		"pt_trace.svg",
 		"summary.json",
@@ -202,6 +218,7 @@ func TestRunCompareProducesAggregateArtifacts(t *testing.T) {
 	for _, name := range []string{
 		"aggregate_coverage_corpus.svg",
 		"aggregate_throughput.svg",
+		"aggregate_exec_mix.svg",
 		"aggregate_signal_cover.svg",
 		"aggregate_pt_trace.svg",
 		"aggregate_summary.json",
@@ -222,5 +239,224 @@ func TestRunCompareProducesAggregateArtifacts(t *testing.T) {
 	}
 	if !strings.Contains(string(metricsCSV), "exec_total") {
 		t.Fatalf("final_metrics.csv missing exec_total row: %s", metricsCSV)
+	}
+}
+
+func TestRunCollideSummaryProducesJSON(t *testing.T) {
+	dir := t.TempDir()
+	managerLog := filepath.Join(dir, "manager.log")
+	output := filepath.Join(dir, "collide_summary.json")
+	lines := []string{
+		"2026/05/12 09:32:01 windows collide result: origin=collide:gen active=[3:send$inet_tcp(sig=2824 cover=3381 err=0) 4:recv$inet_tcp(sig=1152 cover=1252 err=0)]",
+		"2026/05/12 09:32:03 windows collide result: origin=collide:gen active=[3:send$inet_tcp(sig=2824 cover=3381 err=0) 4:recv$inet_tcp(sig=1152 cover=1252 err=0)]",
+		"2026/05/12 10:07:16 windows collide result: origin=collide:fuzz active=[5:getsockopt$int_accept(sig=2398 cover=2694 err=0)]",
+	}
+	if err := os.WriteFile(managerLog, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCollideSummary([]string{"--manager-log", managerLog, "--output", output}); err != nil {
+		t.Fatalf("runCollideSummary failed: %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read collide summary: %v", err)
+	}
+	var rows []collideSummaryEntry
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatalf("unmarshal collide summary: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	if rows[0].Origin != "collide:gen" || rows[0].Count != 2 {
+		t.Fatalf("unexpected first row: %+v", rows[0])
+	}
+}
+
+func TestRunCollideQualityProducesJSON(t *testing.T) {
+	dir := t.TempDir()
+	managerLog := filepath.Join(dir, "manager.log")
+	output := filepath.Join(dir, "collide_quality.json")
+	lines := []string{
+		"2026/05/12 09:32:01 windows triage job queued: origin=collide:gen calls=[send$inet_tcp] flags=0x0 attempt=0 status=Success",
+		"2026/05/12 09:32:01 windows collide result: origin=collide:gen active=[3:send$inet_tcp(sig=2824 cover=3381 err=0) 4:recv$inet_tcp(sig=1152 cover=1252 err=0)]",
+		"2026/05/12 09:32:02 windows corpus save: origin=collide:gen call=3 name=send$inet_tcp stable_signal=100 new_stable=10 cover=20 raw_cover=0",
+	}
+	if err := os.WriteFile(managerLog, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCollideQuality([]string{"--manager-log", managerLog, "--output", output}); err != nil {
+		t.Fatalf("runCollideQuality failed: %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read collide quality: %v", err)
+	}
+	var rows []collideQualityEntry
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatalf("unmarshal collide quality: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	if rows[0].Origin != "collide:gen" || rows[0].Count != 1 {
+		t.Fatalf("unexpected row: %+v", rows[0])
+	}
+	if len(rows[0].TriageCalls) != 1 || rows[0].TriageCalls[0] != "send$inet_tcp" {
+		t.Fatalf("unexpected triage calls: %+v", rows[0].TriageCalls)
+	}
+	if len(rows[0].CorpusSaves) != 1 || rows[0].CorpusSaves[0] != "send$inet_tcp" {
+		t.Fatalf("unexpected corpus saves: %+v", rows[0].CorpusSaves)
+	}
+}
+
+func TestRunCollideQualityKeepsSameOriginEventsSeparated(t *testing.T) {
+	dir := t.TempDir()
+	managerLog := filepath.Join(dir, "manager.log")
+	output := filepath.Join(dir, "collide_quality.json")
+	lines := []string{
+		"2026/05/12 09:32:01 windows triage job queued: origin=collide:gen calls=[bind$inet_tcp listen$inet_tcp] flags=0x0 attempt=0 status=Success",
+		"2026/05/12 09:32:01 windows collide result: origin=collide:gen active=[1:bind$inet_tcp(sig=10 cover=20 err=0) 2:listen$inet_tcp(sig=30 cover=40 err=0)]",
+		"2026/05/12 09:32:02 windows triage job queued: origin=collide:gen calls=[send$inet_accept] flags=0x0 attempt=0 status=Success",
+		"2026/05/12 09:32:02 windows collide result: origin=collide:gen active=[5:WSARecvEx$inet_accept(sig=100 cover=200 err=0) 6:send$inet_accept(sig=300 cover=400 err=0)]",
+		"2026/05/12 09:32:03 windows corpus save: origin=collide:gen call=6 name=send$inet_accept stable_signal=10 new_stable=5 cover=8 raw_cover=0",
+	}
+	if err := os.WriteFile(managerLog, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCollideQuality([]string{"--manager-log", managerLog, "--output", output}); err != nil {
+		t.Fatalf("runCollideQuality failed: %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read collide quality: %v", err)
+	}
+	var rows []collideQualityEntry
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatalf("unmarshal collide quality: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	var shallow, deep *collideQualityEntry
+	for i := range rows {
+		row := &rows[i]
+		switch {
+		case strings.Contains(row.ActiveCalls, "WSARecvEx$inet_accept"):
+			deep = row
+		case strings.Contains(row.ActiveCalls, "bind$inet_tcp"):
+			shallow = row
+		}
+	}
+	if shallow == nil || deep == nil {
+		t.Fatalf("failed to classify collide quality rows: %+v", rows)
+	}
+	if got := strings.Join(shallow.TriageCalls, ","); got != "bind$inet_tcp,listen$inet_tcp" {
+		t.Fatalf("shallow triage calls=%q", got)
+	}
+	if len(shallow.CorpusSaves) != 0 {
+		t.Fatalf("shallow corpus saves should stay empty, got %+v", shallow.CorpusSaves)
+	}
+	if got := strings.Join(deep.TriageCalls, ","); got != "send$inet_accept" {
+		t.Fatalf("deep triage calls=%q", got)
+	}
+	if got := strings.Join(deep.CorpusSaves, ","); got != "send$inet_accept" {
+		t.Fatalf("deep corpus saves=%q", got)
+	}
+}
+
+func TestRunCollideOwnersAggregatesAcrossInputs(t *testing.T) {
+	dir := t.TempDir()
+	in1 := filepath.Join(dir, "one.json")
+	in2 := filepath.Join(dir, "two.json")
+	out := filepath.Join(dir, "owners.json")
+	rows1 := []collideQualityEntry{
+		{Origin: "collide:gen", ActiveCalls: "shape1", Count: 1, TriageCalls: []string{"getsockopt$int_accept"}},
+		{Origin: "collide:triage", ActiveCalls: "shape2", Count: 1, TriageCalls: []string{"getsockopt$int_accept"}},
+	}
+	rows2 := []collideQualityEntry{
+		{Origin: "collide:gen", ActiveCalls: "shape3", Count: 1, TriageCalls: []string{"WSARecvEx$inet_accept"}},
+		{Origin: "collide:triage", ActiveCalls: "shape4", Count: 1, TriageCalls: []string{"getsockopt$int_accept"}},
+	}
+	for path, rows := range map[string][]collideQualityEntry{in1: rows1, in2: rows2} {
+		data, err := json.Marshal(rows)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runCollideOwners([]string{"--inputs", in1 + "," + in2, "--output", out}); err != nil {
+		t.Fatalf("runCollideOwners failed: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read owners: %v", err)
+	}
+	var rows []collideOwnerEntry
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatalf("unmarshal owners: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(rows))
+	}
+	if rows[0].Origin != "collide:triage" || rows[0].Owner != "getsockopt$int_accept" || rows[0].Count != 2 {
+		t.Fatalf("unexpected first row: %+v", rows[0])
+	}
+}
+
+func TestRunCollideQualityUsesTraceIDForPreciseAttribution(t *testing.T) {
+	dir := t.TempDir()
+	managerLog := filepath.Join(dir, "manager.log")
+	output := filepath.Join(dir, "collide_quality.json")
+	lines := []string{
+		"2026/05/12 09:32:01 windows triage job queued: origin=collide:gen trace=collide-1 calls=[bind$inet_tcp listen$inet_tcp] flags=0x0 attempt=0 status=Success",
+		"2026/05/12 09:32:01 windows collide result: origin=collide:gen trace=collide-1 active=[1:bind$inet_tcp(sig=10 cover=20 err=0) 2:listen$inet_tcp(sig=30 cover=40 err=0)]",
+		"2026/05/12 09:32:02 windows triage job queued: origin=collide:gen trace=collide-2 calls=[send$inet_accept] flags=0x0 attempt=0 status=Success",
+		"2026/05/12 09:32:02 windows collide result: origin=collide:gen trace=collide-2 active=[5:WSARecvEx$inet_accept(sig=100 cover=200 err=0) 6:send$inet_accept(sig=300 cover=400 err=0)]",
+		"2026/05/12 09:32:03 windows corpus save: origin=collide:gen trace=collide-2 call=6 name=send$inet_accept stable_signal=10 new_stable=5 cover=8 raw_cover=0",
+	}
+	if err := os.WriteFile(managerLog, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCollideQuality([]string{"--manager-log", managerLog, "--output", output}); err != nil {
+		t.Fatalf("runCollideQuality failed: %v", err)
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatalf("read collide quality: %v", err)
+	}
+	var rows []collideQualityEntry
+	if err := json.Unmarshal(data, &rows); err != nil {
+		t.Fatalf("unmarshal collide quality: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	var shallow, deep *collideQualityEntry
+	for i := range rows {
+		row := &rows[i]
+		switch {
+		case strings.Contains(row.ActiveCalls, "WSARecvEx$inet_accept"):
+			deep = row
+		case strings.Contains(row.ActiveCalls, "bind$inet_tcp"):
+			shallow = row
+		}
+	}
+	if shallow == nil || deep == nil {
+		t.Fatalf("failed to classify collide quality rows: %+v", rows)
+	}
+	if got := strings.Join(shallow.TriageCalls, ","); got != "bind$inet_tcp,listen$inet_tcp" {
+		t.Fatalf("shallow triage calls=%q", got)
+	}
+	if len(shallow.CorpusSaves) != 0 {
+		t.Fatalf("shallow corpus saves should stay empty, got %+v", shallow.CorpusSaves)
+	}
+	if got := strings.Join(deep.TriageCalls, ","); got != "send$inet_accept" {
+		t.Fatalf("deep triage calls=%q", got)
+	}
+	if got := strings.Join(deep.CorpusSaves, ","); got != "send$inet_accept" {
+		t.Fatalf("deep corpus saves=%q", got)
 	}
 }

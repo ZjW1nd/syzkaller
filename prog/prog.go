@@ -14,12 +14,20 @@ type Prog struct {
 	Target   *Target
 	Calls    []*Call
 	Comments []string
+	generationContext string
 
 	// Was deserialized using Unsafe mode, so can do unsafe things.
 	isUnsafe bool
 }
 
 const ExtraCallName = ".extra"
+
+func (p *Prog) GenerationContext() string {
+	if p == nil {
+		return ""
+	}
+	return p.generationContext
+}
 
 func (p *Prog) CallName(call int) string {
 	if call >= len(p.Calls) || call < -1 {
@@ -365,6 +373,51 @@ func MakeReturnArg(t Type) *ResultArg {
 
 func (arg *ResultArg) Size() uint64 {
 	return arg.Type().Size()
+}
+
+func (arg *ResultArg) HasUses() bool {
+	return arg != nil && len(arg.uses) != 0
+}
+
+func (arg *ResultArg) Uses() map[*ResultArg]bool {
+	return arg.uses
+}
+
+func ForeachUseResultArg(root *ResultArg, f func(use *ResultArg)) {
+	if root == nil || len(root.uses) == 0 {
+		return
+	}
+	for use := range root.uses {
+		if use == nil {
+			continue
+		}
+		f(use)
+	}
+}
+
+func FindUseCall(prog0 *Prog, targetUse *ResultArg, limit int) *Call {
+	if prog0 == nil || targetUse == nil {
+		return nil
+	}
+	if limit <= 0 || limit > len(prog0.Calls) {
+		limit = len(prog0.Calls)
+	}
+	for _, call := range prog0.Calls[:limit] {
+		if call == nil {
+			continue
+		}
+		found := false
+		ForeachArg(call, func(arg Arg, ctx *ArgCtx) {
+			if res, ok := arg.(*ResultArg); ok && res == targetUse {
+				found = true
+				ctx.Stop = true
+			}
+		})
+		if found {
+			return call
+		}
+	}
+	return nil
 }
 
 // Returns inner arg for pointer args.

@@ -59,8 +59,10 @@ func (p *Prog) MutateWithOpts(rs rand.Source, ncalls int, ct *ChoiceTable, noMut
 	if p.isUnsafe {
 		panic("mutation of unsafe programs is not supposed to be done")
 	}
+	p.generationContext = "mutate"
 	totalWeight := opts.weight()
 	r := newRand(p.Target, rs)
+	r.generationContext = "mutate"
 	ncalls = max(ncalls, len(p.Calls))
 	ctx := &mutator{
 		p:        p,
@@ -248,7 +250,10 @@ func (ctx *mutator) mutateArg() bool {
 		}
 		s := analyze(ctx.ct, ctx.corpus, p, c)
 		arg, argCtx := ma.chooseArg(r.Rand)
+		prevMeta, prevProg, prevInsertionPoint := r.currentMeta, r.currentProg, r.currentInsertionPoint
+		r.currentMeta, r.currentProg, r.currentInsertionPoint = c.Meta, p, idx
 		calls, ok1 := p.Target.mutateArg(r, s, arg, argCtx, &updateSizes)
+		r.currentMeta, r.currentProg, r.currentInsertionPoint = prevMeta, prevProg, prevInsertionPoint
 		if !ok1 {
 			ok = false
 			continue
@@ -277,12 +282,19 @@ func chooseCall(p *Prog, r *randGen) int {
 	var prioSum float64
 	var callPriorities []float64
 	for _, c := range p.Calls {
+		if !p.Target.CallEligibleForMutation(c.Meta) {
+			callPriorities = append(callPriorities, prioSum)
+			continue
+		}
 		var totalPrio float64
 		ForeachArg(c, func(arg Arg, ctx *ArgCtx) {
 			prio, stopRecursion := arg.Type().getMutationPrio(p.Target, arg, false, c.Meta.Attrs.KFuzzTest)
 			totalPrio += prio
 			ctx.Stop = stopRecursion
 		})
+		if p.Target.CallRelevanceScore != nil {
+			totalPrio *= float64(max(1, p.Target.CallRelevance(c.Meta)+1))
+		}
 		prioSum += totalPrio
 		callPriorities = append(callPriorities, prioSum)
 	}

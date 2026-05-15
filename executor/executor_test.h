@@ -9,9 +9,9 @@
 #include <sys/prctl.h>
 #endif
 
-// sys/targets also know about these consts.
-static uint64 kernel_text_start = 0xc0dec0dec0000000;
-static uint64 kernel_text_mask = 0xffffff;
+#ifndef MAP_FIXED_EXCLUSIVE
+#define MAP_FIXED_EXCLUSIVE MAP_FIXED
+#endif
 
 static void os_init(int argc, char** argv, void* data, size_t data_size)
 {
@@ -30,10 +30,9 @@ static void os_init(int argc, char** argv, void* data, size_t data_size)
 
 #ifdef __clang__
 #define notrace
-#else
-#define notrace __attribute__((no_sanitize_coverage))
-#endif
-
+// sys/targets also know about these consts.
+static uint64 kernel_text_start = 0xc0dec0dec0000000;
+static uint64 kernel_text_mask = 0xffffff;
 extern "C" notrace void __sanitizer_cov_trace_pc(void)
 {
 	if (current_thread == nullptr || current_thread->cov.data == nullptr || current_thread->cov.collect_comps)
@@ -62,6 +61,58 @@ extern "C" notrace void __sanitizer_cov_trace_pc(void)
 		}
 	}
 }
+#else
+// GCC may reject no_sanitize_coverage with -Werror=attributes, and if this hook is
+// instrumented with -fsanitize-coverage=trace-pc it recursively calls itself forever.
+// Define a tiny assembly entry point that sets a reentrancy guard before calling into
+// a C++ body. The body itself may still be instrumented, but its recursive entry will
+// see the guard and immediately return.
+static uint64 kernel_text_start = 0xc0dec0dec0000000;
+static uint64 kernel_text_mask = 0xffffff;
+extern "C" int syz_test_cov_in_hook;
+int syz_test_cov_in_hook __attribute__((used));
+
+extern "C" void __sanitizer_cov_trace_pc(void);
+extern "C" void syz_test_cov_trace_pc_body(uintptr_t pc);
+asm(
+	".section .text\n"
+	".globl __sanitizer_cov_trace_pc\n"
+	".type __sanitizer_cov_trace_pc, @function\n"
+	"__sanitizer_cov_trace_pc:\n"
+	"movl syz_test_cov_in_hook(%rip), %eax\n"
+	"test %eax, %eax\n"
+	"jne 1f\n"
+	"movl $1, syz_test_cov_in_hook(%rip)\n"
+	"mov (%rsp), %rdi\n"
+	"call syz_test_cov_trace_pc_body\n"
+	"movl $0, syz_test_cov_in_hook(%rip)\n"
+	"1:\n"
+	"ret\n");
+
+extern "C" __attribute__((noinline)) void syz_test_cov_trace_pc_body(uintptr_t pc)
+{
+	if (current_thread == nullptr || current_thread->cov.data == nullptr || current_thread->cov.collect_comps)
+		return;
+	pc = kernel_text_start | (pc & kernel_text_mask);
+	if (is_kernel_64_bit) {
+		uint64* start = (uint64*)current_thread->cov.data;
+		uint64* end = (uint64*)current_thread->cov.data_end;
+		uint64 pos = start[0];
+		if (start + pos + 1 < end) {
+			start[0] = pos + 1;
+			start[pos + 1] = pc;
+		}
+	} else {
+		uint32* start = (uint32*)current_thread->cov.data;
+		uint32* end = (uint32*)current_thread->cov.data_end;
+		uint32 pos = start[0];
+		if (start + pos + 1 < end) {
+			start[0] = pos + 1;
+			start[pos + 1] = pc;
+		}
+	}
+}
+#endif
 
 static intptr_t execute_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {

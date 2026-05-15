@@ -13,6 +13,14 @@ Current v1 expectations:
 
 A minimal manager config is provided in `windows-nyx-none.cfg`.
 
+Focused configs can also select Windows target-policy profiles through
+`experimental.windows_target_profile`, for example:
+
+- `windows-nyx-afd-none.cfg` uses `afd`
+- `windows-nyx-fsctl-none.cfg` uses `fsctl`
+- `windows-nyx-network-none.cfg` uses `afd`
+- `windows-nyx-ntfs-none.cfg` uses `fsctl`
+
 Example:
 
 ```bash

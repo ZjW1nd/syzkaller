@@ -82,6 +82,78 @@ mutate_integer(0x0, 0x1, 0x1, 0x1, 0x0, 0x1, 0x0, 0x0, 0x1)`,
 	runMutationTests(t, tests, true)
 }
 
+func TestChooseCallRespectsCallRelevanceScore(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 3
+		}
+		return 0
+	}
+	p, err := clone.Deserialize([]byte("test$automatic(0x1)\ntest$manual(0x2)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRand(&clone, rand.NewSource(0))
+	automatic, manual := 0, 0
+	for range 50000 {
+		switch p.Calls[chooseCall(p, r)].Meta.Name {
+		case "test$automatic":
+			automatic++
+		case "test$manual":
+			manual++
+		}
+	}
+	if manual <= automatic {
+		t.Fatalf("call relevance did not bias mutation enough: automatic=%d manual=%d", automatic, manual)
+	}
+}
+
+func TestChooseCallSkipsCallsBelowMinimumRelevance(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		switch call.Name {
+		case "test$manual":
+			return 3
+		case "test$automatic":
+			return 2
+		default:
+			return 0
+		}
+	}
+	clone.MinimumMutationCallRelevance = 3
+	p, err := clone.Deserialize([]byte("test$automatic(0x1)\ntest$manual(0x2)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRand(&clone, rand.NewSource(0))
+	for range 1000 {
+		idx := chooseCall(p, r)
+		if idx != 1 {
+			t.Fatalf("chooseCall selected call[%d]=%s, want call[1]=test$manual", idx, p.Calls[idx].Meta.Name)
+		}
+	}
+}
+
+func TestChooseCallSkipsAutomaticHelpersWhenNoMutateEnabled(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.Helpers.NoMutateAutomaticHelpers = true
+	p, err := clone.Deserialize([]byte("test$automatic_helper(0x1)\ntest$manual(0x2)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRand(&clone, rand.NewSource(0))
+	for range 1000 {
+		idx := chooseCall(p, r)
+		if idx != 1 {
+			t.Fatalf("chooseCall selected call[%d]=%s, want call[1]=test$manual", idx, p.Calls[idx].Meta.Name)
+		}
+	}
+}
+
 func TestMutateArgument(t *testing.T) {
 	if testutil.RaceEnabled {
 		t.Skip("skipping in race mode, too slow")

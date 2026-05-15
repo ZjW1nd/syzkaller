@@ -25,6 +25,15 @@ func AssignRandomAsync(origProg *Prog, rand *rand.Rand) *Prog {
 	var unassigned map[*ResultArg]bool
 	leftAsync := maxAsyncPerProg
 	prog := origProg.Clone()
+	preferred := make(map[int]bool)
+	preferredIdx, thresholdBlocked := preferredCollideIndices(prog.Calls, prog.Target)
+	if thresholdBlocked {
+		return prog
+	}
+	for _, idx := range preferredIdx {
+		preferred[idx] = true
+	}
+	usePreferred := len(preferred) != 0
 	for i := len(prog.Calls) - 1; i >= 0 && leftAsync > 0; i-- {
 		call := prog.Calls[i]
 		producesUnassigned := false
@@ -43,8 +52,12 @@ func AssignRandomAsync(origProg *Prog, rand *rand.Rand) *Prog {
 				consumes[res.Res] = true
 			}
 		})
+		forceSync := prog.Target.Helpers.AvoidCollidingAutomaticHelpers && prog.Target.CallIsAutomaticHelper(call.Meta)
+		if usePreferred && !preferred[i] {
+			forceSync = true
+		}
 		// Make async with a 66% chance (but never the last call).
-		if !producesUnassigned && i+1 != len(prog.Calls) && rand.Intn(3) != 0 {
+		if !forceSync && !producesUnassigned && i+1 != len(prog.Calls) && rand.Intn(3) != 0 {
 			call.Props.Async = true
 			for res := range consumes {
 				unassigned[res] = true
@@ -55,15 +68,62 @@ func AssignRandomAsync(origProg *Prog, rand *rand.Rand) *Prog {
 			unassigned = consumes
 		}
 	}
+	if usePreferred {
+		anyAsync := false
+		for _, call := range prog.Calls {
+			if call.Props.Async {
+				anyAsync = true
+				break
+			}
+		}
+		if !anyAsync {
+			for i := len(prog.Calls) - 1; i >= 0; i-- {
+				if !preferred[i] || i+1 == len(prog.Calls) {
+					continue
+				}
+				prog.Calls[i].Props.Async = true
+				break
+			}
+		}
+	}
 
 	return prog
 }
 
 var rerunSteps = []int{32, 64}
 
+func preferredCollideIndices(calls []*Call, target *Target) ([]int, bool) {
+	if target != nil && target.SelectCollideCallIndices != nil {
+		return target.SelectCollideCallIndices(calls)
+	}
+	minScore := 0
+	if target != nil {
+		minScore = target.MinimumCollideCallRelevance
+	}
+	if target != nil {
+		return target.bestRelevanceCallIndices(calls, minScore, true)
+	}
+	return nil, false
+}
+
 func AssignRandomRerun(prog *Prog, rand *rand.Rand) {
+	preferred := make(map[int]bool)
+	preferredIdx, thresholdBlocked := preferredCollideIndices(prog.Calls, prog.Target)
+	if thresholdBlocked {
+		return
+	}
+	for _, idx := range preferredIdx {
+		preferred[idx] = true
+	}
+	usePreferred := len(preferred) != 0
 	for i := 0; i+1 < len(prog.Calls); i++ {
-		if !prog.Calls[i].Props.Async || rand.Intn(4) != 0 {
+		if !prog.Calls[i].Props.Async {
+			continue
+		}
+		if usePreferred && !preferred[i] {
+			continue
+		}
+		if rand.Intn(4) != 0 {
 			continue
 		}
 		// We assign rerun to consecutive pairs of calls, where the first call is async.
@@ -87,12 +147,28 @@ func DoubleExecCollide(origProg *Prog, rand *rand.Rand) (*Prog, error) {
 	prog := origProg.Clone()
 	dupCalls := cloneCalls(prog.Calls, nil)
 	leftAsync := maxAsyncPerProg
-	for _, c := range dupCalls {
+	preferred, thresholdBlocked := preferredCollideIndices(dupCalls, prog.Target)
+	if thresholdBlocked {
+		return nil, fmt.Errorf("no sufficiently relevant calls for double-exec collide")
+	}
+	for _, idx := range preferred {
 		if leftAsync == 0 {
 			break
 		}
-		c.Props.Async = true
+		dupCalls[idx].Props.Async = true
 		leftAsync--
+	}
+	if leftAsync == maxAsyncPerProg {
+		for _, c := range dupCalls {
+			if leftAsync == 0 {
+				break
+			}
+			if prog.Target.Helpers.AvoidCollidingAutomaticHelpers && prog.Target.CallIsAutomaticHelper(c.Meta) {
+				continue
+			}
+			c.Props.Async = true
+			leftAsync--
+		}
 	}
 	prog.Calls = append(prog.Calls, dupCalls...)
 	return prog, nil
@@ -112,8 +188,27 @@ func DupCallCollide(origProg *Prog, rand *rand.Rand) (*Prog, error) {
 	if insert == 0 {
 		return nil, fmt.Errorf("no calls could be duplicated")
 	}
+	candidates := make([]int, 0, len(origProg.Calls))
+	for i, c := range origProg.Calls {
+		if origProg.Target.Helpers.AvoidCollidingAutomaticHelpers && origProg.Target.CallIsAutomaticHelper(c.Meta) {
+			continue
+		}
+		candidates = append(candidates, i)
+	}
+	if len(candidates) == 0 {
+		for i := range origProg.Calls {
+			candidates = append(candidates, i)
+		}
+	}
+	if preferred, thresholdBlocked := preferredCollideIndices(origProg.Calls, origProg.Target); len(preferred) != 0 {
+		candidates = preferred
+	} else if thresholdBlocked {
+		return nil, fmt.Errorf("no sufficiently relevant calls for duplicate-collide")
+	}
+	insert = min(insert, len(candidates))
 	duplicate := map[int]bool{}
-	for _, pos := range rand.Perm(len(origProg.Calls))[:insert] {
+	for _, idx := range rand.Perm(len(candidates))[:insert] {
+		pos := candidates[idx]
 		duplicate[pos] = true
 	}
 	prog := origProg.Clone()

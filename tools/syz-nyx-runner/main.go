@@ -125,6 +125,98 @@ func reorderArgsForFlags(args []string) []string {
 	return append(flags, pos...)
 }
 
+func bootstrapWSA() string {
+	return "WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"
+}
+
+func bootstrapClose(ref string) string {
+	return fmt.Sprintf("closesocket$any(%s)\n", ref)
+}
+
+func bootstrapTCPServer(addrRef string) string {
+	return bootstrapWSA() +
+		"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+		fmt.Sprintf("bind$inet_tcp(r0, %s, 0x10)\n", addrRef) +
+		"listen$inet_tcp(r0, 0x1)\n"
+}
+
+func bootstrapTCPClient(addrRef string) string {
+	return "r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+		fmt.Sprintf("connect$inet_tcp(r1, %s, 0x10)\n", addrRef)
+}
+
+func bootstrapUDPClient(addrRef string) string {
+	return "r1 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+		fmt.Sprintf("connect$inet_udp(r1, %s, 0x10)\n", addrRef)
+}
+
+func bootstrapUDPConnectedSession(addrRef string) string {
+	return bootstrapWSA() +
+		"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+		fmt.Sprintf("connect$inet_udp(r0, %s, 0x10)\n", addrRef)
+}
+
+func bootstrapUDPBoundReceiverWithPeerSend(bindAddrRef, peerAddrRef string) string {
+	return bootstrapWSA() +
+		"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+		fmt.Sprintf("bind$inet_udp(r0, %s, 0x10)\n", bindAddrRef) +
+		bootstrapUDPClient(peerAddrRef) +
+		"send$inet_udp(r1, 'abcd', 0x4, 0x0)\n"
+}
+
+func bootstrapAcceptSocket() string {
+	return "r2 = socket$accept_tcp(0x2, 0x1, 0x6)\n"
+}
+
+func bootstrapTCPAcceptedSession() string {
+	return "r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n"
+}
+
+func bootstrapAcceptPeerSend() string {
+	return "send$inet_accept(r2, 'abcd', 0x4, 0x0)\n"
+}
+
+func bootstrapConnectedPeerSend() string {
+	return "send$inet_tcp(r1, 'abcd', 0x4, 0x0)\n"
+}
+
+func bootstrapFilePayload() string {
+	return "r3 = CreateFileA(&(0x7f0000000200)='./nyx-txfile\\x00', 0xffffffff, 0x7, 0x0, 0x2, 0x80, 0xffffffffffffffff)\n" +
+		"WriteFile(r3, &(0x7f0000000240)='abcd', 0x4, &(0x7f0000000280)=0x0, 0x0)\n"
+}
+
+func bootstrapTCPAcceptedSessionWithClient(listenerAddrRef, clientAddrRef string) string {
+	return bootstrapTCPServer(listenerAddrRef) +
+		bootstrapTCPClient(clientAddrRef) +
+		bootstrapTCPAcceptedSession()
+}
+
+func bootstrapTCPAcceptExSessionWithClient(listenerAddrRef, clientAddrRef string) string {
+	return bootstrapTCPServer(listenerAddrRef) +
+		bootstrapTCPClient(clientAddrRef) +
+		bootstrapAcceptSocket()
+}
+
+func bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(listenerAddrRef, clientAddrRef string) string {
+	return bootstrapTCPAcceptedSessionWithClient(listenerAddrRef, clientAddrRef) +
+		bootstrapConnectedPeerSend()
+}
+
+func bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(listenerAddrRef, clientAddrRef string) string {
+	return bootstrapTCPAcceptedSessionWithClient(listenerAddrRef, clientAddrRef) +
+		bootstrapAcceptPeerSend()
+}
+
+func bootstrapCloseAcceptSessionSockets() string {
+	return bootstrapClose("r2") +
+		bootstrapClose("r1") +
+		bootstrapClose("r0")
+}
+
+func bootstrapTCPListenerNonblocking() string {
+	return "ioctlsocket$fionbio_tcp(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n"
+}
+
 type nyxMsgHeader struct {
 	Magic    uint32
 	Version  uint16
@@ -877,6 +969,7 @@ type runner struct {
 	conn           *flatrpc.Conn
 	connectReply   *flatrpc.ConnectReply
 	handshakeReady bool
+	coveragePrimed bool
 	lastEnvFlags   flatrpc.ExecEnv
 	lastSandboxArg int64
 	needRestart    bool
@@ -893,6 +986,7 @@ func (r *runner) resetForReconnect() {
 	}
 	r.connectReply = nil
 	r.handshakeReady = false
+	r.coveragePrimed = false
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
 }
@@ -958,6 +1052,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	}
 	log.Logf(0, "runner handshake complete")
 	r.handshakeReady = true
+	r.coveragePrimed = false
 	r.lastEnvFlags = envFlags
 	r.lastSandboxArg = req.ExecOpts.SandboxArg
 	return nil
@@ -977,29 +1072,43 @@ func (r *runner) restartVM(reason string) error {
 		return err
 	}
 	r.handshakeReady = false
+	r.coveragePrimed = false
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
 	r.needRestart = false
 	return nil
 }
 
-func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage, error) {
+func requestNeedsCoveragePriming(req *flatrpc.ExecRequest) bool {
+	if req == nil || req.ExecOpts == nil {
+		return false
+	}
+	return req.ExecOpts.ExecFlags&(flatrpc.ExecFlagCollectCover|flatrpc.ExecFlagCollectSignal) != 0
+}
+
+func execResultHasCoverage(msg *flatrpc.ExecutorMessage) bool {
+	if msg == nil || msg.Msg == nil {
+		return false
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res == nil || res.Info == nil || res.Hanged || res.Error != "" {
+		return false
+	}
+	return countNonEmptyCover(res.Info.Calls) != 0
+}
+
+func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flatrpc.ExecutorMessage, error) {
 	if req.Type != flatrpc.RequestTypeProgram {
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
 	}
-	if r.needRestart {
-		if err := r.restartVM("recovering from previous hanged request"); err != nil {
-			return nil, err
-		}
-	}
-	// Threaded flag: preserved for both standalone-generic and manager paths
 	execFlags := req.ExecOpts.ExecFlags
-	log.Logf(0, "runner exec request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
-		req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
-	log.Logf(0, "runner exec program: id=%d %s", req.Id, describeExecProgram(req.Data))
-	if err := r.ensureHandshake(req); err != nil {
-		return nil, err
+	requestLabel := "runner exec"
+	if prime {
+		requestLabel = "runner prime"
 	}
+	log.Logf(0, "%s request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
+		requestLabel, req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
+	log.Logf(0, "%s program: id=%d %s", requestLabel, req.Id, describeExecProgram(req.Data))
 	r.vm.applyHardTimeout()
 	meta := &nyxExecMeta{RequestID: req.Id, ProcID: 0}
 	body := &flatrpc.SnapshotRequestT{
@@ -1025,10 +1134,40 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		r.markForRestart(fmt.Sprintf("request %d hanged", req.Id))
 	}
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
-		log.Logf(0, "runner exec complete: id=%d calls=%d cover_records=%d",
-			req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
+		log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d",
+			requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
 	}
 	return execMsg, nil
+}
+
+func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage, error) {
+	if req.Type != flatrpc.RequestTypeProgram {
+		return nil, fmt.Errorf("unsupported request type %v", req.Type)
+	}
+	if r.needRestart {
+		if err := r.restartVM("recovering from previous hanged request"); err != nil {
+			return nil, err
+		}
+	}
+	if err := r.ensureHandshake(req); err != nil {
+		return nil, err
+	}
+	if !r.coveragePrimed && requestNeedsCoveragePriming(req) {
+		primeMsg, err := r.executeRequestOnce(req, true)
+		if err != nil {
+			return nil, err
+		}
+		r.coveragePrimed = true
+		if execResultHasCoverage(primeMsg) {
+			return primeMsg, nil
+		}
+		log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
+		return r.executeRequestOnce(req, false)
+	}
+	if requestNeedsCoveragePriming(req) {
+		r.coveragePrimed = true
+	}
+	return r.executeRequestOnce(req, false)
 }
 
 func execResultHanged(msg *flatrpc.ExecutorMessage) bool {
@@ -1371,6 +1510,26 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 			return nil, false, fmt.Errorf("build standalone socket$inet_tcp bootstrap program: %w", err)
 		}
 		return p, true, nil
+	case "socket$listener_tcp":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone socket$listener_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "socket$connected_tcp":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone socket$connected_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
 	case "socket$inet_udp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
@@ -1381,188 +1540,305 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 			return nil, false, fmt.Errorf("build standalone socket$inet_udp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "bind$inet":
+	case "socket$accept_tcp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r0 = socket$accept_tcp(0x2, 0x1, 0x6)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone bind$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone socket$accept_tcp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "listen$inet":
+	case "bind$inet_tcp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone listen$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone bind$inet_tcp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "connect$inet":
+	case "bind$inet_udp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
-				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"closesocket$any(r1)\n" +
+				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+				"bind$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone connect$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone bind$inet_udp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "send$inet":
+	case "listen$inet_tcp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
-				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
-				"send$inet(r1, 'abcd', 0x4, 0x0)\n" +
-				"closesocket$any(r2)\n" +
-				"closesocket$any(r1)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone send$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone listen$inet_tcp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "recv$inet":
+	case "connect$inet_tcp":
+		src := []byte(
+			bootstrapTCPServer("&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+				bootstrapTCPClient("&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+				bootstrapClose("r1") +
+				bootstrapClose("r0"))
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone connect$inet_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "connect$inet_udp":
+		src := []byte(
+			bootstrapUDPConnectedSession("&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+				bootstrapClose("r0"))
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone connect$inet_udp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "send$inet_tcp":
+		src := []byte(
+			bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				bootstrapCloseAcceptSessionSockets())
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone send$inet_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "send$inet_udp":
+		src := []byte(
+			bootstrapUDPConnectedSession("&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+				"send$inet_udp(r0, 'abcd', 0x4, 0x0)\n" +
+				bootstrapClose("r0"))
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone send$inet_udp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "send$inet_accept":
+		src := []byte(
+			bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				bootstrapCloseAcceptSessionSockets())
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone send$inet_accept bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "recv$inet_tcp":
+		src := []byte(
+			bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				"ioctlsocket$fionbio_tcp(r1, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
+				"recv$inet_tcp(r1, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
+				bootstrapCloseAcceptSessionSockets())
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone recv$inet_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "recv$inet_udp":
+		src := []byte(
+			bootstrapUDPBoundReceiverWithPeerSend(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				"ioctlsocket$fionbio_udp(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
+				"recv$inet_udp(r0, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
+				bootstrapClose("r1") +
+				bootstrapClose("r0"))
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone recv$inet_udp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "recv$inet_accept":
+		src := []byte(
+			bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				"ioctlsocket$fionbio_accept(r2, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
+				"recv$inet_accept(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
+				bootstrapCloseAcceptSessionSockets())
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone recv$inet_accept bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "accept$inet_tcp":
+		src := []byte(
+			bootstrapTCPAcceptedSessionWithClient(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				bootstrapTCPListenerNonblocking() +
+				bootstrapCloseAcceptSessionSockets())
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone accept$inet_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "ioctlsocket$fionbio_tcp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
-				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
-				"ioctlsocket$fionbio(r2, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"recv$inet(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
-				"closesocket$any(r2)\n" +
-				"closesocket$any(r1)\n" +
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"ioctlsocket$fionbio_tcp(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone recv$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio_tcp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "accept$inet":
+	case "ioctlsocket$fionbio_udp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
-				"ioctlsocket$fionbio(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
-				"closesocket$any(r2)\n" +
-				"closesocket$any(r1)\n" +
+				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+				"ioctlsocket$fionbio_udp(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone accept$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio_udp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "ioctlsocket$fionbio":
+	case "ioctlsocket$fionbio_accept":
 		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"ioctlsocket$fionbio(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"closesocket$any(r0)\n")
+			bootstrapTCPAcceptedSessionWithClient(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				bootstrapTCPListenerNonblocking() +
+				"ioctlsocket$fionbio_accept(r2, 0x8004667e, &(0x7f00000000a0)=0x1)\n" +
+				bootstrapCloseAcceptSessionSockets())
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio_accept bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "AcceptEx$inet":
+	case "AcceptEx$inet_tcp":
 		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
-				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"AcceptEx$inet(r0, r2, &(0x7f0000000140)='\\x00'/512, 0x0, 0x40, 0x40, &(0x7f0000000340)=0x0, 0x0)\n" +
-				"closesocket$any(r2)\n" +
-				"closesocket$any(r1)\n" +
-				"closesocket$any(r0)\n")
+			bootstrapTCPAcceptExSessionWithClient(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				"AcceptEx$inet_tcp(r0, r2, &(0x7f0000000140)='\\x00'/512, 0x0, 0x40, 0x40, &(0x7f0000000340)=0x0, 0x0)\n" +
+				bootstrapCloseAcceptSessionSockets())
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone AcceptEx$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone AcceptEx$inet_tcp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "WSARecvEx$inet":
+	case "WSARecvEx$inet_accept":
 		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
-				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
-				"send$inet(r1, 'abcd', 0x4, 0x0)\n" +
-				"WSARecvEx$inet(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, &(0x7f0000000200)=0x0)\n" +
-				"closesocket$any(r2)\n" +
-				"closesocket$any(r1)\n" +
-				"closesocket$any(r0)\n")
+			bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				"WSARecvEx$inet_accept(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, &(0x7f0000000200)=0x0)\n" +
+				bootstrapCloseAcceptSessionSockets())
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone WSARecvEx$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone WSARecvEx$inet_accept bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "TransmitFile$inet":
+	case "TransmitFile$inet_accept":
 		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet(r0, 0x1)\n" +
-				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = accept$inet(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
-				"r3 = CreateFileA(&(0x7f0000000200)='./nyx-txfile\\x00', 0xffffffff, 0x7, 0x0, 0x2, 0x80, 0xffffffffffffffff)\n" +
-				"WriteFile(r3, &(0x7f0000000240)='abcd', 0x4, &(0x7f0000000280)=0x0, 0x0)\n" +
-				"TransmitFile$inet(r2, r3, 0x4, 0x0, 0x0, 0x0, 0x0)\n" +
+			bootstrapTCPAcceptedSessionWithClient(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				bootstrapFilePayload() +
+				"TransmitFile$inet_accept(r2, r3, 0x4, 0x0, 0x0, 0x0, 0x0)\n" +
 				"CloseHandle(r3)\n" +
-				"closesocket$any(r2)\n" +
-				"closesocket$any(r1)\n" +
-				"closesocket$any(r0)\n")
+				bootstrapCloseAcceptSessionSockets())
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone TransmitFile$inet bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone TransmitFile$inet_accept bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "setsockopt$int":
+	case "setsockopt$int_tcp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"setsockopt$int(r0, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"setsockopt$int_tcp(r0, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone setsockopt$int bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone setsockopt$int_tcp bootstrap program: %w", err)
 		}
 		return p, true, nil
-	case "getsockopt$int":
+	case "setsockopt$int_udp":
 		src := []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"getsockopt$int(r0, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
+				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+				"setsockopt$int_udp(r0, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
 				"closesocket$any(r0)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone getsockopt$int bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone setsockopt$int_udp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "setsockopt$int_accept":
+		src := []byte(
+			bootstrapTCPAcceptedSessionWithClient(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				"setsockopt$int_accept(r2, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
+				bootstrapCloseAcceptSessionSockets())
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone setsockopt$int_accept bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "getsockopt$int_tcp":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"getsockopt$int_tcp(r0, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone getsockopt$int_tcp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "getsockopt$int_udp":
+		src := []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+				"getsockopt$int_udp(r0, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
+				"closesocket$any(r0)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone getsockopt$int_udp bootstrap program: %w", err)
+		}
+		return p, true, nil
+	case "getsockopt$int_accept":
+		src := []byte(
+			bootstrapTCPAcceptedSessionWithClient(
+				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			) +
+				"getsockopt$int_accept(r2, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
+				bootstrapCloseAcceptSessionSockets())
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone getsockopt$int_accept bootstrap program: %w", err)
 		}
 		return p, true, nil
 	}
@@ -1586,28 +1862,53 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 				enabled[s] = true
 			}
 		}
-	case "socket$inet_tcp", "socket$inet_udp", "bind$inet", "listen$inet", "connect$inet", "accept$inet", "send$inet", "recv$inet", "ioctlsocket$fionbio", "AcceptEx$inet", "WSARecvEx$inet", "TransmitFile$inet", "setsockopt$int", "getsockopt$int":
+	case "socket$inet_tcp", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "socket$inet_udp",
+		"bind$inet_tcp", "bind$inet_udp",
+		"listen$inet_tcp",
+		"connect$inet_tcp", "connect$inet_udp",
+		"accept$inet_tcp",
+		"send$inet_tcp", "send$inet_udp", "send$inet_accept",
+		"recv$inet_tcp", "recv$inet_udp", "recv$inet_accept",
+		"ioctlsocket$fionbio_tcp", "ioctlsocket$fionbio_udp", "ioctlsocket$fionbio_accept",
+		"AcceptEx$inet_tcp", "WSARecvEx$inet_accept", "TransmitFile$inet_accept",
+		"setsockopt$int_tcp", "setsockopt$int_udp", "setsockopt$int_accept",
+		"getsockopt$int_tcp", "getsockopt$int_udp", "getsockopt$int_accept":
 		for _, name := range []string{
 			"WSAStartup",
 			"WSACleanup",
 			"socket$inet_tcp",
+			"socket$listener_tcp",
+			"socket$connected_tcp",
+			"socket$accept_tcp",
 			"socket$inet_udp",
 			"closesocket$any",
-			"bind$inet",
-			"listen$inet",
-			"connect$inet",
-			"accept$inet",
-			"send$inet",
-			"recv$inet",
-			"ioctlsocket$fionbio",
-			"AcceptEx$inet",
-			"WSARecvEx$inet",
-			"TransmitFile$inet",
+			"bind$inet_tcp",
+			"bind$inet_udp",
+			"listen$inet_tcp",
+			"connect$inet_tcp",
+			"connect$inet_udp",
+			"accept$inet_tcp",
+			"send$inet_tcp",
+			"send$inet_udp",
+			"send$inet_accept",
+			"recv$inet_tcp",
+			"recv$inet_udp",
+			"recv$inet_accept",
+			"ioctlsocket$fionbio_tcp",
+			"ioctlsocket$fionbio_udp",
+			"ioctlsocket$fionbio_accept",
+			"AcceptEx$inet_tcp",
+			"WSARecvEx$inet_accept",
+			"TransmitFile$inet_accept",
 			"CreateFileA",
 			"WriteFile",
 			"CloseHandle",
-			"setsockopt$int",
-			"getsockopt$int",
+			"setsockopt$int_tcp",
+			"setsockopt$int_udp",
+			"setsockopt$int_accept",
+			"getsockopt$int_tcp",
+			"getsockopt$int_udp",
+			"getsockopt$int_accept",
 		} {
 			if s, ok := target.SyscallMap[name]; ok {
 				enabled[s] = true

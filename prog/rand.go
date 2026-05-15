@@ -38,6 +38,10 @@ const (
 type randGen struct {
 	*rand.Rand
 	target                *Target
+	currentMeta           *Syscall
+	currentProg           *Prog
+	currentInsertionPoint int
+	generationContext     string
 	inGenerateResource    bool
 	patchConditionalDepth int
 	genKFuzzTest          bool
@@ -454,6 +458,9 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 	// Now we have a set of candidate calls that can create the necessary resource.
 	// Generate one of them.
 	var meta *Syscall
+	if r.target.SelectResourceCtor != nil {
+		meta = r.target.SelectResourceCtor(r.currentMeta, kind, ctors)
+	}
 	// Prefer precise constructors.
 	var precise []*Syscall
 	for _, info := range ctors {
@@ -461,7 +468,7 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 			precise = append(precise, info.Call)
 		}
 	}
-	if len(precise) > 0 {
+	if meta == nil && len(precise) > 0 {
 		// If the argument is optional, it's not guaranteed that there'd be a
 		// precise constructor.
 		meta = precise[r.Intn(len(precise))]
@@ -626,16 +633,39 @@ func (r *randGen) nOutOf(n, outOf int) bool {
 }
 
 func (r *randGen) generateCall(s *state, p *Prog, insertionPoint int) []*Call {
+	prevProg, prevInsertionPoint := r.currentProg, r.currentInsertionPoint
+	r.currentProg, r.currentInsertionPoint = p, insertionPoint
+	defer func() {
+		r.currentProg, r.currentInsertionPoint = prevProg, prevInsertionPoint
+	}()
 	biasCall := -1
 	if insertionPoint > 0 {
-		// Choosing the base call is based on the insertion point of the new calls sequence.
-		insertionCall := p.Calls[r.Intn(insertionPoint)].Meta
-		if !insertionCall.Attrs.NoGenerate {
-			// We must be careful not to bias towards a non-generatable call.
-			biasCall = insertionCall.ID
+		biasIdx := -1
+		if r.target.Bias.SelectGenerationBiasCall != nil {
+			biasIdx = r.target.Bias.SelectGenerationBiasCall(p, insertionPoint)
+		}
+		if biasIdx != NoGenerationBiasCall && (biasIdx < 0 || biasIdx >= insertionPoint) {
+			// Choosing the base call is based on the insertion point of the new calls sequence.
+			biasIdx = r.Intn(insertionPoint)
+		}
+		if biasIdx != NoGenerationBiasCall {
+			insertionCall := p.Calls[biasIdx].Meta
+			if !insertionCall.Attrs.NoGenerate {
+				// We must be careful not to bias towards a non-generatable call.
+				biasCall = insertionCall.ID
+				if r.target.Helpers.AvoidAutomaticHelperBias && r.target.CallIsAutomaticHelper(insertionCall) {
+					biasCall = -1
+				}
+			}
 		}
 	}
-	idx := s.ct.choose(r.Rand, biasCall)
+	idx := -1
+	if r.target.Bias.SelectGeneratedCall != nil {
+		idx = r.target.Bias.SelectGeneratedCall(p, insertionPoint, biasCall, s.ct)
+	}
+	if idx < 0 {
+		idx = s.ct.choose(r.Rand, biasCall)
+	}
 	meta := r.target.Syscalls[idx]
 	return r.generateParticularCall(s, meta)
 }
@@ -652,6 +682,9 @@ func (r *randGen) generateParticularCall(s *state, meta *Syscall) (calls []*Call
 
 func (r *randGen) generateParticularCallUnsafe(s *state, meta *Syscall) (calls []*Call) {
 	c := MakeCall(meta, nil)
+	prevMeta := r.currentMeta
+	r.currentMeta = meta
+	defer func() { r.currentMeta = prevMeta }()
 	// KFuzzTest calls restrict mutation and generation. Since calls to
 	// generateParticularCall can be recursive, we save the previous value, and
 	// set it true.
@@ -798,6 +831,14 @@ func (a *ResourceType) generate(r *randGen, s *state, dir Dir) (arg Arg, calls [
 	}
 	if (canRecurse && r.nOutOf(8, 10) ||
 		!canRecurse && r.nOutOf(19, 20)) && !r.genDefaultResource {
+		preferCorpus := r.target.PreferResourceCentricBorrowing != nil &&
+			r.target.PreferResourceCentricBorrowing(r.currentMeta)
+		if preferCorpus && canRecurse {
+			arg, calls = r.resourceCentric(s, a, dir)
+			if arg != nil {
+				return
+			}
+		}
 		arg = r.existingResource(s, a, dir)
 		if arg != nil {
 			return
@@ -997,12 +1038,37 @@ func (r *randGen) existingResource(s *state, res *ResourceType, dir Dir) Arg {
 		return cmp.Compare(a[0].Type().Name(), b[0].Type().Name())
 	})
 	var allres []*ResultArg
+	var preferred []*ResultArg
+	bestScore := 0
+	bestReuse := 0
 	for _, res1 := range alltypes {
 		name1 := res1[0].Type().Name()
 		if r.target.isCompatibleResource(res.Desc.Name, name1) ||
 			r.oneOf(50) && r.target.isCompatibleResource(res.Desc.Kind[0], name1) {
 			allres = append(allres, res1...)
+			for _, candidate := range res1 {
+				reuse := r.target.resourceReuseScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint)
+				if reuse > bestReuse {
+					bestReuse = reuse
+					bestScore = 0
+					preferred = preferred[:0]
+				}
+				if bestReuse != 0 && reuse != bestReuse {
+					continue
+				}
+				score := s.resourceScores[candidate]
+				if score > bestScore {
+					bestScore = score
+					preferred = preferred[:0]
+				}
+				if bestReuse != 0 || score > 0 && score == bestScore {
+					preferred = append(preferred, candidate)
+				}
+			}
 		}
+	}
+	if len(preferred) != 0 {
+		allres = preferred
 	}
 	if len(allres) == 0 {
 		return nil
@@ -1010,25 +1076,85 @@ func (r *randGen) existingResource(s *state, res *ResourceType, dir Dir) Arg {
 	return MakeResultArg(res, dir, allres[r.Intn(len(allres))], 0)
 }
 
+func (target *Target) resourceReuseScore(current *Syscall, candidate *ResultArg, p *Prog, insertionPoint int) int {
+	if target == nil || current == nil || candidate == nil {
+		return 0
+	}
+	if target.ResourceReuseScore != nil {
+		return target.ResourceReuseScore(current, candidate, p, insertionPoint)
+	}
+	return 0
+}
+
 // Finds a compatible resource with the type `t` and the calls that initialize that resource.
 func (r *randGen) resourceCentric(s *state, t *ResourceType, dir Dir) (arg Arg, calls []*Call) {
+	currentName := "unknown"
+	if r.currentMeta != nil {
+		currentName = r.currentMeta.Name
+	} else if r.currentProg != nil && r.currentInsertionPoint > 0 && r.currentInsertionPoint <= len(r.currentProg.Calls) {
+		if call := r.currentProg.Calls[r.currentInsertionPoint-1]; call != nil && call.Meta != nil {
+			currentName = call.Meta.Name
+		}
+	}
+	if r.target != nil && r.target.ObserveTemplateHook != nil {
+		r.target.ObserveTemplateHook("rc_try:" + currentName)
+	}
 	var p *Prog
 	var resource *ResultArg
-	for _, idx := range r.Perm(len(s.corpus)) {
-		corpusProg := s.corpus[idx]
-		resources := getCompatibleResources(corpusProg, t.TypeName, r)
-		if len(resources) == 0 {
-			continue
+	seenCandidates := false
+	order := r.Perm(len(s.corpus))
+	for _, preferredOnly := range []bool{true, false} {
+		bestReuse := 0
+		for _, idx := range order {
+			corpusProg := s.corpus[idx]
+			preferred, all := getCompatibleResources(corpusProg, t.TypeName, r)
+			candidates := all
+			if preferredOnly {
+				candidates = preferred
+			}
+			if len(candidates) == 0 {
+				continue
+			}
+			seenCandidates = true
+			if reuse := r.bestCorpusResourceScore(corpusProg, candidates); reuse > bestReuse {
+				bestReuse = reuse
+			}
 		}
-		argMap := make(map[*ResultArg]*ResultArg)
-		p = corpusProg.cloneWithMap(argMap)
-		resource = argMap[resources[r.Intn(len(resources))]]
-		break
+		if seenCandidates && bestReuse == 0 && r.target != nil && r.target.ObserveTemplateHook != nil {
+			r.target.ObserveTemplateHook("rc_zero_score:" + currentName)
+		}
+		for _, idx := range order {
+			corpusProg := s.corpus[idx]
+			preferred, all := getCompatibleResources(corpusProg, t.TypeName, r)
+			candidates := all
+			if preferredOnly {
+				candidates = preferred
+			}
+			if len(candidates) == 0 {
+				continue
+			}
+			if bestReuse != 0 && r.bestCorpusResourceScore(corpusProg, candidates) != bestReuse {
+				continue
+			}
+			argMap := make(map[*ResultArg]*ResultArg)
+			p = corpusProg.cloneWithMap(argMap)
+			resource = argMap[candidates[r.Intn(len(candidates))]]
+			break
+		}
+		if resource != nil {
+			break
+		}
 	}
 
 	// No compatible resource was found.
 	if resource == nil {
+		if !seenCandidates && r.target != nil && r.target.ObserveTemplateHook != nil {
+			r.target.ObserveTemplateHook("rc_no_candidates:" + currentName)
+		}
 		return nil, nil
+	}
+	if r.target != nil && r.target.ObserveTemplateHook != nil {
+		r.target.ObserveTemplateHook("rc_hit:" + currentName)
 	}
 
 	// Set that stores the resources that appear in the same calls with the selected resource.
@@ -1069,7 +1195,49 @@ func (r *randGen) resourceCentric(s *state, t *ResourceType, dir Dir) (arg Arg, 
 	return MakeResultArg(t, dir, resource, 0), p.Calls
 }
 
-func getCompatibleResources(p *Prog, resourceType string, r *randGen) (resources []*ResultArg) {
+func (r *randGen) bestResourceReuse(candidates []*ResultArg) int {
+	best := 0
+	for _, candidate := range candidates {
+		if score := r.target.resourceReuseScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint); score > best {
+			best = score
+		}
+	}
+	return best
+}
+
+func (r *randGen) bestCorpusResourceScore(corpusProg *Prog, candidates []*ResultArg) int {
+	best := 0
+	for _, candidate := range candidates {
+		score := 0
+		if r.target.CorpusResourceScore != nil {
+			score = r.target.CorpusResourceScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint, corpusProg)
+		} else {
+			score = r.target.resourceReuseScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint)
+		}
+		if score > best {
+			best = score
+		}
+	}
+	return best
+}
+
+func getCompatibleResources(p *Prog, resourceType string, r *randGen) (preferred, resources []*ResultArg) {
+	resourceScores := make(map[*ResultArg]int)
+	if r.target.ResourceUseScore != nil {
+		for _, c := range p.Calls {
+			ForeachArg(c, func(arg Arg, _ *ArgCtx) {
+				a, ok := arg.(*ResultArg)
+				if !ok || a.Dir() == DirOut || a.Res == nil {
+					return
+				}
+				score := r.target.callResourceUseScore(c.Meta)
+				if score > resourceScores[a.Res] {
+					resourceScores[a.Res] = score
+				}
+			})
+		}
+	}
+	bestScore := 0
 	for _, c := range p.Calls {
 		ForeachArg(c, func(arg Arg, _ *ArgCtx) {
 			// Collect only initialized resources (the ones that are already used in other calls).
@@ -1081,7 +1249,15 @@ func getCompatibleResources(p *Prog, resourceType string, r *randGen) (resources
 				return
 			}
 			resources = append(resources, a)
+			score := resourceScores[a]
+			if score > bestScore {
+				bestScore = score
+				preferred = preferred[:0]
+			}
+			if score != 0 && score == bestScore {
+				preferred = append(preferred, a)
+			}
 		})
 	}
-	return resources
+	return preferred, resources
 }

@@ -111,6 +111,7 @@ void debug_dump_data(const char* data, int length);
 static void receive_execute();
 static void reply_execute(uint32 status);
 static void receive_handshake();
+static void setup_coverage();
 #if GOOS_windows
 static int nyx_mode_loop(int argc, char** argv);
 #endif
@@ -207,8 +208,8 @@ private:
 	uint8_t* allocate(size_t size) override
 	{
 		if (allocated_ || size != size_)
-			failmsg("bad allocate request", "allocated=%d size=%I64u/%I64u",
-				allocated_, (uint64)size_, (uint64)size);
+			failmsg("bad allocate request", "allocated=%d size=%llu/%llu",
+				allocated_, (unsigned long long)size_, (unsigned long long)size);
 		allocated_ = true;
 		return static_cast<uint8_t*>(buf_);
 	}
@@ -216,8 +217,8 @@ private:
 	void deallocate(uint8_t* p, size_t size) override
 	{
 		if (!allocated_ || buf_ != p || size_ != size)
-			failmsg("bad deallocate request", "allocated=%d buf=%p/%p size=%I64u/%I64u",
-				allocated_, buf_, p, (uint64)size_, (uint64)size);
+			failmsg("bad deallocate request", "allocated=%d buf=%p/%p size=%llu/%llu",
+				allocated_, buf_, p, (unsigned long long)size_, (unsigned long long)size);
 		allocated_ = false;
 	}
 
@@ -240,8 +241,8 @@ public:
 			data->size.store(size, std::memory_order_relaxed);
 		size_t consumed = data->consumed.load(std::memory_order_relaxed);
 		if (consumed >= size - sizeof(*data))
-			failmsg("ShmemBuilder: too large output offset", "size=%I64u consumed=%I64u",
-				(uint64)size, (uint64)consumed);
+			failmsg("ShmemBuilder: too large output offset", "size=%llu consumed=%llu",
+				(unsigned long long)size, (unsigned long long)consumed);
 		if (consumed)
 			flatbuffers::FlatBufferBuilder::buf_.make_space(consumed);
 	}
@@ -1138,12 +1139,16 @@ void execute_one()
 	uint64 total_calls = read_input(&input_pos);
 #if GOOS_windows
 	nyx_log_exec_stage("begin", total_calls);
+#else
+	(void)total_calls;
 #endif
 	for (;;) {
 		uint64 instr_off = input_pos - input_data;
 		uint64 call_num = read_input(&input_pos);
 #if GOOS_windows
 		nyx_log_exec_stage("dispatch", instr_off, call_num);
+#else
+		(void)instr_off;
 #endif
 		if (call_num == instr_eof)
 			break;
@@ -2038,7 +2043,7 @@ static int nyx_mode_loop(int argc, char** argv)
 				    (unsigned long long)msg->program_timeout_ms());
 			parse_handshake(hs);
 			setup_coverage();
-	#if SYZ_NYX_WINDOWS_SUBMIT_CR3
+#if SYZ_NYX_WINDOWS_SUBMIT_CR3
 			uint64_t cr3 = 0;
 			if (nyx_query_cr3(&cr3)) {
 				nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
@@ -2047,9 +2052,9 @@ static int nyx_mode_loop(int argc, char** argv)
 			} else {
 				nyx_hprintf("nyx handshake query_cr3 unavailable\n");
 			}
-	#else
+#else
 			nyx_hprintf("nyx handshake submit_cr3 disabled at build time\n");
-	#endif
+#endif
 			have_handshake = true;
 			nyx_hprintf("nyx handshake dumping ack\n");
 			nyx_dump_ack();

@@ -131,7 +131,19 @@ func SetTargets(cfg *Config) error {
 	var err error
 	cfg.TargetOS, cfg.TargetVMArch, cfg.TargetArch, cfg.Target, cfg.SysTarget,
 		err = SplitTarget(cfg.RawTarget)
-	return err
+	if err != nil {
+		return err
+	}
+	if cfg.TargetOS == "windows" && cfg.Experimental.WindowsTargetProfile != "" {
+		cfg.Target = cfg.Target.Clone()
+		if cfg.Target.ConfigureProfile == nil {
+			return fmt.Errorf("windows target does not support configurable profiles")
+		}
+		if err := cfg.Target.ConfigureProfile(cfg.Target, cfg.Experimental.WindowsTargetProfile); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func Complete(cfg *Config) error {
@@ -426,6 +438,26 @@ func SplitTarget(str string) (os, vmarch, arch string, target *prog.Target, sysT
 func ParseEnabledSyscalls(target *prog.Target, enabled, disabled []string,
 	descriptionsMode DescriptionsMode) ([]int, error) {
 	syscalls := make(map[int]bool)
+	applyDisabled := func() error {
+		for call := range syscalls {
+			if target.Syscalls[call].Attrs.Disabled {
+				delete(syscalls, call)
+			}
+		}
+		for _, c := range disabled {
+			n := 0
+			for _, call := range target.Syscalls {
+				if MatchSyscall(call.Name, c) {
+					delete(syscalls, call.ID)
+					n++
+				}
+			}
+			if n == 0 {
+				return fmt.Errorf("unknown disabled syscall: %v", c)
+			}
+		}
+		return nil
+	}
 	if len(enabled) != 0 {
 		for _, c := range enabled {
 			n := 0
@@ -451,25 +483,25 @@ func ParseEnabledSyscalls(target *prog.Target, enabled, disabled []string,
 			syscalls[call.ID] = true
 		}
 	}
-	for call := range syscalls {
-		if target.Syscalls[call].Attrs.Disabled {
-			delete(syscalls, call)
-		}
-	}
-	for _, c := range disabled {
-		n := 0
-		for _, call := range target.Syscalls {
-			if MatchSyscall(call.Name, c) {
-				delete(syscalls, call.ID)
-				n++
-			}
-		}
-		if n == 0 {
-			return nil, fmt.Errorf("unknown disabled syscall: %v", c)
-		}
+	if err := applyDisabled(); err != nil {
+		return nil, err
 	}
 	if len(syscalls) == 0 {
 		return nil, fmt.Errorf("all syscalls are disabled by disable_syscalls in config")
+	}
+	if target.ExpandEnabledCalls != nil {
+		enabled := make(map[*prog.Syscall]bool, len(syscalls))
+		for id := range syscalls {
+			enabled[target.Syscalls[id]] = true
+		}
+		enabled = target.ExpandEnabledCalls(target, enabled)
+		syscalls = make(map[int]bool, len(enabled))
+		for call := range enabled {
+			syscalls[call.ID] = true
+		}
+		if err := applyDisabled(); err != nil {
+			return nil, err
+		}
 	}
 	var arr []int
 	for id := range syscalls {

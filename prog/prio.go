@@ -12,6 +12,8 @@ import (
 	"sort"
 )
 
+const automaticHelperPenaltyDiv = 5
+
 // Calulation of call-to-call priorities.
 // For a given pair of calls X and Y, the priority is our guess as to whether
 // additional of call Y into a program containing call X is likely to give
@@ -42,6 +44,7 @@ func (target *Target) CalculatePriorities(corpus []*Prog, enabled map[*Syscall]b
 			}
 		}
 	}
+	target.adjustCallPriorities(static, enabled)
 	if debug {
 		for _, syscall := range target.Syscalls {
 			if enabled[syscall] {
@@ -58,12 +61,26 @@ func (target *Target) CalculatePriorities(corpus []*Prog, enabled map[*Syscall]b
 	return static, enabled
 }
 
+func (target *Target) adjustCallPriorities(prios [][]int32, enabled map[*Syscall]bool) {
+	if target.Bias.AdjustCallPriority == nil {
+		return
+	}
+	for src := range enabled {
+		row := prios[src.ID]
+		for dst := range enabled {
+			row[dst.ID] = target.Bias.AdjustCallPriority(src, dst, row[dst.ID])
+		}
+	}
+}
+
 func (target *Target) prepareEnabledSyscalls(corpus []*Prog, enabled map[*Syscall]bool) map[*Syscall]bool {
 	if enabled == nil {
 		enabled = make(map[*Syscall]bool)
 		for _, c := range target.Syscalls {
 			enabled[c] = true
 		}
+	} else if target.ExpandEnabledCalls != nil {
+		enabled = target.ExpandEnabledCalls(target, enabled)
 	}
 	noGenerateCalls := make(map[int]bool)
 	enabledCalls := make(map[*Syscall]bool)
@@ -268,9 +285,10 @@ func normalizePrios(prios [][]int32, n int) {
 // ChooseTable allows to do a weighted choice of a syscall for a given syscall
 // based on call-to-call priorities and a set of enabled and generatable syscalls.
 type ChoiceTable struct {
-	target *Target
-	runs   [][]int32
-	calls  []*Syscall
+	target    *Target
+	runs      [][]int32
+	calls     []*Syscall
+	biasCalls []*Syscall
 }
 
 func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
@@ -282,6 +300,24 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 	slices.SortFunc(generatableCalls, func(a, b *Syscall) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
+	biasCalls := generatableCalls
+	if target.Helpers.DeprioritizeAutomaticHelpers {
+		filtered := make([]*Syscall, 0, len(generatableCalls))
+		for _, c := range generatableCalls {
+			if !target.CallIsAutomaticHelper(c) {
+				filtered = append(filtered, c)
+			}
+		}
+		if len(filtered) != 0 {
+			biasCalls = filtered
+		}
+	}
+	if target.Bias.FilterBiasCalls != nil {
+		filtered := target.Bias.FilterBiasCalls(biasCalls)
+		if len(filtered) != 0 {
+			biasCalls = filtered
+		}
+	}
 	// Looking up in a map is slow, so we create a slice for quick lookup.
 	enabledSlice := make([]bool, len(target.Syscalls))
 	for c := range enabledCalls {
@@ -299,12 +335,16 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 		var sum int32
 		for j := range run[i] {
 			if enabledSlice[j] {
-				sum += prios[i][j]
+				weight := prios[i][j]
+				if target.Helpers.DeprioritizeAutomaticHelpers && target.CallIsAutomaticHelper(target.Syscalls[j]) && weight > 0 {
+					weight = max(weight/automaticHelperPenaltyDiv, 1)
+				}
+				sum += weight
 			}
 			run[i][j] = sum
 		}
 	}
-	return &ChoiceTable{target, run, generatableCalls}
+	return &ChoiceTable{target, run, generatableCalls, biasCalls}
 }
 
 func (ct *ChoiceTable) Generatable(call int) bool {
@@ -314,10 +354,10 @@ func (ct *ChoiceTable) Generatable(call int) bool {
 func (ct *ChoiceTable) choose(r *rand.Rand, bias int) int {
 	if r.Intn(100) < 5 {
 		// Let's make 5% decisions totally at random.
-		return ct.calls[r.Intn(len(ct.calls))].ID
+		return ct.biasCalls[r.Intn(len(ct.biasCalls))].ID
 	}
 	if bias < 0 {
-		bias = ct.calls[r.Intn(len(ct.calls))].ID
+		bias = ct.biasCalls[r.Intn(len(ct.biasCalls))].ID
 	}
 	if !ct.Generatable(bias) {
 		fmt.Printf("bias to disabled or non-generatable syscall %v\n", ct.target.Syscalls[bias].Name)

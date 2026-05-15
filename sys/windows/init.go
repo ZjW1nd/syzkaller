@@ -16,6 +16,8 @@ func InitTarget(target *prog.Target) {
 		PAGE_EXECUTE_READWRITE: target.GetConst("PAGE_EXECUTE_READWRITE"),
 	}
 
+	configureWindowsStatePolicy(target)
+	target.ConfigureProfile = ConfigureTargetProfile
 	target.MakeDataMmap = arch.makeMmap
 }
 

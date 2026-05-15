@@ -102,3 +102,198 @@ func BenchmarkBuildChoiceTable(b *testing.B) {
 		target.BuildChoiceTable(nil, nil)
 	}
 }
+
+func TestAutomaticHelperDeprioritizedInChoiceTable(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.Helpers.DeprioritizeAutomaticHelpers = true
+
+	enabled := map[*Syscall]bool{
+		clone.SyscallMap["test$automatic"]:        true,
+		clone.SyscallMap["test$automatic_helper"]: true,
+		clone.SyscallMap["test$manual"]:           true,
+	}
+	ctBase := target.BuildChoiceTable(nil, enabled)
+	ctDeprio := clone.BuildChoiceTable(nil, enabled)
+
+	if len(ctDeprio.biasCalls) != 2 {
+		t.Fatalf("got %d bias calls, want 2", len(ctDeprio.biasCalls))
+	}
+	for _, call := range ctDeprio.biasCalls {
+		if call.Name == "test$automatic_helper" {
+			t.Fatalf("automatic helper should not appear in bias calls: %+v", ctDeprio.biasCalls)
+		}
+	}
+
+	const iters = 50000
+	baseHelper := 0
+	deprioHelper := 0
+	rBase := rand.New(rand.NewSource(0))
+	rDeprio := rand.New(rand.NewSource(0))
+	for range iters {
+		if target.Syscalls[ctBase.choose(rBase, -1)].Name == "test$automatic_helper" {
+			baseHelper++
+		}
+		if clone.Syscalls[ctDeprio.choose(rDeprio, -1)].Name == "test$automatic_helper" {
+			deprioHelper++
+		}
+	}
+	if deprioHelper >= baseHelper/2 {
+		t.Fatalf("automatic helper still chosen too often: base=%d deprio=%d", baseHelper, deprioHelper)
+	}
+}
+
+func TestAutomaticHelperBiasIsIgnoredDuringGeneration(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.Helpers.DeprioritizeAutomaticHelpers = true
+	clone.Helpers.AvoidAutomaticHelperBias = true
+	enabled := map[*Syscall]bool{
+		clone.SyscallMap["test$manual"]:           true,
+		clone.SyscallMap["test$automatic_helper"]: true,
+	}
+	ct := clone.BuildChoiceTable(nil, enabled)
+	p, err := clone.Deserialize([]byte("test$automatic_helper(0x0)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newState(&clone, ct, nil)
+	r := newRand(&clone, rand.NewSource(0))
+	for range 100 {
+		calls := r.generateCall(s, p, 1)
+		if len(calls) == 0 {
+			t.Fatal("generateCall returned no calls")
+		}
+		last := calls[len(calls)-1]
+		if last.Meta.Name != "test$manual" {
+			t.Fatalf("helper-biased generation picked %q, want test$manual", last.Meta.Name)
+		}
+	}
+}
+
+func TestGenerationBiasCallHookOverridesRandomInsertionBias(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.Bias.SelectGenerationBiasCall = func(_ *Prog, insertionPoint int) int {
+		if insertionPoint == 0 {
+			return -1
+		}
+		return insertionPoint - 1
+	}
+	clone.Bias.AdjustCallPriority = func(src, dst *Syscall, weight int32) int32 {
+		if src.Name != "test$manual" {
+			return weight
+		}
+		if dst.Name == "test$automatic" {
+			return 1000
+		}
+		return 0
+	}
+	enabled := map[*Syscall]bool{
+		clone.SyscallMap["test$automatic"]: true,
+		clone.SyscallMap["test$manual"]:    true,
+	}
+	ct := clone.BuildChoiceTable(nil, enabled)
+	p, err := clone.Deserialize([]byte("test$automatic(0x0)\ntest$manual(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newState(&clone, ct, nil)
+	for _, c := range p.Calls {
+		s.analyze(c)
+	}
+	r := newRand(&clone, rand.NewSource(0))
+	calls := r.generateCall(s, p, len(p.Calls))
+	if len(calls) == 0 {
+		t.Fatal("generateCall returned no calls")
+	}
+	last := calls[len(calls)-1]
+	if last.Meta.Name != "test$automatic" {
+		t.Fatalf("generation bias hook picked %q, want test$automatic", last.Meta.Name)
+	}
+}
+
+func TestGenerationBiasCallHookCanSuppressPrefixBias(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.Helpers.DeprioritizeAutomaticHelpers = true
+	clone.Bias.SelectGenerationBiasCall = func(_ *Prog, insertionPoint int) int {
+		if insertionPoint == 0 {
+			return -1
+		}
+		return NoGenerationBiasCall
+	}
+	clone.Bias.AdjustCallPriority = func(src, dst *Syscall, weight int32) int32 {
+		switch src.Name {
+		case "test$automatic_helper":
+			if dst.Name == "test$automatic_helper" {
+				return 1000
+			}
+			return 0
+		case "test$manual":
+			if dst.Name == "test$manual" {
+				return 1000
+			}
+			return 0
+		default:
+			return weight
+		}
+	}
+	enabled := map[*Syscall]bool{
+		clone.SyscallMap["test$automatic_helper"]: true,
+		clone.SyscallMap["test$manual"]:           true,
+	}
+	ct := clone.BuildChoiceTable(nil, enabled)
+	p, err := clone.Deserialize([]byte("test$automatic_helper(0x0)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newState(&clone, ct, nil)
+	for _, c := range p.Calls {
+		s.analyze(c)
+	}
+	r := newRand(&clone, rand.NewSource(0))
+	calls := r.generateCall(s, p, len(p.Calls))
+	if len(calls) == 0 {
+		t.Fatal("generateCall returned no calls")
+	}
+	last := calls[len(calls)-1]
+	if last.Meta.Name != "test$manual" {
+		t.Fatalf("generation bias suppression picked %q, want test$manual", last.Meta.Name)
+	}
+}
+
+func TestBiasCallFilterOverridesGlobalBiasPool(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.Bias.FilterBiasCalls = func(calls []*Syscall) []*Syscall {
+		var filtered []*Syscall
+		for _, c := range calls {
+			if c.Name == "test$manual" {
+				filtered = append(filtered, c)
+			}
+		}
+		return filtered
+	}
+	clone.Bias.AdjustCallPriority = func(src, dst *Syscall, weight int32) int32 {
+		if src.Name != "test$manual" {
+			return weight
+		}
+		if dst.Name == "test$manual" {
+			return 1000
+		}
+		return 0
+	}
+	enabled := map[*Syscall]bool{
+		clone.SyscallMap["test$automatic"]: true,
+		clone.SyscallMap["test$manual"]:    true,
+	}
+	ct := clone.BuildChoiceTable(nil, enabled)
+	r := rand.New(rand.NewSource(0))
+	for range 100 {
+		idx := ct.choose(r, -1)
+		if clone.Syscalls[idx].Name != "test$manual" {
+			t.Fatalf("filtered global bias pool still selected %q", clone.Syscalls[idx].Name)
+		}
+	}
+}

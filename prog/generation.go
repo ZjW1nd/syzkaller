@@ -11,9 +11,11 @@ import (
 // ct contains a set of allowed syscalls, if nil all syscalls are used.
 func (target *Target) Generate(rs rand.Source, ncalls int, ct *ChoiceTable) *Prog {
 	p := &Prog{
-		Target: target,
+		Target:            target,
+		generationContext: "fresh",
 	}
 	r := newRand(target, rs)
+	r.generationContext = "fresh"
 	s := newState(target, ct, nil)
 	for len(p.Calls) < ncalls {
 		calls := r.generateCall(s, p, len(p.Calls))
@@ -26,6 +28,31 @@ func (target *Target) Generate(rs rand.Source, ncalls int, ct *ChoiceTable) *Pro
 	// resources and overflow ncalls. Remove some of these calls.
 	// The resources in the last call will be replaced with the default values,
 	// which is exactly what we want.
+	for len(p.Calls) > ncalls {
+		p.RemoveCall(ncalls - 1)
+	}
+	p.sanitizeFix()
+	p.debugValidate()
+	return p
+}
+
+// GenerateWithCorpus is like Generate, but allows generation-time resource borrowing
+// to consult an auxiliary corpus even before the main fuzzing corpus has accumulated.
+func (target *Target) GenerateWithCorpus(rs rand.Source, ncalls int, ct *ChoiceTable, corpus []*Prog) *Prog {
+	p := &Prog{
+		Target:            target,
+		generationContext: "fresh",
+	}
+	r := newRand(target, rs)
+	r.generationContext = "fresh"
+	s := newState(target, ct, corpus)
+	for len(p.Calls) < ncalls {
+		calls := r.generateCall(s, p, len(p.Calls))
+		for _, c := range calls {
+			s.analyze(c)
+			p.Calls = append(p.Calls, c)
+		}
+	}
 	for len(p.Calls) > ncalls {
 		p.RemoveCall(ncalls - 1)
 	}

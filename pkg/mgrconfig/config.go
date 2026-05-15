@@ -265,6 +265,28 @@ type Experimental struct {
 	// Hard upper bound on the number of calls per generated/mutated program.
 	// 0 means use the built-in syzkaller defaults.
 	MaxCallsPerProg int `json:"max_calls_per_prog,omitempty"`
+
+	// ForceGenerateEveryN injects one fresh generation opportunity after every
+	// N-1 high-priority queue picks in the main fuzzing source. 0 disables it.
+	ForceGenerateEveryN int `json:"force_generate_every_n,omitempty"`
+
+	// BorrowingSeedPrefix preloads matching sys/<os>/test seeds into a
+	// generation-time borrowing-only corpus. This does not mark them as triaged
+	// corpus entries; it only makes them available to resourceCentric borrowing.
+	BorrowingSeedPrefix string `json:"borrowing_seed_prefix,omitempty"`
+
+	// SeedPrefix limits the regular sys/<os>/test seed corpus to files with the
+	// specified prefix. Empty means load all matching test seeds as usual.
+	SeedPrefix string `json:"seed_prefix,omitempty"`
+
+	// WindowsTargetProfile selects a Windows-specific target policy profile.
+	// Empty means target default behavior.
+	WindowsTargetProfile string `json:"windows_target_profile,omitempty"`
+
+	// WindowsVMLessCollide re-enables collide mode for Windows VMLess/Nyx paths.
+	// Disabled by default because the current path can still wedge on some async
+	// collide programs; enable only for focused experiments.
+	WindowsVMLessCollide bool `json:"windows_vmless_collide,omitempty"`
 }
 
 type FocusArea struct {

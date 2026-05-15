@@ -79,3 +79,36 @@ func TestTee(t *testing.T) {
 	assert.Empty(t, copy.ReturnOutput)
 	assert.Empty(t, copy.Important)
 }
+
+func TestInterleaveInjectsSecondaryPeriodically(t *testing.T) {
+	primary := Plain()
+	secondary := Plain()
+	p1, p2, p3 := &Request{}, &Request{}, &Request{}
+	s1, s2 := &Request{}, &Request{}
+	primary.Submit(p1)
+	primary.Submit(p2)
+	primary.Submit(p3)
+	secondary.Submit(s1)
+	secondary.Submit(s2)
+
+	src := Interleave(primary, secondary, 3)
+	assert.Equal(t, p1, src.Next())
+	assert.Equal(t, p2, src.Next())
+	assert.Equal(t, s1, src.Next())
+	assert.Equal(t, p3, src.Next())
+	assert.Nil(t, src.Next())
+	assert.Equal(t, s2, src.Next())
+	assert.Nil(t, src.Next())
+}
+
+func TestInterleaveFallsBackToPrimaryWhenSecondaryEmpty(t *testing.T) {
+	primary := Plain()
+	p1, p2 := &Request{}, &Request{}
+	primary.Submit(p1)
+	primary.Submit(p2)
+
+	src := Interleave(primary, Plain(), 2)
+	assert.Equal(t, p1, src.Next())
+	assert.Equal(t, p2, src.Next())
+	assert.Nil(t, src.Next())
+}

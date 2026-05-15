@@ -22,6 +22,20 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+type countingSource struct {
+	reqs []*queue.Request
+	next int
+}
+
+func (s *countingSource) Next(vm int) *queue.Request {
+	if s.next >= len(s.reqs) {
+		return nil
+	}
+	req := s.reqs[s.next]
+	s.next++
+	return req
+}
+
 func getTestDefaultCfg() mgrconfig.Config {
 	return mgrconfig.Config{
 		Type:    targets.Linux,
@@ -327,5 +341,58 @@ func TestMachineCheckCrash(t *testing.T) {
 	}
 	if err := <-secondCh; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRunnerPendingReturnAllSignalReducesInflightLimit(t *testing.T) {
+	src := &countingSource{
+		reqs: []*queue.Request{
+			{Prog: &prog.Prog{}, ReturnAllSignal: []int{1}},
+			{Prog: &prog.Prog{}},
+			{Prog: &prog.Prog{}},
+		},
+	}
+	runner := &Runner{
+		source: queue.Distribute(queue.Callback(func() *queue.Request {
+			return src.Next(0)
+		})),
+		procs:    4,
+		requests: map[int64]*queue.Request{},
+		executing: map[int64]bool{},
+		hanged:   map[int64]bool{},
+	}
+
+	if runner.hasPendingReturnAllSignal() {
+		t.Fatal("fresh runner should not report pending return-all-signal requests")
+	}
+
+	runner.requests[1] = &queue.Request{ReturnAllSignal: []int{3}}
+	if !runner.hasPendingReturnAllSignal() {
+		t.Fatal("runner should detect pending return-all-signal request")
+	}
+	delete(runner.requests, 1)
+
+	limit := 2 * runner.procs
+	if runner.hasPendingReturnAllSignal() {
+		limit = 1
+	}
+	for len(runner.requests) < limit {
+		req := runner.source.Next(runner.id)
+		if req == nil {
+			break
+		}
+		runner.nextRequestID++
+		runner.requests[runner.nextRequestID] = req
+		if len(req.ReturnAllSignal) != 0 {
+			limit = 1
+		}
+	}
+	if got := len(runner.requests); got != 1 {
+		t.Fatalf("runner queued %d requests, want 1 when first request needs return-all-signal", got)
+	}
+	for _, req := range runner.requests {
+		if len(req.ReturnAllSignal) == 0 {
+			t.Fatal("runner did not keep the return-all-signal request as the sole inflight request")
+		}
 	}
 }

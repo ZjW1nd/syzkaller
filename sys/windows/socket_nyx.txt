@@ -3,6 +3,11 @@
 # resource and basic AF_INET request shapes that route into afd.sys.
 
 resource SOCKET[int64]: -1
+resource SOCKET_TCP[SOCKET]
+resource SOCKET_UDP[SOCKET]
+resource SOCKET_LISTENER[SOCKET_TCP]
+resource SOCKET_CONNECTED[SOCKET_TCP]
+resource SOCKET_ACCEPT[SOCKET_TCP]
 type sock_port int16be[20000:20004]
 
 sockaddr_in {
@@ -12,21 +17,36 @@ sockaddr_in {
 	zero	array[const[0, int8], 8]
 } [size[16]]
 
-socket$inet_tcp(af const[2], type const[1], protocol const[6]) SOCKET
-socket$inet_udp(af const[2], type const[2], protocol const[17]) SOCKET
+socket$inet_tcp(af const[2], type const[1], protocol const[6]) SOCKET_TCP
+socket$inet_udp(af const[2], type const[2], protocol const[17]) SOCKET_UDP
+socket$listener_tcp(af const[2], type const[1], protocol const[6]) SOCKET_LISTENER
+socket$connected_tcp(af const[2], type const[1], protocol const[6]) SOCKET_CONNECTED
+socket$accept_tcp(af const[2], type const[1], protocol const[6]) SOCKET_ACCEPT
 closesocket$any(s SOCKET)
 
-bind$inet(s SOCKET, addr ptr[in, sockaddr_in], namelen len[addr])
-connect$inet(s SOCKET, name ptr[in, sockaddr_in], namelen len[name])
-listen$inet(s SOCKET, backlog int32)
-accept$inet(s SOCKET, addr ptr[inout, sockaddr_in, opt], addrlen ptr[inout, len[addr, int32], opt]) SOCKET
+bind$inet_tcp(s SOCKET_LISTENER, addr ptr[in, sockaddr_in], namelen len[addr])
+bind$inet_udp(s SOCKET_UDP, addr ptr[in, sockaddr_in], namelen len[addr])
+connect$inet_tcp(s SOCKET_CONNECTED, name ptr[in, sockaddr_in], namelen len[name])
+connect$inet_udp(s SOCKET_UDP, name ptr[in, sockaddr_in], namelen len[name])
+listen$inet_tcp(s SOCKET_LISTENER, backlog int32)
+accept$inet_tcp(s SOCKET_LISTENER, addr ptr[inout, sockaddr_in, opt], addrlen ptr[inout, len[addr, int32], opt]) SOCKET_ACCEPT
 
-send$inet(s SOCKET, buf buffer[in], len len[buf], flags int32)
-recv$inet(s SOCKET, buf buffer[out], len len[buf], flags int32)
+send$inet_tcp(s SOCKET_CONNECTED, buf buffer[in], len len[buf], flags int32)
+send$inet_udp(s SOCKET_UDP, buf buffer[in], len len[buf], flags int32)
+send$inet_accept(s SOCKET_ACCEPT, buf buffer[in], len len[buf], flags int32)
+recv$inet_tcp(s SOCKET_CONNECTED, buf buffer[out], len len[buf], flags int32)
+recv$inet_udp(s SOCKET_UDP, buf buffer[out], len len[buf], flags int32)
+recv$inet_accept(s SOCKET_ACCEPT, buf buffer[out], len len[buf], flags int32)
 
-ioctlsocket$fionbio(s SOCKET, cmd const[0x8004667e], argp ptr[inout, int32])
-setsockopt$int(s SOCKET, level int32, optname int32, optval ptr[in, int32], optlen len[optval])
-getsockopt$int(s SOCKET, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
-AcceptEx$inet(sListenSocket SOCKET, sAcceptSocket SOCKET, lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, lpdwBytesReceived ptr[inout, int32], lpOverlapped ptr[inout, intptr])
-WSARecvEx$inet(s SOCKET, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
-TransmitFile$inet(hSocket SOCKET, hFile HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, intptr], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)
+ioctlsocket$fionbio_tcp(s SOCKET_CONNECTED, cmd const[0x8004667e], argp ptr[inout, int32])
+ioctlsocket$fionbio_udp(s SOCKET_UDP, cmd const[0x8004667e], argp ptr[inout, int32])
+ioctlsocket$fionbio_accept(s SOCKET_ACCEPT, cmd const[0x8004667e], argp ptr[inout, int32])
+setsockopt$int_tcp(s SOCKET_CONNECTED, level int32, optname int32, optval ptr[in, int32], optlen len[optval])
+setsockopt$int_udp(s SOCKET_UDP, level int32, optname int32, optval ptr[in, int32], optlen len[optval])
+setsockopt$int_accept(s SOCKET_ACCEPT, level int32, optname int32, optval ptr[in, int32], optlen len[optval])
+getsockopt$int_tcp(s SOCKET_CONNECTED, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
+getsockopt$int_udp(s SOCKET_UDP, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
+getsockopt$int_accept(s SOCKET_ACCEPT, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
+AcceptEx$inet_tcp(sListenSocket SOCKET_LISTENER, sAcceptSocket SOCKET_ACCEPT, lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, lpdwBytesReceived ptr[inout, int32], lpOverlapped ptr[inout, intptr])
+WSARecvEx$inet_accept(s SOCKET_ACCEPT, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
+TransmitFile$inet_accept(hSocket SOCKET_ACCEPT, hFile FILE_HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, intptr], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)

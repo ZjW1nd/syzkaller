@@ -42,13 +42,21 @@ func (ji *JobInfo) ID() string {
 }
 
 func genProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
-	p := fuzzer.target.Generate(rnd,
-		fuzzer.RecommendedCalls(),
-		fuzzer.ChoiceTable())
+	var p *prog.Prog
+	if len(fuzzer.Config.BorrowingCorpus) != 0 {
+		p = fuzzer.target.GenerateWithCorpus(rnd, fuzzer.RecommendedCalls(),
+			fuzzer.ChoiceTable(), fuzzer.Config.BorrowingCorpus)
+	} else {
+		p = fuzzer.target.Generate(rnd,
+			fuzzer.RecommendedCalls(),
+			fuzzer.ChoiceTable())
+	}
 	return &queue.Request{
 		Prog:     p,
 		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
 		Stat:     fuzzer.statExecGenerate,
+		Origin:   "gen",
+		TraceID:  fuzzer.nextTraceID("gen"),
 	}
 }
 
@@ -68,6 +76,8 @@ func mutateProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 		Prog:     newP,
 		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
 		Stat:     fuzzer.statExecFuzz,
+		Origin:   "fuzz",
+		TraceID:  fuzzer.nextTraceID("fuzz"),
 	}
 }
 
@@ -79,6 +89,8 @@ type triageJob struct {
 	p        *prog.Prog
 	executor queue.ExecutorID
 	flags    ProgFlags
+	origin   string
+	traceID  string
 	fuzzer   *Fuzzer
 	queue    queue.Executor
 	// Set of calls that gave potential new coverage.
@@ -92,6 +104,7 @@ type triageJob struct {
 type triageCall struct {
 	errno     int32
 	newSignal signal.Signal
+	origin    string
 
 	// Filled after deflake:
 	signals         [deflakeNeedRuns]signal.Signal
@@ -135,13 +148,19 @@ const (
 func (job *triageJob) execute(req *queue.Request, flags ProgFlags) *queue.Result {
 	defer job.info.Execs.Add(1)
 	req.Important = true // All triage executions are important.
+	if req.Origin == "" {
+		req.Origin = job.origin
+	}
+	if req.TraceID == "" {
+		req.TraceID = job.traceID
+	}
 	// Make the request visible to the shared executor queue before unblocking
 	// the request-completion path that is waiting for the first deflake rerun.
 	job.fuzzer.prepare(req, flags, 0)
 	job.queue.Submit(req)
 	if job.fuzzer.isWindowsTarget() {
-		job.fuzzer.Logf(0, "windows deflake submitted: calls=%v return_all_signal=%v",
-			job.info.Calls, req.ReturnAllSignal)
+		job.fuzzer.Logf(0, "windows deflake submitted: origin=%s trace=%s calls=%v return_all_signal=%v",
+			req.Origin, req.TraceID, job.info.Calls, req.ReturnAllSignal)
 	}
 	job.readyOnce.Do(func() {
 		close(job.ready)
@@ -153,7 +172,8 @@ func (job *triageJob) run(fuzzer *Fuzzer) {
 	fuzzer.statNewInputs.Add(1)
 	job.fuzzer = fuzzer
 	if job.fuzzer.isWindowsTarget() {
-		job.fuzzer.Logf(0, "windows triage job start: calls=%v flags=0x%x", job.info.Calls, job.flags)
+		job.fuzzer.Logf(0, "windows triage job start: origin=%s trace=%s calls=%v flags=0x%x",
+			job.origin, job.traceID, job.info.Calls, job.flags)
 	}
 	job.info.Logf("\n%s", job.p.Serialize())
 	for call, info := range job.calls {
@@ -179,7 +199,22 @@ func (job *triageJob) run(fuzzer *Fuzzer) {
 
 func (job *triageJob) handleCall(call int, info *triageCall) {
 	if info.newStableSignal.Empty() {
-		return
+		if job != nil && job.fuzzer != nil && job.fuzzer.target != nil &&
+			job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall != nil &&
+			!info.stableSignal.Empty() &&
+			job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall(job.origin, job.p, call) {
+			if job.fuzzer.isWindowsTarget() {
+				job.fuzzer.Logf(0, "windows corpus retain: origin=%s trace=%s call=%d name=%s reason=stable_without_new",
+					job.origin, job.traceID, call, job.p.CallName(call))
+			}
+		} else {
+			if job != nil && job.fuzzer != nil && job.fuzzer.isWindowsTarget() &&
+				(strings.HasPrefix(job.origin, "candidate") || strings.HasPrefix(job.origin, "collide:triage")) {
+				job.fuzzer.Logf(0, "windows corpus skip: origin=%s trace=%s call=%d name=%s reason=empty_new_stable",
+					job.origin, job.traceID, call, job.p.CallName(call))
+			}
+			return
+		}
 	}
 
 	p := job.p
@@ -190,7 +225,20 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 		}
 	}
 	callName := p.CallName(call)
+	if !job.shouldPersistCall(p, call) {
+		if job.fuzzer.isWindowsTarget() &&
+			(strings.HasPrefix(job.origin, "candidate") || strings.HasPrefix(job.origin, "collide:triage")) {
+			job.fuzzer.Logf(0, "windows corpus skip: origin=%s trace=%s call=%d name=%s reason=should_persist_false",
+				job.origin, job.traceID, call, callName)
+		}
+		return
+	}
 	if !job.fuzzer.Config.NewInputFilter(callName) {
+		if job.fuzzer.isWindowsTarget() &&
+			(strings.HasPrefix(job.origin, "candidate") || strings.HasPrefix(job.origin, "collide:triage")) {
+			job.fuzzer.Logf(0, "windows corpus skip: origin=%s trace=%s call=%d name=%s reason=new_input_filter_false",
+				job.origin, job.traceID, call, callName)
+		}
 		return
 	}
 	if job.flags&ProgSmashed == 0 {
@@ -203,7 +251,7 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 				Calls: []string{p.CallName(call)},
 			},
 		})
-		if job.fuzzer.Config.Comparisons && call >= 0 {
+		if job.shouldStartHints(p, call) {
 			job.fuzzer.startJob(job.fuzzer.statJobsHints, &hintsJob{
 				exec: job.fuzzer.smashQueue,
 				p:    p.Clone(),
@@ -233,11 +281,78 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 	}
 	if job.fuzzer.isWindowsTarget() {
 		job.fuzzer.Logf(0,
-			"windows corpus save: call=%d name=%s stable_signal=%d new_stable=%d cover=%d raw_cover=%d",
-			call, callName, info.stableSignal.Len(), info.newStableSignal.Len(),
+			"windows corpus save: origin=%s trace=%s call=%d name=%s stable_signal=%d new_stable=%d cover=%d raw_cover=%d",
+			job.origin, job.traceID, call, callName, info.stableSignal.Len(), info.newStableSignal.Len(),
 			len(input.Cover), len(input.RawCover))
 	}
 	job.fuzzer.Config.Corpus.Save(input)
+	job.maybeScheduleImmediateCollide(p, call)
+}
+
+func (job *triageJob) shouldStartHints(p *prog.Prog, call int) bool {
+	if !job.fuzzer.Config.Comparisons || call < 0 {
+		return false
+	}
+	if !job.fuzzer.target.CallEligibleForHints(p.Calls[call].Meta) {
+		return false
+	}
+	return true
+}
+
+func (job *triageJob) shouldPersistCall(p *prog.Prog, call int) bool {
+	if call < 0 {
+		return true
+	}
+	if job.fuzzer.target.Helpers.SkipCorpusForAutomaticHelpers && job.fuzzer.target.CallIsAutomaticHelper(p.Calls[call].Meta) {
+		return false
+	}
+	return true
+}
+
+func (job *triageJob) maybeScheduleImmediateCollide(p *prog.Prog, call int) {
+	if job == nil || job.fuzzer == nil || !job.fuzzer.Config.Collide || p == nil || call < 0 {
+		return
+	}
+	if job.flags&ProgSmashed != 0 {
+		return
+	}
+	if job.fuzzer.target == nil || job.fuzzer.target.RuntimePolicy.ShouldScheduleImmediateCollide == nil {
+		return
+	}
+	if !job.fuzzer.target.RuntimePolicy.ShouldScheduleImmediateCollide(p, call) {
+		return
+	}
+	collidedProg := job.immediateCollideProg(p)
+	if collidedProg == nil || string(collidedProg.Serialize()) == string(p.Serialize()) {
+		return
+	}
+	req := &queue.Request{
+		Prog:      collidedProg,
+		ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),
+		Stat:      job.fuzzer.statExecCollide,
+		Origin:    "collide:triage",
+		TraceID:   job.fuzzer.nextTraceID("collide"),
+		Important: true,
+	}
+	job.fuzzer.enqueue(job.fuzzer.immediateCollideQueue, req, ProgSmashed, 0)
+	if job.fuzzer.isWindowsTarget() {
+		job.fuzzer.Logf(0, "windows immediate collide queued: origin=%s trace=%s call=%d name=%s",
+			req.Origin, req.TraceID, call, p.CallName(call))
+	}
+}
+
+func (job *triageJob) immediateCollideProg(p *prog.Prog) *prog.Prog {
+	if job == nil || job.fuzzer == nil || p == nil {
+		return nil
+	}
+	orig := p.Serialize()
+	for range 8 {
+		collided := randomCollide(p.Clone(), job.fuzzer.rand())
+		if collided != nil && !bytes.Equal(collided.Serialize(), orig) {
+			return collided
+		}
+	}
+	return nil
 }
 
 func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result) (stop bool) {
@@ -260,14 +375,14 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 		}
 		if job.fuzzer.isWindowsTarget() {
 			job.fuzzer.Logf(0,
-				"windows deflake before exec: run=%d need_runs=%d calls=%v total_new_signal=%d",
-				run, needRuns, indices, totalNewSignal)
+				"windows deflake before exec: origin=%s trace=%s run=%d need_runs=%d calls=%v total_new_signal=%d",
+				job.origin, job.traceID, run, needRuns, indices, totalNewSignal)
 		}
 		if job.stopDeflake(run, needRuns, prevTotalNewSignal == totalNewSignal) {
 			if job.fuzzer.isWindowsTarget() {
 				job.fuzzer.Logf(0,
-					"windows deflake stop: run=%d need_runs=%d calls=%v total_new_signal=%d",
-					run, needRuns, indices, totalNewSignal)
+					"windows deflake stop: origin=%s trace=%s run=%d need_runs=%d calls=%v total_new_signal=%d",
+					job.origin, job.traceID, run, needRuns, indices, totalNewSignal)
 			}
 			break
 		}
@@ -282,13 +397,13 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 		if job.fuzzer.isWindowsTarget() {
 			nonEmpty, totalSignal, totalCover := summarizeProgInfo(result.Info)
 			job.fuzzer.Logf(0,
-				"windows deflake after exec: run=%d status=%s info_nil=%t nonempty=%d signal=%d cover=%d executor=%+v",
-				run, result.Status, result.Info == nil, nonEmpty, totalSignal, totalCover, result.Executor)
+				"windows deflake after exec: origin=%s trace=%s run=%d status=%s info_nil=%t nonempty=%d signal=%d cover=%d executor=%+v",
+				job.origin, job.traceID, run, result.Status, result.Info == nil, nonEmpty, totalSignal, totalCover, result.Executor)
 		}
 		if result.Stop() {
 			if job.fuzzer.isWindowsTarget() {
-				job.fuzzer.Logf(0, "windows deflake stop due to result status: run=%d status=%s",
-					run, result.Status)
+				job.fuzzer.Logf(0, "windows deflake stop due to result status: origin=%s trace=%s run=%d status=%s",
+					job.origin, job.traceID, run, result.Status)
 			}
 			return true
 		}
@@ -299,7 +414,7 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 		deflakeCall := func(call int, res *flatrpc.CallInfo) {
 			info := job.calls[call]
 			if info == nil {
-				job.fuzzer.triageProgCall(job.p, res, call, &job.calls)
+				job.fuzzer.triageProgCall(job.origin, job.p, res, call, &job.calls)
 				info = job.calls[call]
 			}
 			if info == nil || res == nil {
@@ -338,6 +453,10 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 		job.info.Logf("call #%d [%s]: |stable signal|=%d, |new stable signal|=%d%s",
 			call, job.p.CallName(call), info.stableSignal.Len(), info.newStableSignal.Len(),
 			signalPreview(info.newStableSignal))
+		if job.fuzzer.isWindowsTarget() {
+			job.fuzzer.Logf(0, "windows deflake stable: origin=%s trace=%s call=%d name=%s stable_signal=%d new_stable=%d",
+				job.origin, job.traceID, call, job.p.CallName(call), info.stableSignal.Len(), info.newStableSignal.Len())
+		}
 	}
 	return false
 }

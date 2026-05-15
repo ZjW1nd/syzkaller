@@ -153,6 +153,80 @@ func TestNormalizeWindowsNyxEnvFlags(t *testing.T) {
 	}
 }
 
+func TestRequestNeedsCoveragePriming(t *testing.T) {
+	tests := []struct {
+		name string
+		req  *flatrpc.ExecRequest
+		want bool
+	}{
+		{
+			name: "nil",
+			req:  nil,
+			want: false,
+		},
+		{
+			name: "no opts",
+			req:  &flatrpc.ExecRequest{},
+			want: false,
+		},
+		{
+			name: "threaded only",
+			req: &flatrpc.ExecRequest{ExecOpts: &flatrpc.ExecOpts{
+				ExecFlags: flatrpc.ExecFlagThreaded,
+			}},
+			want: false,
+		},
+		{
+			name: "collect cover",
+			req: &flatrpc.ExecRequest{ExecOpts: &flatrpc.ExecOpts{
+				ExecFlags: flatrpc.ExecFlagThreaded | flatrpc.ExecFlagCollectCover,
+			}},
+			want: true,
+		},
+		{
+			name: "collect signal",
+			req: &flatrpc.ExecRequest{ExecOpts: &flatrpc.ExecOpts{
+				ExecFlags: flatrpc.ExecFlagCollectSignal,
+			}},
+			want: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := requestNeedsCoveragePriming(test.req); got != test.want {
+				t.Fatalf("requestNeedsCoveragePriming()=%v want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestExecResultHasCoverage(t *testing.T) {
+	withCoverage := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
+			Value: &flatrpc.ExecResult{
+				Info: &flatrpc.ProgInfo{
+					Calls: []*flatrpc.CallInfo{{Cover: []uint64{0x10}}},
+				},
+			},
+		},
+	}
+	withoutCoverage := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
+			Value: &flatrpc.ExecResult{
+				Info: flatrpc.EmptyProgInfo(1),
+			},
+		},
+	}
+	if !execResultHasCoverage(withCoverage) {
+		t.Fatal("execResultHasCoverage returned false for non-empty cover")
+	}
+	if execResultHasCoverage(withoutCoverage) {
+		t.Fatal("execResultHasCoverage returned true for empty cover")
+	}
+}
+
 func TestReorderArgsForFlags(t *testing.T) {
 	in := []string{
 		"0",

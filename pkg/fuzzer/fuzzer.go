@@ -9,7 +9,9 @@ import (
 	"math/rand"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/syzkaller/pkg/corpus"
@@ -38,6 +40,7 @@ type Fuzzer struct {
 	ctProgs      int
 	ctMu         sync.Mutex // TODO: use RWLock.
 	ctRegenerate chan struct{}
+	traceSeq     atomic.Uint64
 
 	execQueues
 }
@@ -49,6 +52,7 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 			return true
 		}
 	}
+	cfg.NoMutateCalls = mergeTargetNoMutateCalls(target, cfg.NoMutateCalls)
 	f := &Fuzzer{
 		Stats:  newStats(target),
 		Config: cfg,
@@ -63,6 +67,32 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		// regenerating the table, we don't want to repeat it right away.
 		ctRegenerate: make(chan struct{}),
 	}
+	if target != nil {
+		target.ObserveTemplateHook = func(name string) {
+			switch {
+			case strings.HasPrefix(name, "gen:"):
+				f.statWindowsTemplateGen.Add(1)
+			case strings.HasPrefix(name, "corpus:"):
+				f.statWindowsTemplateCorpus.Add(1)
+			case strings.HasPrefix(name, "collide:"):
+				f.statWindowsTemplateCollide.Add(1)
+			case strings.HasPrefix(name, "rc_try:"):
+				f.statWindowsResourceCentricTry.Add(1)
+			case strings.HasPrefix(name, "rc_hit:"):
+				f.statWindowsResourceCentricHit.Add(1)
+			case strings.HasPrefix(name, "rc_no_candidates:"):
+				f.statWindowsResourceCentricNoCandidates.Add(1)
+			case strings.HasPrefix(name, "rc_zero_score:"):
+				f.statWindowsResourceCentricZeroScore.Add(1)
+			}
+			if f.isWindowsTarget() && (strings.HasPrefix(name, "gen:") ||
+				strings.HasPrefix(name, "corpus:") || strings.HasPrefix(name, "collide:") ||
+				strings.HasPrefix(name, "rc_hit:") ||
+				strings.HasPrefix(name, "rc_no_candidates:") || strings.HasPrefix(name, "rc_zero_score:")) {
+				f.Logf(0, "windows template observer: %s", name)
+			}
+		}
+	}
 	f.execQueues = newExecQueues(f)
 	f.updateChoiceTable(nil)
 	go f.choiceTableUpdater()
@@ -70,6 +100,27 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		go f.logCurrentStats()
 	}
 	return f
+}
+
+func mergeTargetNoMutateCalls(target *prog.Target, noMutate map[int]bool) map[int]bool {
+	if target == nil || !target.Helpers.NoMutateAutomaticHelpers {
+		return noMutate
+	}
+	var merged map[int]bool
+	if noMutate != nil {
+		merged = make(map[int]bool, len(noMutate))
+		for id, v := range noMutate {
+			merged[id] = v
+		}
+	} else {
+		merged = make(map[int]bool)
+	}
+	for _, call := range target.Syscalls {
+		if target.CallIsAutomaticHelper(call) {
+			merged[call.ID] = true
+		}
+	}
+	return merged
 }
 
 func (fuzzer *Fuzzer) RecommendedCalls() int {
@@ -86,19 +137,21 @@ func (fuzzer *Fuzzer) RecommendedCalls() int {
 }
 
 type execQueues struct {
-	triageCandidateQueue *queue.DynamicOrderer
-	candidateQueue       *queue.PlainQueue
-	triageQueue          *queue.DynamicOrderer
-	smashQueue           *queue.PlainQueue
-	source               queue.Source
+	triageCandidateQueue  *queue.DynamicOrderer
+	candidateQueue        *queue.PlainQueue
+	immediateCollideQueue *queue.PlainQueue
+	triageQueue           *queue.DynamicOrderer
+	smashQueue            *queue.PlainQueue
+	source                queue.Source
 }
 
 func newExecQueues(fuzzer *Fuzzer) execQueues {
 	ret := execQueues{
-		triageCandidateQueue: queue.DynamicOrder(),
-		candidateQueue:       queue.Plain(),
-		triageQueue:          queue.DynamicOrder(),
-		smashQueue:           queue.Plain(),
+		triageCandidateQueue:  queue.DynamicOrder(),
+		candidateQueue:        queue.Plain(),
+		immediateCollideQueue: queue.Plain(),
+		triageQueue:           queue.DynamicOrder(),
+		smashQueue:            queue.Plain(),
 	}
 	// Alternate smash jobs with exec/fuzz to spread attention to the wider area.
 	skipQueue := 3
@@ -109,13 +162,22 @@ func newExecQueues(fuzzer *Fuzzer) execQueues {
 		skipQueue = 2
 	}
 	// Sources are listed in the order, in which they will be polled.
-	ret.source = queue.Order(
+	highPriority := queue.Order(
+		ret.immediateCollideQueue,
 		ret.triageCandidateQueue,
+	)
+	regularPriority := queue.Order(
 		ret.candidateQueue,
 		ret.triageQueue,
 		queue.Alternate(ret.smashQueue, skipQueue),
-		queue.Callback(fuzzer.genFuzz),
 	)
+	generate := queue.Callback(fuzzer.genFuzz)
+	regularWithGenerate := queue.Order(regularPriority, generate)
+	ret.source = queue.Order(highPriority, regularWithGenerate)
+	if fuzzer.Config.ForceGenerateEveryN > 0 {
+		regularWithGenerate = queue.Interleave(regularPriority, generate, fuzzer.Config.ForceGenerateEveryN)
+		ret.source = queue.Order(highPriority, regularWithGenerate)
+	}
 	return ret
 }
 
@@ -161,9 +223,9 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 	var triage map[int]*triageCall
 	if req.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectSignal > 0 && res.Info != nil && !dontTriage {
 		for call, info := range res.Info.Calls {
-			fuzzer.triageProgCall(req.Prog, info, call, &triage)
+			fuzzer.triageProgCall(req.Origin, req.Prog, info, call, &triage)
 		}
-		fuzzer.triageProgCall(req.Prog, res.Info.Extra, -1, &triage)
+		fuzzer.triageProgCall(req.Origin, req.Prog, res.Info.Extra, -1, &triage)
 
 		if len(triage) != 0 {
 			queue, stat := fuzzer.triageQueue, fuzzer.statJobsTriage
@@ -174,6 +236,8 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 				p:        req.Prog.Clone(),
 				executor: res.Executor,
 				flags:    flags,
+				origin:   req.Origin,
+				traceID:  req.TraceID,
 				queue:    queue.Append(),
 				calls:    triage,
 				ready:    make(chan struct{}),
@@ -187,8 +251,8 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			}
 			slices.Sort(job.info.Calls)
 			if fuzzer.isWindowsTarget() {
-				fuzzer.Logf(0, "windows triage job queued: calls=%v flags=0x%x attempt=%d status=%s",
-					job.info.Calls, flags, attempt, res.Status)
+				fuzzer.Logf(0, "windows triage job queued: origin=%s trace=%s calls=%v flags=0x%x attempt=%d status=%s",
+					req.Origin, req.TraceID, job.info.Calls, flags, attempt, res.Status)
 			}
 			fuzzer.startJob(stat, job)
 			<-job.ready
@@ -201,6 +265,18 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			fuzzer.handleCallInfo(req, info, call)
 		}
 		fuzzer.handleCallInfo(req, res.Info.Extra, -1)
+		if fuzzer.isWindowsTarget() && strings.HasPrefix(req.Origin, "collide:") && req.Prog != nil {
+			var active []string
+			for call, info := range res.Info.Calls {
+				if info == nil || (len(info.Signal) == 0 && len(info.Cover) == 0) {
+					continue
+				}
+				active = append(active, fmt.Sprintf("%d:%s(sig=%d cover=%d err=%d)",
+					call, req.Prog.CallName(call), len(info.Signal), len(info.Cover), info.Error))
+			}
+			fuzzer.Logf(0, "windows collide result: origin=%s trace=%s active=%v\n%s",
+				req.Origin, req.TraceID, active, req.Prog.Serialize())
+		}
 	}
 
 	// Corpus candidates may have flaky coverage, so we give them a second chance.
@@ -224,24 +300,26 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 }
 
 type Config struct {
-	Debug           bool
-	Corpus          *corpus.Corpus
-	Logf            func(level int, msg string, args ...any)
-	Snapshot        bool
-	Coverage        bool
-	FaultInjection  bool
-	Comparisons     bool
-	Collide         bool
-	EnabledCalls    map[*prog.Syscall]bool
-	NoMutateCalls   map[int]bool
-	FetchRawCover   bool
-	NewInputFilter  func(call string) bool
-	PatchTest       bool
-	ModeKFuzzTest   bool
-	MaxCallsPerProg int
+	Debug               bool
+	Corpus              *corpus.Corpus
+	Logf                func(level int, msg string, args ...any)
+	Snapshot            bool
+	Coverage            bool
+	FaultInjection      bool
+	Comparisons         bool
+	Collide             bool
+	EnabledCalls        map[*prog.Syscall]bool
+	NoMutateCalls       map[int]bool
+	BorrowingCorpus     []*prog.Prog
+	FetchRawCover       bool
+	NewInputFilter      func(call string) bool
+	PatchTest           bool
+	ModeKFuzzTest       bool
+	MaxCallsPerProg     int
+	ForceGenerateEveryN int
 }
 
-func (fuzzer *Fuzzer) triageProgCall(p *prog.Prog, info *flatrpc.CallInfo, call int, triage *map[int]*triageCall) {
+func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.CallInfo, call int, triage *map[int]*triageCall) {
 	if info == nil {
 		return
 	}
@@ -251,10 +329,22 @@ func (fuzzer *Fuzzer) triageProgCall(p *prog.Prog, info *flatrpc.CallInfo, call 
 		fuzzer.Logf(0, "windows triage: call=%d name=%s signal=%d cover=%d prio=%d new=%d errno=%d flags=0x%x",
 			call, p.CallName(call), len(info.Signal), len(info.Cover), prio, newMaxSignal.Len(), info.Error, info.Flags)
 	}
-	if newMaxSignal.Empty() {
+	if !fuzzer.Config.NewInputFilter(p.CallName(call)) {
 		return
 	}
-	if !fuzzer.Config.NewInputFilter(p.CallName(call)) {
+	if call >= 0 && !fuzzer.target.CallEligibleForTriage(p.Calls[call].Meta) {
+		return
+	}
+	forced := false
+	if newMaxSignal.Empty() {
+		if fuzzer.target == nil || fuzzer.target.RuntimePolicy.ShouldForceTriageCall == nil ||
+			!fuzzer.target.RuntimePolicy.ShouldForceTriageCall(origin, p, call) {
+			return
+		}
+		newMaxSignal = signal.FromRaw([]uint64{1}, 0)
+		forced = true
+	}
+	if fuzzer.pruneLessRelevantTriage(p, call, triage) {
 		return
 	}
 	fuzzer.Logf(2, "found new signal in call %d in %s", call, p)
@@ -264,8 +354,35 @@ func (fuzzer *Fuzzer) triageProgCall(p *prog.Prog, info *flatrpc.CallInfo, call 
 	(*triage)[call] = &triageCall{
 		errno:     info.Error,
 		newSignal: newMaxSignal,
+		origin:    origin,
 		signals:   [deflakeNeedRuns]signal.Signal{signal.FromRaw(info.Signal, prio)},
 	}
+	if forced && fuzzer.isWindowsTarget() {
+		fuzzer.Logf(0, "windows forced triage: call=%d name=%s origin=%s",
+			call, p.CallName(call), origin)
+	}
+}
+
+func (fuzzer *Fuzzer) pruneLessRelevantTriage(p *prog.Prog, call int, triage *map[int]*triageCall) bool {
+	if call < 0 || *triage == nil {
+		return false
+	}
+	score := fuzzer.target.TriageRelevance(p.Calls[call].Meta)
+	skipCurrent := false
+	for id := range *triage {
+		if id < 0 {
+			continue
+		}
+		otherScore := fuzzer.target.TriageRelevance(p.Calls[id].Meta)
+		if otherScore > score {
+			skipCurrent = true
+			continue
+		}
+		if otherScore < score {
+			delete(*triage, id)
+		}
+	}
+	return skipCurrent
 }
 
 func (fuzzer *Fuzzer) handleCallInfo(req *queue.Request, info *flatrpc.CallInfo, call int) {
@@ -315,15 +432,39 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 	if req == nil {
 		req = genProgRequest(fuzzer, rnd)
 	}
+	collideChance := fuzzer.collideChanceForProg(req.Prog)
 	if fuzzer.Config.Collide && (fuzzer.Config.MaxCallsPerProg == 0 || fuzzer.Config.MaxCallsPerProg > 1) &&
-		rnd.Intn(3) == 0 {
+		rnd.Intn(collideChance) == 0 {
+		collidedProg := randomCollide(req.Prog, rnd)
+		if fuzzer.isWindowsTarget() && req.Prog != nil {
+			fuzzer.Logf(0, "windows collide source: original_calls=%d collided_calls=%d\n%s",
+				len(req.Prog.Calls), len(collidedProg.Calls), collidedProg.Serialize())
+		}
 		req = &queue.Request{
-			Prog: randomCollide(req.Prog, rnd),
-			Stat: fuzzer.statExecCollide,
+			Prog:       collidedProg,
+			Stat:       fuzzer.statExecCollide,
+			ExtraStats: []*stat.Val{req.Stat},
+			Origin:     "collide:" + req.Origin,
+			TraceID:    fuzzer.nextTraceID("collide"),
 		}
 	}
 	fuzzer.prepare(req, 0, 0)
 	return req
+}
+
+func (fuzzer *Fuzzer) collideChanceForProg(p *prog.Prog) int {
+	if p != nil && fuzzer.target != nil && fuzzer.target.RuntimePolicy.PreferCollideProgram != nil &&
+		fuzzer.target.RuntimePolicy.PreferCollideProgram(p) {
+		return 1
+	}
+	return 3
+}
+
+func (fuzzer *Fuzzer) nextTraceID(prefix string) string {
+	if prefix == "" {
+		prefix = "req"
+	}
+	return fmt.Sprintf("%s-%d", prefix, fuzzer.traceSeq.Add(1))
 }
 
 func (fuzzer *Fuzzer) startJob(stat *stat.Val, newJob job) {
@@ -352,20 +493,32 @@ func (fuzzer *Fuzzer) startJob(stat *stat.Val, newJob job) {
 }
 
 func (fuzzer *Fuzzer) Next() *queue.Request {
-	req := fuzzer.source.Next()
-	if req == nil {
-		// The fuzzer is not supposed to issue nil requests.
-		panic("nil request from the fuzzer")
-	}
-	if fuzzer.isWindowsTarget() && len(req.ReturnAllSignal) != 0 {
-		progCalls := 0
-		if req.Prog != nil {
-			progCalls = len(req.Prog.Calls)
+	for tries := 0; ; tries++ {
+		req := fuzzer.source.Next()
+		if req != nil {
+			if fuzzer.isWindowsTarget() && len(req.ReturnAllSignal) != 0 {
+				progCalls := 0
+				if req.Prog != nil {
+					progCalls = len(req.Prog.Calls)
+				}
+				fuzzer.Logf(0, "windows source next: prog_calls=%d return_all_signal=%v",
+					progCalls, req.ReturnAllSignal)
+			}
+			return req
 		}
-		fuzzer.Logf(0, "windows source next: prog_calls=%d return_all_signal=%v",
-			progCalls, req.ReturnAllSignal)
+		// Some focused modes can temporarily exhaust candidate/corpus-driven sources,
+		// especially when mutation has no available base program. Fall back to a fresh
+		// generation request instead of panicking the whole manager.
+		if req = genProgRequest(fuzzer, fuzzer.rand()); req != nil {
+			if fuzzer.isWindowsTarget() {
+				fuzzer.Logf(0, "windows source fallback: generated fresh request after nil source result (tries=%d)", tries+1)
+			}
+			return req
+		}
+		if tries >= 2 {
+			panic("nil request from the fuzzer")
+		}
 	}
-	return req
 }
 
 func (fuzzer *Fuzzer) Logf(level int, msg string, args ...any) {
@@ -399,6 +552,8 @@ func (fuzzer *Fuzzer) AddCandidates(candidates []Candidate) {
 			Prog:      candidate.Prog,
 			ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),
 			Stat:      fuzzer.statExecCandidate,
+			Origin:    "candidate",
+			TraceID:   fuzzer.nextTraceID("candidate"),
 			Important: true,
 		}
 		fuzzer.enqueue(fuzzer.candidateQueue, req, candidate.Flags|progCandidate, 0)

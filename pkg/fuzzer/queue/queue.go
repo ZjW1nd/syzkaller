@@ -38,6 +38,15 @@ type Request struct {
 
 	// This stat will be incremented on request completion.
 	Stat *stat.Val
+	// Additional stats to increment on completion. Useful for preserving the
+	// original execution source when a request is wrapped into another mode.
+	ExtraStats []*stat.Val
+	// Origin is a short free-form label describing where the request came from.
+	// Used for diagnostics only.
+	Origin string
+	// TraceID is a short diagnostic identifier that ties a request to follow-up
+	// logging across collide/triage/corpus flows.
+	TraceID string
 
 	// Important requests will be retried even from crashed VMs.
 	Important bool
@@ -88,6 +97,11 @@ func (r *Request) Done(res *Result) {
 	}
 	if r.Stat != nil {
 		r.Stat.Add(1)
+	}
+	for _, stat := range r.ExtraStats {
+		if stat != nil {
+			stat.Add(1)
+		}
 	}
 	r.initChannel()
 	r.result = res
@@ -344,6 +358,36 @@ func (a *alternate) Next() *Request {
 		return nil
 	}
 	return a.base.Next()
+}
+
+type interleave struct {
+	primary   Source
+	secondary Source
+	every     int
+	seq       atomic.Int64
+}
+
+// Interleave returns up to one request from secondary after every `every-1`
+// successful primary picks. If secondary is empty, primary proceeds as usual.
+// every <= 1 means "try secondary first on every call".
+func Interleave(primary, secondary Source, every int) Source {
+	if every <= 0 {
+		panic("bad interleave period")
+	}
+	return &interleave{
+		primary:   primary,
+		secondary: secondary,
+		every:     every,
+	}
+}
+
+func (i *interleave) Next() *Request {
+	if i.every <= 1 || i.seq.Add(1)%int64(i.every) == 0 {
+		if req := i.secondary.Next(); req != nil {
+			return req
+		}
+	}
+	return i.primary.Next()
 }
 
 type DynamicOrderer struct {

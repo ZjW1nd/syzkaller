@@ -206,3 +206,369 @@ dup(r2)
 		}
 	}
 }
+
+func TestAvoidAutomaticHelperAsync(t *testing.T) {
+	t.Parallel()
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.Helpers.AvoidCollidingAutomaticHelpers = true
+	p, err := clone.Deserialize([]byte(
+		"test$automatic_helper(0x0)\n"+
+			"test$manual(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	for range 100 {
+		collided := AssignRandomAsync(p, r)
+		for _, call := range collided.Calls {
+			if call.Meta.Name == "test$automatic_helper" && call.Props.Async {
+				t.Fatalf("automatic helper became async:\n%s", collided.Serialize())
+			}
+		}
+	}
+	for range 100 {
+		collided, err := DupCallCollide(p, r)
+		assert.NoError(t, err)
+		for _, call := range collided.Calls {
+			if call.Meta.Name == "test$automatic_helper" && call.Props.Async {
+				t.Fatalf("duplicated automatic helper became async:\n%s", collided.Serialize())
+			}
+		}
+	}
+	for range 20 {
+		collided, err := DoubleExecCollide(p, r)
+		assert.NoError(t, err)
+		manualAsync := false
+		for _, call := range collided.Calls {
+			if call.Meta.Name == "test$automatic_helper" && call.Props.Async {
+				t.Fatalf("double-exec automatic helper became async:\n%s", collided.Serialize())
+			}
+			if call.Meta.Name == "test$manual" && call.Props.Async {
+				manualAsync = true
+			}
+		}
+		if !manualAsync {
+			t.Fatalf("double-exec did not keep any target call async:\n%s", collided.Serialize())
+		}
+	}
+}
+
+func TestDupCallCollidePrefersHigherRelevance(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 3
+		}
+		return 1
+	}
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0)\n"+
+			"test$manual(0x1)\n"+
+			"test$automatic(0x2)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	for range 20 {
+		collided, err := DupCallCollide(p, r)
+		assert.NoError(t, err)
+		manualAsync := 0
+		automaticAsync := 0
+		for _, call := range collided.Calls {
+			if !call.Props.Async {
+				continue
+			}
+			switch call.Meta.Name {
+			case "test$manual":
+				manualAsync++
+			case "test$automatic":
+				automaticAsync++
+			}
+		}
+		if manualAsync == 0 || automaticAsync != 0 {
+			t.Fatalf("expected only higher-relevance call to be duplicated async:\n%s", collided.Serialize())
+		}
+	}
+}
+
+func TestDoubleExecCollideMarksHigherRelevanceAsync(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 3
+		}
+		return 1
+	}
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0)\n"+
+			"test$manual(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	collided, err := DoubleExecCollide(p, r)
+	assert.NoError(t, err)
+	manualAsync := 0
+	automaticAsync := 0
+	for _, call := range collided.Calls {
+		if !call.Props.Async {
+			continue
+		}
+		switch call.Meta.Name {
+		case "test$manual":
+			manualAsync++
+		case "test$automatic":
+			automaticAsync++
+		}
+	}
+	if manualAsync == 0 {
+		t.Fatalf("expected higher-relevance call to become async:\n%s", collided.Serialize())
+	}
+	if automaticAsync != 0 {
+		t.Fatalf("did not expect lower-relevance call to become async when higher-relevance exists:\n%s", collided.Serialize())
+	}
+}
+
+func TestAssignRandomRerunPrefersHigherRelevance(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 3
+		}
+		return 1
+	}
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0) (async)\n"+
+			"test$automatic(0x1)\n"+
+			"test$manual(0x2) (async)\n"+
+			"test$automatic(0x3)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	seenPreferred := false
+	for range 200 {
+		collided := p.Clone()
+		AssignRandomRerun(collided, r)
+		if collided.Calls[0].Props.Rerun != 0 {
+			t.Fatalf("lower-relevance async call unexpectedly received rerun:\n%s", collided.Serialize())
+		}
+		if collided.Calls[2].Props.Rerun != 0 {
+			seenPreferred = true
+			if collided.Calls[3].Props.Rerun != collided.Calls[2].Props.Rerun {
+				t.Fatalf("rerun pair not propagated to the following call:\n%s", collided.Serialize())
+			}
+		}
+	}
+	if !seenPreferred {
+		t.Fatal("higher-relevance async call never received rerun")
+	}
+}
+
+func TestAssignRandomRerunSkipsLowRelevancePrograms(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 2
+		}
+		return 1
+	}
+	clone.MinimumCollideCallRelevance = 3
+	p, err := clone.Deserialize([]byte(
+		"test$manual(0x0) (async)\n"+
+			"test$automatic(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	for range 50 {
+		collided := p.Clone()
+		AssignRandomRerun(collided, r)
+		if collided.Calls[0].Props.Rerun != 0 || collided.Calls[1].Props.Rerun != 0 {
+			t.Fatalf("low-relevance program unexpectedly received rerun:\n%s", collided.Serialize())
+		}
+	}
+}
+
+func TestAssignRandomAsyncPrefersHigherRelevance(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 3
+		}
+		return 1
+	}
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0)\n"+
+			"test$manual(0x1)\n"+
+			"test$automatic(0x2)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	for range 20 {
+		collided := AssignRandomAsync(p, r)
+		manualAsync := 0
+		automaticAsync := 0
+		for _, call := range collided.Calls {
+			if !call.Props.Async {
+				continue
+			}
+			switch call.Meta.Name {
+			case "test$manual":
+				manualAsync++
+			case "test$automatic":
+				automaticAsync++
+			}
+		}
+		if manualAsync == 0 || automaticAsync != 0 {
+			t.Fatalf("expected only higher-relevance call to become async:\n%s", collided.Serialize())
+		}
+	}
+}
+
+func TestAssignRandomAsyncSkipsLowRelevancePrograms(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 2
+		}
+		return 1
+	}
+	clone.MinimumCollideCallRelevance = 3
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0)\n"+
+			"test$manual(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	collided := AssignRandomAsync(p, r)
+	for _, call := range collided.Calls {
+		if call.Props.Async {
+			t.Fatalf("expected no async assignment for low-relevance-only program:\n%s", collided.Serialize())
+		}
+	}
+}
+
+func TestCollideUsesTargetSelectedIndices(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.SelectCollideCallIndices = func(calls []*Call) ([]int, bool) {
+		if len(calls) < 3 {
+			return nil, false
+		}
+		return []int{1}, false
+	}
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0)\n"+
+			"test$manual(0x1)\n"+
+			"test$automatic(0x2)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenSelectedAsync := false
+	for seed := int64(0); seed < 64; seed++ {
+		collided := AssignRandomAsync(p, rand.New(rand.NewSource(seed)))
+		if collided.Calls[0].Props.Async {
+			t.Fatalf("unexpected async on unselected call:\n%s", collided.Serialize())
+		}
+		if collided.Calls[2].Props.Async {
+			t.Fatalf("unexpected async on trailing unselected call:\n%s", collided.Serialize())
+		}
+		if collided.Calls[1].Props.Async {
+			seenSelectedAsync = true
+			break
+		}
+	}
+	if !seenSelectedAsync {
+		t.Fatal("selected collide call never became async across sampled seeds")
+	}
+	rerunProg := p.Clone()
+	rerunProg.Calls[1].Props.Async = true
+	AssignRandomRerun(rerunProg, rand.New(rand.NewSource(1)))
+	if rerunProg.Calls[0].Props.Rerun != 0 {
+		t.Fatalf("unselected call unexpectedly received rerun:\n%s", rerunProg.Serialize())
+	}
+}
+
+func TestDupCallCollideSkipsLowRelevancePrograms(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 2
+		}
+		return 1
+	}
+	clone.MinimumCollideCallRelevance = 3
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0)\n"+
+			"test$manual(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	if _, err := DupCallCollide(p, r); err == nil {
+		t.Fatal("expected duplicate-collide to reject low-relevance-only program")
+	}
+}
+
+func TestDoubleExecCollideSkipsLowRelevancePrograms(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRelevanceScore = func(call *Syscall) int {
+		if call.Name == "test$manual" {
+			return 2
+		}
+		return 1
+	}
+	clone.MinimumCollideCallRelevance = 3
+	p, err := clone.Deserialize([]byte(
+		"test$automatic(0x0)\n"+
+			"test$manual(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rand.New(rand.NewSource(0))
+	if _, err := DoubleExecCollide(p, r); err == nil {
+		t.Fatal("expected double-exec collide to reject low-relevance-only program")
+	}
+}

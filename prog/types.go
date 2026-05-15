@@ -28,6 +28,14 @@ type Syscall struct {
 	usesResources []*ResourceDesc
 }
 
+func (meta *Syscall) InputResources() []*ResourceDesc {
+	return meta.inputResources
+}
+
+func (meta *Syscall) CreatesResources() []*ResourceDesc {
+	return meta.createsResources
+}
+
 // SyscallAttrs represents call attributes in syzlang.
 //
 // This structure is the source of truth for the all other parts of the system.

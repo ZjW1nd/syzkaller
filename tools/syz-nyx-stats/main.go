@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -26,24 +28,36 @@ import (
 type statsState struct {
 	start time.Time
 
-	execTotal    int
-	coverage     int
-	corpus       int
-	candidates   int
-	execPerMin   int
-	rpcResults   int
-	rawNonEmpty  int
-	rawSignal    int
-	rawCover     int
-	postNonEmpty int
-	postSignal   int
-	postCover    int
-	hangedCount  int
-	nonZeroExec  int
+	execTotal     int
+	coverage      int
+	corpus        int
+	candidates    int
+	execPerMin    int
+	rpcResults    int
+	rawNonEmpty   int
+	rawSignal     int
+	rawCover      int
+	postNonEmpty  int
+	postSignal    int
+	postCover     int
+	hangedCount   int
+	nonZeroExec   int
+	execGen       int
+	execFuzz      int
+	execCandidate int
+	execTriage    int
+	execCollide   int
 
-	corpusSaves  int
-	triageEvents int
-	ntfsTriage   int
+	corpusSaves                    int
+	triageEvents                   int
+	ntfsTriage                     int
+	winTemplateGen                 int
+	winTemplateCorpus              int
+	winTemplateCollide             int
+	winResourceCentricTry          int
+	winResourceCentricHit          int
+	winResourceCentricNoCandidates int
+	winResourceCentricZeroScore    int
 
 	runnerExecResults   int
 	runnerNonZeroCover  int
@@ -94,19 +108,31 @@ type csvRow struct {
 	Corpus     int
 	Candidates int
 
-	RPCResults   int
-	NonZeroExec  int
-	HangedCount  int
-	RawNonEmpty  int
-	RawSignal    int
-	RawCover     int
-	PostNonEmpty int
-	PostSignal   int
-	PostCover    int
+	RPCResults    int
+	NonZeroExec   int
+	HangedCount   int
+	ExecGen       int
+	ExecFuzz      int
+	ExecCandidate int
+	ExecTriage    int
+	ExecCollide   int
+	RawNonEmpty   int
+	RawSignal     int
+	RawCover      int
+	PostNonEmpty  int
+	PostSignal    int
+	PostCover     int
 
-	CorpusSaves  int
-	TriageEvents int
-	NTFSTriage   int
+	CorpusSaves                    int
+	TriageEvents                   int
+	NTFSTriage                     int
+	WinTemplateGen                 int
+	WinTemplateCorpus              int
+	WinTemplateCollide             int
+	WinResourceCentricTry          int
+	WinResourceCentricHit          int
+	WinResourceCentricNoCandidates int
+	WinResourceCentricZeroScore    int
 
 	RunnerExecResults   int
 	RunnerNonZeroCover  int
@@ -153,13 +179,62 @@ type plotChart struct {
 }
 
 var (
-	reManagerStats = regexp.MustCompile(`candidates=(\d+)\s+corpus=(\d+)\s+coverage=(\d+)\s+exec total=(\d+)\s+\((\d+)/min\)`)
-	reRPCResult    = regexp.MustCompile(`rpcserver exec result: id=(\d+) calls=(\d+) raw_nonempty=(\d+) raw_signal=(\d+) raw_cover=(\d+) post_nonempty=(\d+) post_signal=(\d+) post_cover=(\d+) hanged=(\w+)`)
-	reRunnerExec   = regexp.MustCompile(`runner exec complete: id=(\d+) calls=(\d+) cover_records=(\d+)`)
-	reSubmitCR3    = regexp.MustCompile(`submit_cr3=0x([0-9a-fA-F]+)`)
-	rePTDecode     = regexp.MustCompile(`PT_DECODE\] bytes=(\d+) decode_bytes=(\d+) trimmed=(\d+) terminator_before=0x[0-9a-fA-F]+ result=(\d+) bb_before=\d+ bb_after=(\d+) trace_size=(\d+)`)
-	reSYZCovDump   = regexp.MustCompile(`SYZ_COV_DUMP\] active=\d+ records=(\d+) last_call=(\d+) last_slot=\d+ last_pcs=(\d+) ip_callbacks=(\d+) ip_recorded=(\d+)`)
+	reManagerStats            = regexp.MustCompile(`candidates=(\d+)\s+corpus=(\d+)\s+coverage=(\d+)\s+exec total=(\d+)\s+\((\d+)/min\)`)
+	reWinTemplateGen          = regexp.MustCompile(`win_tmpl_gen=(\d+)`)
+	reWinTemplateCorpus       = regexp.MustCompile(`win_tmpl_corpus=(\d+)`)
+	reWinTemplateCollide      = regexp.MustCompile(`win_tmpl_collide=(\d+)`)
+	reWinRCTry                = regexp.MustCompile(`win_rc_try=(\d+)`)
+	reWinRCHit                = regexp.MustCompile(`win_rc_hit=(\d+)`)
+	reWinRCNoCandidates       = regexp.MustCompile(`win_rc_no_candidates=(\d+)`)
+	reWinRCZeroScore          = regexp.MustCompile(`win_rc_zero_score=(\d+)`)
+	reExecGen                 = regexp.MustCompile(`exec gen=(\d+)`)
+	reExecFuzz                = regexp.MustCompile(`exec fuzz=(\d+)`)
+	reExecCandidate           = regexp.MustCompile(`exec candidate=(\d+)`)
+	reExecTriage              = regexp.MustCompile(`exec triage=(\d+)`)
+	reExecCollide             = regexp.MustCompile(`exec collide=(\d+)`)
+	reRPCResult               = regexp.MustCompile(`rpcserver exec result: id=(\d+) calls=(\d+) raw_nonempty=(\d+) raw_signal=(\d+) raw_cover=(\d+) post_nonempty=(\d+) post_signal=(\d+) post_cover=(\d+) hanged=(\w+)`)
+	reRunnerExec              = regexp.MustCompile(`runner exec complete: id=(\d+) calls=(\d+) cover_records=(\d+)`)
+	reSubmitCR3               = regexp.MustCompile(`submit_cr3=0x([0-9a-fA-F]+)`)
+	rePTDecode                = regexp.MustCompile(`PT_DECODE\] bytes=(\d+) decode_bytes=(\d+) trimmed=(\d+) terminator_before=0x[0-9a-fA-F]+ result=(\d+) bb_before=\d+ bb_after=(\d+) trace_size=(\d+)`)
+	reSYZCovDump              = regexp.MustCompile(`SYZ_COV_DUMP\] active=\d+ records=(\d+) last_call=(\d+) last_slot=\d+ last_pcs=(\d+) ip_callbacks=(\d+) ip_recorded=(\d+)`)
+	reWindowsCollideResult    = regexp.MustCompile(`windows collide result: origin=([^ ]+)(?: trace=([^ ]+))? active=\[(.*)\]`)
+	reWindowsTriageQueued     = regexp.MustCompile(`windows triage job queued: origin=([^ ]+)(?: trace=([^ ]+))? calls=\[(.*)\]`)
+	reWindowsCorpusSaveOrigin = regexp.MustCompile(`windows corpus save: origin=([^ ]+)(?: trace=([^ ]+))? call=(\d+) name=([^ ]+) stable_signal=(\d+) new_stable=(\d+) cover=(\d+) raw_cover=(\d+)`)
 )
+
+type collideSummaryEntry struct {
+	Origin      string `json:"origin"`
+	ActiveCalls string `json:"active_calls"`
+	Count       int    `json:"count"`
+}
+
+type collideQualityEntry struct {
+	Origin      string   `json:"origin"`
+	ActiveCalls string   `json:"active_calls"`
+	Count       int      `json:"count"`
+	TriageCalls []string `json:"triage_calls,omitempty"`
+	CorpusSaves []string `json:"corpus_saves,omitempty"`
+}
+
+type collideQualityEvent struct {
+	origin    string
+	traceID   string
+	triageSet map[string]bool
+	corpusSet map[string]bool
+	agg       *collideQualityAggregate
+}
+
+type collideQualityAggregate struct {
+	entry     collideQualityEntry
+	triageSet map[string]bool
+	corpusSet map[string]bool
+}
+
+type collideOwnerEntry struct {
+	Origin string `json:"origin"`
+	Owner  string `json:"owner"`
+	Count  int    `json:"count"`
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -182,6 +257,21 @@ func main() {
 			fmt.Fprintf(os.Stderr, "syz-nyx-stats compare: %v\n", err)
 			os.Exit(1)
 		}
+	case "collide-summary":
+		if err := runCollideSummary(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "syz-nyx-stats collide-summary: %v\n", err)
+			os.Exit(1)
+		}
+	case "collide-quality":
+		if err := runCollideQuality(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "syz-nyx-stats collide-quality: %v\n", err)
+			os.Exit(1)
+		}
+	case "collide-owners":
+		if err := runCollideOwners(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "syz-nyx-stats collide-owners: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -189,7 +279,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: syz-nyx-stats <collect|plot|compare> ...\n")
+	fmt.Fprintf(os.Stderr, "usage: syz-nyx-stats <collect|plot|compare|collide-summary|collide-quality|collide-owners> ...\n")
 }
 
 func runCollect(args []string) error {
@@ -256,8 +346,12 @@ func csvHeader() []string {
 		"timestamp_unix", "elapsed_sec",
 		"exec_total", "exec_per_min", "coverage", "corpus", "candidates",
 		"rpc_results", "nonzero_exec_results", "hanged_count",
+		"exec_gen", "exec_fuzz", "exec_candidate", "exec_triage", "exec_collide",
 		"raw_nonempty", "raw_signal", "raw_cover", "post_nonempty", "post_signal", "post_cover",
 		"corpus_saves", "triage_events", "ntfs_triage_events",
+		"win_template_gen", "win_template_corpus", "win_template_collide",
+		"win_resource_centric_try", "win_resource_centric_hit",
+		"win_resource_centric_no_candidates", "win_resource_centric_zero_score",
 		"runner_exec_results", "runner_nonzero_cover_records", "runner_last_exec_id", "runner_last_exec_calls", "runner_last_cover_records",
 		"handshake_count", "restart_scheduled", "restart_completed", "broken_pipe_count",
 		"submit_cr3_count", "last_submit_cr3",
@@ -333,6 +427,42 @@ func (c *collector) handleManagerLine(line string) {
 		c.state.execTotal = mustAtoi(m[4])
 		c.state.execPerMin = mustAtoi(m[5])
 	}
+	if m := reWinTemplateGen.FindStringSubmatch(line); m != nil {
+		c.state.winTemplateGen = mustAtoi(m[1])
+	}
+	if m := reWinTemplateCorpus.FindStringSubmatch(line); m != nil {
+		c.state.winTemplateCorpus = mustAtoi(m[1])
+	}
+	if m := reWinTemplateCollide.FindStringSubmatch(line); m != nil {
+		c.state.winTemplateCollide = mustAtoi(m[1])
+	}
+	if m := reWinRCTry.FindStringSubmatch(line); m != nil {
+		c.state.winResourceCentricTry = mustAtoi(m[1])
+	}
+	if m := reWinRCHit.FindStringSubmatch(line); m != nil {
+		c.state.winResourceCentricHit = mustAtoi(m[1])
+	}
+	if m := reWinRCNoCandidates.FindStringSubmatch(line); m != nil {
+		c.state.winResourceCentricNoCandidates = mustAtoi(m[1])
+	}
+	if m := reWinRCZeroScore.FindStringSubmatch(line); m != nil {
+		c.state.winResourceCentricZeroScore = mustAtoi(m[1])
+	}
+	if m := reExecGen.FindStringSubmatch(line); m != nil {
+		c.state.execGen = mustAtoi(m[1])
+	}
+	if m := reExecFuzz.FindStringSubmatch(line); m != nil {
+		c.state.execFuzz = mustAtoi(m[1])
+	}
+	if m := reExecCandidate.FindStringSubmatch(line); m != nil {
+		c.state.execCandidate = mustAtoi(m[1])
+	}
+	if m := reExecTriage.FindStringSubmatch(line); m != nil {
+		c.state.execTriage = mustAtoi(m[1])
+	}
+	if m := reExecCollide.FindStringSubmatch(line); m != nil {
+		c.state.execCollide = mustAtoi(m[1])
+	}
 	if m := reRPCResult.FindStringSubmatch(line); m != nil {
 		c.state.rpcResults++
 		c.state.rawNonEmpty = mustAtoi(m[3])
@@ -406,48 +536,60 @@ func (c *collector) handleRunnerLine(line string) {
 func (c *collector) makeRow() csvRow {
 	now := time.Now()
 	return csvRow{
-		TimestampUnix:         now.Unix(),
-		ElapsedSec:            now.Sub(c.state.start).Seconds(),
-		ExecTotal:             c.state.execTotal,
-		ExecPerMin:            c.state.execPerMin,
-		Coverage:              c.state.coverage,
-		Corpus:                c.state.corpus,
-		Candidates:            c.state.candidates,
-		RPCResults:            c.state.rpcResults,
-		NonZeroExec:           c.state.nonZeroExec,
-		HangedCount:           c.state.hangedCount,
-		RawNonEmpty:           c.state.rawNonEmpty,
-		RawSignal:             c.state.rawSignal,
-		RawCover:              c.state.rawCover,
-		PostNonEmpty:          c.state.postNonEmpty,
-		PostSignal:            c.state.postSignal,
-		PostCover:             c.state.postCover,
-		CorpusSaves:           c.state.corpusSaves,
-		TriageEvents:          c.state.triageEvents,
-		NTFSTriage:            c.state.ntfsTriage,
-		RunnerExecResults:     c.state.runnerExecResults,
-		RunnerNonZeroCover:    c.state.runnerNonZeroCover,
-		RunnerLastExecID:      c.state.runnerLastExecID,
-		RunnerLastExecCalls:   c.state.runnerLastExecCalls,
-		RunnerLastCoverRecs:   c.state.runnerLastCoverRecs,
-		HandshakeCount:        c.state.handshakeCount,
-		RestartScheduled:      c.state.restartScheduled,
-		RestartCompleted:      c.state.restartCompleted,
-		BrokenPipeCount:       c.state.brokenPipeCount,
-		SubmitCR3Count:        c.state.submitCR3Count,
-		LastSubmitCR3:         c.state.lastSubmitCR3,
-		PTDecodeCount:         c.state.ptDecodeCount,
-		PTLastBytes:           c.state.ptLastBytes,
-		PTLastDecodeBytes:     c.state.ptLastDecodeBytes,
-		PTLastResult:          c.state.ptLastResult,
-		PTLastBBAfter:         c.state.ptLastBBAfter,
-		PTLastTraceSize:       c.state.ptLastTraceSize,
-		SYZCovDumpCount:       c.state.syzCovDumpCount,
-		SYZCovLastRecords:     c.state.syzCovLastRecords,
-		SYZCovLastCall:        c.state.syzCovLastCall,
-		SYZCovLastPCs:         c.state.syzCovLastPCs,
-		SYZCovLastIPCallbacks: c.state.syzCovLastIPCallbacks,
-		SYZCovLastIPRecorded:  c.state.syzCovLastIPRecorded,
+		TimestampUnix:                  now.Unix(),
+		ElapsedSec:                     now.Sub(c.state.start).Seconds(),
+		ExecTotal:                      c.state.execTotal,
+		ExecPerMin:                     c.state.execPerMin,
+		Coverage:                       c.state.coverage,
+		Corpus:                         c.state.corpus,
+		Candidates:                     c.state.candidates,
+		RPCResults:                     c.state.rpcResults,
+		NonZeroExec:                    c.state.nonZeroExec,
+		HangedCount:                    c.state.hangedCount,
+		ExecGen:                        c.state.execGen,
+		ExecFuzz:                       c.state.execFuzz,
+		ExecCandidate:                  c.state.execCandidate,
+		ExecTriage:                     c.state.execTriage,
+		ExecCollide:                    c.state.execCollide,
+		RawNonEmpty:                    c.state.rawNonEmpty,
+		RawSignal:                      c.state.rawSignal,
+		RawCover:                       c.state.rawCover,
+		PostNonEmpty:                   c.state.postNonEmpty,
+		PostSignal:                     c.state.postSignal,
+		PostCover:                      c.state.postCover,
+		CorpusSaves:                    c.state.corpusSaves,
+		TriageEvents:                   c.state.triageEvents,
+		NTFSTriage:                     c.state.ntfsTriage,
+		WinTemplateGen:                 c.state.winTemplateGen,
+		WinTemplateCorpus:              c.state.winTemplateCorpus,
+		WinTemplateCollide:             c.state.winTemplateCollide,
+		WinResourceCentricTry:          c.state.winResourceCentricTry,
+		WinResourceCentricHit:          c.state.winResourceCentricHit,
+		WinResourceCentricNoCandidates: c.state.winResourceCentricNoCandidates,
+		WinResourceCentricZeroScore:    c.state.winResourceCentricZeroScore,
+		RunnerExecResults:              c.state.runnerExecResults,
+		RunnerNonZeroCover:             c.state.runnerNonZeroCover,
+		RunnerLastExecID:               c.state.runnerLastExecID,
+		RunnerLastExecCalls:            c.state.runnerLastExecCalls,
+		RunnerLastCoverRecs:            c.state.runnerLastCoverRecs,
+		HandshakeCount:                 c.state.handshakeCount,
+		RestartScheduled:               c.state.restartScheduled,
+		RestartCompleted:               c.state.restartCompleted,
+		BrokenPipeCount:                c.state.brokenPipeCount,
+		SubmitCR3Count:                 c.state.submitCR3Count,
+		LastSubmitCR3:                  c.state.lastSubmitCR3,
+		PTDecodeCount:                  c.state.ptDecodeCount,
+		PTLastBytes:                    c.state.ptLastBytes,
+		PTLastDecodeBytes:              c.state.ptLastDecodeBytes,
+		PTLastResult:                   c.state.ptLastResult,
+		PTLastBBAfter:                  c.state.ptLastBBAfter,
+		PTLastTraceSize:                c.state.ptLastTraceSize,
+		SYZCovDumpCount:                c.state.syzCovDumpCount,
+		SYZCovLastRecords:              c.state.syzCovLastRecords,
+		SYZCovLastCall:                 c.state.syzCovLastCall,
+		SYZCovLastPCs:                  c.state.syzCovLastPCs,
+		SYZCovLastIPCallbacks:          c.state.syzCovLastIPCallbacks,
+		SYZCovLastIPRecorded:           c.state.syzCovLastIPRecorded,
 	}
 }
 
@@ -457,8 +599,12 @@ func (r csvRow) toCSV() []string {
 		fmt.Sprintf("%.3f", r.ElapsedSec),
 		itoa(r.ExecTotal), itoa(r.ExecPerMin), itoa(r.Coverage), itoa(r.Corpus), itoa(r.Candidates),
 		itoa(r.RPCResults), itoa(r.NonZeroExec), itoa(r.HangedCount),
+		itoa(r.ExecGen), itoa(r.ExecFuzz), itoa(r.ExecCandidate), itoa(r.ExecTriage), itoa(r.ExecCollide),
 		itoa(r.RawNonEmpty), itoa(r.RawSignal), itoa(r.RawCover), itoa(r.PostNonEmpty), itoa(r.PostSignal), itoa(r.PostCover),
 		itoa(r.CorpusSaves), itoa(r.TriageEvents), itoa(r.NTFSTriage),
+		itoa(r.WinTemplateGen), itoa(r.WinTemplateCorpus), itoa(r.WinTemplateCollide),
+		itoa(r.WinResourceCentricTry), itoa(r.WinResourceCentricHit),
+		itoa(r.WinResourceCentricNoCandidates), itoa(r.WinResourceCentricZeroScore),
 		itoa(r.RunnerExecResults), itoa(r.RunnerNonZeroCover), itoa(r.RunnerLastExecID), itoa(r.RunnerLastExecCalls), itoa(r.RunnerLastCoverRecs),
 		itoa(r.HandshakeCount), itoa(r.RestartScheduled), itoa(r.RestartCompleted), itoa(r.BrokenPipeCount),
 		itoa(r.SubmitCR3Count), r.LastSubmitCR3,
@@ -494,6 +640,11 @@ func runPlot(args []string) error {
 	coverage := make([]float64, len(rows))
 	corpus := make([]float64, len(rows))
 	execPerMin := make([]float64, len(rows))
+	execGen := make([]float64, len(rows))
+	execFuzz := make([]float64, len(rows))
+	execCandidate := make([]float64, len(rows))
+	execTriage := make([]float64, len(rows))
+	execCollide := make([]float64, len(rows))
 	rawSignal := make([]float64, len(rows))
 	rawCover := make([]float64, len(rows))
 	postSignal := make([]float64, len(rows))
@@ -504,12 +655,24 @@ func runPlot(args []string) error {
 	ptBB := make([]float64, len(rows))
 	syzCovRecords := make([]float64, len(rows))
 	ntfsTriage := make([]float64, len(rows))
+	winTemplateGen := make([]float64, len(rows))
+	winTemplateCorpus := make([]float64, len(rows))
+	winTemplateCollide := make([]float64, len(rows))
+	winResourceCentricTry := make([]float64, len(rows))
+	winResourceCentricHit := make([]float64, len(rows))
+	winResourceCentricNoCandidates := make([]float64, len(rows))
+	winResourceCentricZeroScore := make([]float64, len(rows))
 	for i, row := range rows {
 		elapsed[i] = row.ElapsedSec
 		execTotal[i] = float64(row.ExecTotal)
 		coverage[i] = float64(row.Coverage)
 		corpus[i] = float64(row.Corpus)
 		execPerMin[i] = float64(row.ExecPerMin)
+		execGen[i] = float64(row.ExecGen)
+		execFuzz[i] = float64(row.ExecFuzz)
+		execCandidate[i] = float64(row.ExecCandidate)
+		execTriage[i] = float64(row.ExecTriage)
+		execCollide[i] = float64(row.ExecCollide)
 		rawSignal[i] = float64(row.RawSignal)
 		rawCover[i] = float64(row.RawCover)
 		postSignal[i] = float64(row.PostSignal)
@@ -520,6 +683,13 @@ func runPlot(args []string) error {
 		ptBB[i] = float64(row.PTLastBBAfter)
 		syzCovRecords[i] = float64(row.SYZCovLastRecords)
 		ntfsTriage[i] = float64(row.NTFSTriage)
+		winTemplateGen[i] = float64(row.WinTemplateGen)
+		winTemplateCorpus[i] = float64(row.WinTemplateCorpus)
+		winTemplateCollide[i] = float64(row.WinTemplateCollide)
+		winResourceCentricTry[i] = float64(row.WinResourceCentricTry)
+		winResourceCentricHit[i] = float64(row.WinResourceCentricHit)
+		winResourceCentricNoCandidates[i] = float64(row.WinResourceCentricNoCandidates)
+		winResourceCentricZeroScore[i] = float64(row.WinResourceCentricZeroScore)
 	}
 	charts := []plotChart{
 		{
@@ -538,6 +708,23 @@ func runPlot(args []string) error {
 				{Title: "exec_per_min", Series: []plotSeries{{Name: "exec_per_min", Values: execPerMin, Color: "#1f77b4"}}},
 				{Title: "runner_cover_records", Series: []plotSeries{{Name: "runner_cover_records", Values: coverRecords, Color: "#d62728"}}},
 				{Title: "restart_scheduled", Series: []plotSeries{{Name: "restart_scheduled", Values: restarts, Color: "#9467bd"}}},
+			},
+		},
+		{
+			File:  "exec_mix.svg",
+			Title: "Execution Mix",
+			Panels: []plotPanel{
+				{Title: "generate_vs_fuzz", Series: []plotSeries{
+					{Name: "exec_gen", Values: execGen, Color: "#1f77b4"},
+					{Name: "exec_fuzz", Values: execFuzz, Color: "#ff7f0e"},
+				}},
+				{Title: "candidate_vs_triage", Series: []plotSeries{
+					{Name: "exec_candidate", Values: execCandidate, Color: "#2ca02c"},
+					{Name: "exec_triage", Values: execTriage, Color: "#d62728"},
+				}},
+				{Title: "exec_collide", Series: []plotSeries{
+					{Name: "exec_collide", Values: execCollide, Color: "#9467bd"},
+				}},
 			},
 		},
 		{
@@ -568,6 +755,21 @@ func runPlot(args []string) error {
 				{Title: "pt_bb_after", Series: []plotSeries{{Name: "pt_bb_after", Values: ptBB, Color: "#ff7f0e"}}},
 				{Title: "syz_cov_records", Series: []plotSeries{{Name: "syz_cov_records", Values: syzCovRecords, Color: "#2ca02c"}}},
 				{Title: "ntfs_triage", Series: []plotSeries{{Name: "ntfs_triage", Values: ntfsTriage, Color: "#d62728"}}},
+			},
+		},
+		{
+			File:  "windows_templates.svg",
+			Title: "Windows Template Hits",
+			Panels: []plotPanel{
+				{Title: "win_template_gen", Series: []plotSeries{{Name: "win_template_gen", Values: winTemplateGen, Color: "#1f77b4"}}},
+				{Title: "win_template_corpus", Series: []plotSeries{{Name: "win_template_corpus", Values: winTemplateCorpus, Color: "#ff7f0e"}}},
+				{Title: "win_template_collide", Series: []plotSeries{{Name: "win_template_collide", Values: winTemplateCollide, Color: "#2ca02c"}}},
+				{Title: "win_resource_centric", Series: []plotSeries{
+					{Name: "win_resource_centric_try", Values: winResourceCentricTry, Color: "#9467bd"},
+					{Name: "win_resource_centric_hit", Values: winResourceCentricHit, Color: "#8c564b"},
+					{Name: "win_resource_centric_no_candidates", Values: winResourceCentricNoCandidates, Color: "#17becf"},
+					{Name: "win_resource_centric_zero_score", Values: winResourceCentricZeroScore, Color: "#7f7f7f"},
+				}},
 			},
 		},
 	}
@@ -660,6 +862,11 @@ func runCompare(args []string) error {
 	corpus := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.Corpus) })
 	execTotal := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.ExecTotal) })
 	execPerMin := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.ExecPerMin) })
+	execGen := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.ExecGen) })
+	execFuzz := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.ExecFuzz) })
+	execCandidate := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.ExecCandidate) })
+	execTriage := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.ExecTriage) })
+	execCollide := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.ExecCollide) })
 	coverRecords := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.RunnerLastCoverRecs) })
 	restarts := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.RestartScheduled) })
 	rawSignal := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.RawSignal) })
@@ -670,6 +877,13 @@ func runCompare(args []string) error {
 	ptBB := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.PTLastBBAfter) })
 	syzCov := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.SYZCovLastRecords) })
 	ntfsTriage := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.NTFSTriage) })
+	winTemplateGen := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.WinTemplateGen) })
+	winTemplateCorpus := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.WinTemplateCorpus) })
+	winTemplateCollide := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.WinTemplateCollide) })
+	winResourceCentricTry := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.WinResourceCentricTry) })
+	winResourceCentricHit := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.WinResourceCentricHit) })
+	winResourceCentricNoCandidates := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.WinResourceCentricNoCandidates) })
+	winResourceCentricZeroScore := aggregateMetric(runs, x, func(row csvRow) float64 { return float64(row.WinResourceCentricZeroScore) })
 
 	charts := []plotChart{
 		{
@@ -688,6 +902,23 @@ func runCompare(args []string) error {
 				{Title: "exec_per_min_mean", Series: []plotSeries{{Name: "exec_per_min_mean", Values: execPerMin.Mean, Color: "#1f77b4"}}},
 				{Title: "runner_cover_records_mean", Series: []plotSeries{{Name: "runner_cover_records_mean", Values: coverRecords.Mean, Color: "#d62728"}}},
 				{Title: "restart_scheduled_mean", Series: []plotSeries{{Name: "restart_scheduled_mean", Values: restarts.Mean, Color: "#9467bd"}}},
+			},
+		},
+		{
+			File:  "aggregate_exec_mix.svg",
+			Title: "Execution Mix (mean)",
+			Panels: []plotPanel{
+				{Title: "generate_vs_fuzz_mean", Series: []plotSeries{
+					{Name: "exec_gen_mean", Values: execGen.Mean, Color: "#1f77b4"},
+					{Name: "exec_fuzz_mean", Values: execFuzz.Mean, Color: "#ff7f0e"},
+				}},
+				{Title: "candidate_vs_triage_mean", Series: []plotSeries{
+					{Name: "exec_candidate_mean", Values: execCandidate.Mean, Color: "#2ca02c"},
+					{Name: "exec_triage_mean", Values: execTriage.Mean, Color: "#d62728"},
+				}},
+				{Title: "exec_collide_mean", Series: []plotSeries{
+					{Name: "exec_collide_mean", Values: execCollide.Mean, Color: "#9467bd"},
+				}},
 			},
 		},
 		{
@@ -718,6 +949,21 @@ func runCompare(args []string) error {
 				{Title: "pt_bb_after_mean", Series: []plotSeries{{Name: "pt_bb_after_mean", Values: ptBB.Mean, Color: "#ff7f0e"}}},
 				{Title: "syz_cov_records_mean", Series: []plotSeries{{Name: "syz_cov_records_mean", Values: syzCov.Mean, Color: "#2ca02c"}}},
 				{Title: "ntfs_triage_mean", Series: []plotSeries{{Name: "ntfs_triage_mean", Values: ntfsTriage.Mean, Color: "#d62728"}}},
+			},
+		},
+		{
+			File:  "aggregate_windows_templates.svg",
+			Title: "Windows Template Hits (mean)",
+			Panels: []plotPanel{
+				{Title: "win_template_gen_mean", Series: []plotSeries{{Name: "win_template_gen_mean", Values: winTemplateGen.Mean, Color: "#1f77b4"}}},
+				{Title: "win_template_corpus_mean", Series: []plotSeries{{Name: "win_template_corpus_mean", Values: winTemplateCorpus.Mean, Color: "#ff7f0e"}}},
+				{Title: "win_template_collide_mean", Series: []plotSeries{{Name: "win_template_collide_mean", Values: winTemplateCollide.Mean, Color: "#2ca02c"}}},
+				{Title: "win_resource_centric_mean", Series: []plotSeries{
+					{Name: "win_resource_centric_try_mean", Values: winResourceCentricTry.Mean, Color: "#9467bd"},
+					{Name: "win_resource_centric_hit_mean", Values: winResourceCentricHit.Mean, Color: "#8c564b"},
+					{Name: "win_resource_centric_no_candidates_mean", Values: winResourceCentricNoCandidates.Mean, Color: "#17becf"},
+					{Name: "win_resource_centric_zero_score_mean", Values: winResourceCentricZeroScore.Mean, Color: "#7f7f7f"},
+				}},
 			},
 		},
 	}
@@ -756,6 +1002,283 @@ func runCompare(args []string) error {
 	}
 	index := renderAggregateIndex(*title, summary, charts)
 	return os.WriteFile(filepath.Join(*outdir, "index.html"), []byte(index), 0o644)
+}
+
+func runCollideSummary(args []string) error {
+	fs := flag.NewFlagSet("collide-summary", flag.ContinueOnError)
+	managerLog := fs.String("manager-log", "", "path to syz-manager log")
+	output := fs.String("output", "", "JSON output path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *managerLog == "" || *output == "" {
+		return errors.New("need --manager-log and --output")
+	}
+	data, err := os.ReadFile(*managerLog)
+	if err != nil {
+		return err
+	}
+	type key struct {
+		origin string
+		active string
+	}
+	counts := make(map[key]int)
+	for _, line := range strings.Split(string(data), "\n") {
+		m := reWindowsCollideResult.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		k := key{origin: m[1], active: m[3]}
+		counts[k]++
+	}
+	var rows []collideSummaryEntry
+	for k, count := range counts {
+		rows = append(rows, collideSummaryEntry{
+			Origin:      k.origin,
+			ActiveCalls: k.active,
+			Count:       count,
+		})
+	}
+	slices.SortFunc(rows, func(a, b collideSummaryEntry) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		if a.Origin != b.Origin {
+			return cmp.Compare(a.Origin, b.Origin)
+		}
+		return cmp.Compare(a.ActiveCalls, b.ActiveCalls)
+	})
+	out, err := json.MarshalIndent(rows, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*output, out, 0o644)
+}
+
+func runCollideQuality(args []string) error {
+	fs := flag.NewFlagSet("collide-quality", flag.ContinueOnError)
+	managerLog := fs.String("manager-log", "", "path to syz-manager log")
+	output := fs.String("output", "", "JSON output path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *managerLog == "" || *output == "" {
+		return errors.New("need --manager-log and --output")
+	}
+	data, err := os.ReadFile(*managerLog)
+	if err != nil {
+		return err
+	}
+	aggs := make(map[string]*collideQualityAggregate)
+	eventsByOrigin := make(map[string][]*collideQualityEvent)
+	eventsByTrace := make(map[string]*collideQualityEvent)
+	pendingTriageByOrigin := make(map[string]map[string]bool)
+	pendingTriageByTrace := make(map[string]map[string]bool)
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if m := reWindowsTriageQueued.FindStringSubmatch(line); m != nil {
+			origin, traceID := m[1], m[2]
+			var pending map[string]bool
+			if traceID != "" {
+				pending = pendingTriageByTrace[traceID]
+				if pending == nil {
+					pending = make(map[string]bool)
+					pendingTriageByTrace[traceID] = pending
+				}
+			} else {
+				pending = pendingTriageByOrigin[origin]
+				if pending == nil {
+					pending = make(map[string]bool)
+					pendingTriageByOrigin[origin] = pending
+				}
+			}
+			for _, call := range strings.Fields(strings.ReplaceAll(m[3], ",", " ")) {
+				call = strings.Trim(call, "[]")
+				if call != "" {
+					pending[call] = true
+				}
+			}
+			continue
+		}
+		if m := reWindowsCollideResult.FindStringSubmatch(line); m != nil {
+			origin, traceID, active := m[1], m[2], m[3]
+			key := origin + "\x00" + active
+			a := aggs[key]
+			if a == nil {
+				a = &collideQualityAggregate{
+					entry: collideQualityEntry{
+						Origin:      origin,
+						ActiveCalls: active,
+					},
+					triageSet: make(map[string]bool),
+					corpusSet: make(map[string]bool),
+				}
+				aggs[key] = a
+			}
+			a.entry.Count++
+			event := &collideQualityEvent{
+				origin:    origin,
+				traceID:   traceID,
+				triageSet: make(map[string]bool),
+				corpusSet: make(map[string]bool),
+				agg:       a,
+			}
+			pending := pendingTriageByOrigin[origin]
+			if traceID != "" {
+				if traced := pendingTriageByTrace[traceID]; traced != nil {
+					pending = traced
+				}
+			}
+			for call := range pending {
+				event.triageSet[call] = true
+				addStringToCollideQualityAggregate(a, call, true)
+			}
+			if traceID != "" {
+				delete(pendingTriageByTrace, traceID)
+				eventsByTrace[traceID] = event
+			} else {
+				delete(pendingTriageByOrigin, origin)
+			}
+			eventsByOrigin[origin] = append(eventsByOrigin[origin], event)
+			continue
+		}
+		if m := reWindowsCorpusSaveOrigin.FindStringSubmatch(line); m != nil {
+			origin, traceID := m[1], m[2]
+			callName := m[4]
+			if traceID != "" {
+				event := eventsByTrace[traceID]
+				if event == nil || event.corpusSet[callName] {
+					continue
+				}
+				event.corpusSet[callName] = true
+				addStringToCollideQualityAggregate(event.agg, callName, false)
+				continue
+			}
+			events := eventsByOrigin[origin]
+			if len(events) == 0 {
+				continue
+			}
+			event := selectCollideQualityEvent(events, callName)
+			if event == nil || event.corpusSet[callName] {
+				continue
+			}
+			event.corpusSet[callName] = true
+			addStringToCollideQualityAggregate(event.agg, callName, false)
+		}
+	}
+	var rows []collideQualityEntry
+	for _, a := range aggs {
+		slices.Sort(a.entry.TriageCalls)
+		slices.Sort(a.entry.CorpusSaves)
+		rows = append(rows, a.entry)
+	}
+	slices.SortFunc(rows, func(a, b collideQualityEntry) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		if a.Origin != b.Origin {
+			return cmp.Compare(a.Origin, b.Origin)
+		}
+		return cmp.Compare(a.ActiveCalls, b.ActiveCalls)
+	})
+	out, err := json.MarshalIndent(rows, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*output, out, 0o644)
+}
+
+func runCollideOwners(args []string) error {
+	fs := flag.NewFlagSet("collide-owners", flag.ContinueOnError)
+	inputsArg := fs.String("inputs", "", "comma-separated collide_quality.json paths")
+	output := fs.String("output", "", "JSON output path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *inputsArg == "" || *output == "" {
+		return errors.New("need --inputs and --output")
+	}
+	type key struct {
+		origin string
+		owner  string
+	}
+	counts := make(map[key]int)
+	for _, path := range splitInputs(*inputsArg) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var rows []collideQualityEntry
+		if err := json.Unmarshal(data, &rows); err != nil {
+			return fmt.Errorf("parse %s: %w", path, err)
+		}
+		for _, row := range rows {
+			for _, owner := range row.TriageCalls {
+				counts[key{origin: row.Origin, owner: owner}]++
+			}
+		}
+	}
+	var rows []collideOwnerEntry
+	for k, count := range counts {
+		rows = append(rows, collideOwnerEntry{
+			Origin: k.origin,
+			Owner:  k.owner,
+			Count:  count,
+		})
+	}
+	slices.SortFunc(rows, func(a, b collideOwnerEntry) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		if a.Origin != b.Origin {
+			return cmp.Compare(a.Origin, b.Origin)
+		}
+		return cmp.Compare(a.Owner, b.Owner)
+	})
+	out, err := json.MarshalIndent(rows, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*output, out, 0o644)
+}
+
+func addStringToCollideQualityAggregate(a *collideQualityAggregate, value string, triage bool) {
+	if a == nil || value == "" {
+		return
+	}
+	if triage {
+		if a.triageSet[value] {
+			return
+		}
+		a.triageSet[value] = true
+		a.entry.TriageCalls = append(a.entry.TriageCalls, value)
+		return
+	}
+	if a.corpusSet[value] {
+		return
+	}
+	a.corpusSet[value] = true
+	a.entry.CorpusSaves = append(a.entry.CorpusSaves, value)
+}
+
+func selectCollideQualityEvent(events []*collideQualityEvent, callName string) *collideQualityEvent {
+	var fallback *collideQualityEvent
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		if event.triageSet[callName] {
+			return event
+		}
+		if fallback == nil {
+			fallback = event
+		}
+	}
+	return fallback
 }
 
 func splitInputs(arg string) []string {
@@ -903,46 +1426,58 @@ func aggregateFinalRows(rows []csvRow, reducer floatReducer) csvRow {
 		return reducer(vals)
 	}
 	return csvRow{
-		ElapsedSec:            pickFloat(func(r csvRow) float64 { return r.ElapsedSec }),
-		ExecTotal:             pickInt(func(r csvRow) float64 { return float64(r.ExecTotal) }),
-		ExecPerMin:            pickInt(func(r csvRow) float64 { return float64(r.ExecPerMin) }),
-		Coverage:              pickInt(func(r csvRow) float64 { return float64(r.Coverage) }),
-		Corpus:                pickInt(func(r csvRow) float64 { return float64(r.Corpus) }),
-		Candidates:            pickInt(func(r csvRow) float64 { return float64(r.Candidates) }),
-		RPCResults:            pickInt(func(r csvRow) float64 { return float64(r.RPCResults) }),
-		NonZeroExec:           pickInt(func(r csvRow) float64 { return float64(r.NonZeroExec) }),
-		HangedCount:           pickInt(func(r csvRow) float64 { return float64(r.HangedCount) }),
-		RawNonEmpty:           pickInt(func(r csvRow) float64 { return float64(r.RawNonEmpty) }),
-		RawSignal:             pickInt(func(r csvRow) float64 { return float64(r.RawSignal) }),
-		RawCover:              pickInt(func(r csvRow) float64 { return float64(r.RawCover) }),
-		PostNonEmpty:          pickInt(func(r csvRow) float64 { return float64(r.PostNonEmpty) }),
-		PostSignal:            pickInt(func(r csvRow) float64 { return float64(r.PostSignal) }),
-		PostCover:             pickInt(func(r csvRow) float64 { return float64(r.PostCover) }),
-		CorpusSaves:           pickInt(func(r csvRow) float64 { return float64(r.CorpusSaves) }),
-		TriageEvents:          pickInt(func(r csvRow) float64 { return float64(r.TriageEvents) }),
-		NTFSTriage:            pickInt(func(r csvRow) float64 { return float64(r.NTFSTriage) }),
-		RunnerExecResults:     pickInt(func(r csvRow) float64 { return float64(r.RunnerExecResults) }),
-		RunnerNonZeroCover:    pickInt(func(r csvRow) float64 { return float64(r.RunnerNonZeroCover) }),
-		RunnerLastExecID:      pickInt(func(r csvRow) float64 { return float64(r.RunnerLastExecID) }),
-		RunnerLastExecCalls:   pickInt(func(r csvRow) float64 { return float64(r.RunnerLastExecCalls) }),
-		RunnerLastCoverRecs:   pickInt(func(r csvRow) float64 { return float64(r.RunnerLastCoverRecs) }),
-		HandshakeCount:        pickInt(func(r csvRow) float64 { return float64(r.HandshakeCount) }),
-		RestartScheduled:      pickInt(func(r csvRow) float64 { return float64(r.RestartScheduled) }),
-		RestartCompleted:      pickInt(func(r csvRow) float64 { return float64(r.RestartCompleted) }),
-		BrokenPipeCount:       pickInt(func(r csvRow) float64 { return float64(r.BrokenPipeCount) }),
-		SubmitCR3Count:        pickInt(func(r csvRow) float64 { return float64(r.SubmitCR3Count) }),
-		PTDecodeCount:         pickInt(func(r csvRow) float64 { return float64(r.PTDecodeCount) }),
-		PTLastBytes:           pickInt(func(r csvRow) float64 { return float64(r.PTLastBytes) }),
-		PTLastDecodeBytes:     pickInt(func(r csvRow) float64 { return float64(r.PTLastDecodeBytes) }),
-		PTLastResult:          pickInt(func(r csvRow) float64 { return float64(r.PTLastResult) }),
-		PTLastBBAfter:         pickInt(func(r csvRow) float64 { return float64(r.PTLastBBAfter) }),
-		PTLastTraceSize:       pickInt(func(r csvRow) float64 { return float64(r.PTLastTraceSize) }),
-		SYZCovDumpCount:       pickInt(func(r csvRow) float64 { return float64(r.SYZCovDumpCount) }),
-		SYZCovLastRecords:     pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastRecords) }),
-		SYZCovLastCall:        pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastCall) }),
-		SYZCovLastPCs:         pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastPCs) }),
-		SYZCovLastIPCallbacks: pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastIPCallbacks) }),
-		SYZCovLastIPRecorded:  pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastIPRecorded) }),
+		ElapsedSec:                     pickFloat(func(r csvRow) float64 { return r.ElapsedSec }),
+		ExecTotal:                      pickInt(func(r csvRow) float64 { return float64(r.ExecTotal) }),
+		ExecPerMin:                     pickInt(func(r csvRow) float64 { return float64(r.ExecPerMin) }),
+		Coverage:                       pickInt(func(r csvRow) float64 { return float64(r.Coverage) }),
+		Corpus:                         pickInt(func(r csvRow) float64 { return float64(r.Corpus) }),
+		Candidates:                     pickInt(func(r csvRow) float64 { return float64(r.Candidates) }),
+		RPCResults:                     pickInt(func(r csvRow) float64 { return float64(r.RPCResults) }),
+		NonZeroExec:                    pickInt(func(r csvRow) float64 { return float64(r.NonZeroExec) }),
+		HangedCount:                    pickInt(func(r csvRow) float64 { return float64(r.HangedCount) }),
+		ExecGen:                        pickInt(func(r csvRow) float64 { return float64(r.ExecGen) }),
+		ExecFuzz:                       pickInt(func(r csvRow) float64 { return float64(r.ExecFuzz) }),
+		ExecCandidate:                  pickInt(func(r csvRow) float64 { return float64(r.ExecCandidate) }),
+		ExecTriage:                     pickInt(func(r csvRow) float64 { return float64(r.ExecTriage) }),
+		ExecCollide:                    pickInt(func(r csvRow) float64 { return float64(r.ExecCollide) }),
+		RawNonEmpty:                    pickInt(func(r csvRow) float64 { return float64(r.RawNonEmpty) }),
+		RawSignal:                      pickInt(func(r csvRow) float64 { return float64(r.RawSignal) }),
+		RawCover:                       pickInt(func(r csvRow) float64 { return float64(r.RawCover) }),
+		PostNonEmpty:                   pickInt(func(r csvRow) float64 { return float64(r.PostNonEmpty) }),
+		PostSignal:                     pickInt(func(r csvRow) float64 { return float64(r.PostSignal) }),
+		PostCover:                      pickInt(func(r csvRow) float64 { return float64(r.PostCover) }),
+		CorpusSaves:                    pickInt(func(r csvRow) float64 { return float64(r.CorpusSaves) }),
+		TriageEvents:                   pickInt(func(r csvRow) float64 { return float64(r.TriageEvents) }),
+		NTFSTriage:                     pickInt(func(r csvRow) float64 { return float64(r.NTFSTriage) }),
+		WinTemplateGen:                 pickInt(func(r csvRow) float64 { return float64(r.WinTemplateGen) }),
+		WinTemplateCorpus:              pickInt(func(r csvRow) float64 { return float64(r.WinTemplateCorpus) }),
+		WinTemplateCollide:             pickInt(func(r csvRow) float64 { return float64(r.WinTemplateCollide) }),
+		WinResourceCentricTry:          pickInt(func(r csvRow) float64 { return float64(r.WinResourceCentricTry) }),
+		WinResourceCentricHit:          pickInt(func(r csvRow) float64 { return float64(r.WinResourceCentricHit) }),
+		WinResourceCentricNoCandidates: pickInt(func(r csvRow) float64 { return float64(r.WinResourceCentricNoCandidates) }),
+		WinResourceCentricZeroScore:    pickInt(func(r csvRow) float64 { return float64(r.WinResourceCentricZeroScore) }),
+		RunnerExecResults:              pickInt(func(r csvRow) float64 { return float64(r.RunnerExecResults) }),
+		RunnerNonZeroCover:             pickInt(func(r csvRow) float64 { return float64(r.RunnerNonZeroCover) }),
+		RunnerLastExecID:               pickInt(func(r csvRow) float64 { return float64(r.RunnerLastExecID) }),
+		RunnerLastExecCalls:            pickInt(func(r csvRow) float64 { return float64(r.RunnerLastExecCalls) }),
+		RunnerLastCoverRecs:            pickInt(func(r csvRow) float64 { return float64(r.RunnerLastCoverRecs) }),
+		HandshakeCount:                 pickInt(func(r csvRow) float64 { return float64(r.HandshakeCount) }),
+		RestartScheduled:               pickInt(func(r csvRow) float64 { return float64(r.RestartScheduled) }),
+		RestartCompleted:               pickInt(func(r csvRow) float64 { return float64(r.RestartCompleted) }),
+		BrokenPipeCount:                pickInt(func(r csvRow) float64 { return float64(r.BrokenPipeCount) }),
+		SubmitCR3Count:                 pickInt(func(r csvRow) float64 { return float64(r.SubmitCR3Count) }),
+		PTDecodeCount:                  pickInt(func(r csvRow) float64 { return float64(r.PTDecodeCount) }),
+		PTLastBytes:                    pickInt(func(r csvRow) float64 { return float64(r.PTLastBytes) }),
+		PTLastDecodeBytes:              pickInt(func(r csvRow) float64 { return float64(r.PTLastDecodeBytes) }),
+		PTLastResult:                   pickInt(func(r csvRow) float64 { return float64(r.PTLastResult) }),
+		PTLastBBAfter:                  pickInt(func(r csvRow) float64 { return float64(r.PTLastBBAfter) }),
+		PTLastTraceSize:                pickInt(func(r csvRow) float64 { return float64(r.PTLastTraceSize) }),
+		SYZCovDumpCount:                pickInt(func(r csvRow) float64 { return float64(r.SYZCovDumpCount) }),
+		SYZCovLastRecords:              pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastRecords) }),
+		SYZCovLastCall:                 pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastCall) }),
+		SYZCovLastPCs:                  pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastPCs) }),
+		SYZCovLastIPCallbacks:          pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastIPCallbacks) }),
+		SYZCovLastIPRecorded:           pickInt(func(r csvRow) float64 { return float64(r.SYZCovLastIPRecorded) }),
 	}
 }
 
@@ -955,6 +1490,11 @@ func summarizeFinalMetrics(rows []csvRow) []metricSummaryRow {
 		{name: "elapsed_sec", value: func(r csvRow) float64 { return r.ElapsedSec }},
 		{name: "exec_total", value: func(r csvRow) float64 { return float64(r.ExecTotal) }},
 		{name: "exec_per_min", value: func(r csvRow) float64 { return float64(r.ExecPerMin) }},
+		{name: "exec_gen", value: func(r csvRow) float64 { return float64(r.ExecGen) }},
+		{name: "exec_fuzz", value: func(r csvRow) float64 { return float64(r.ExecFuzz) }},
+		{name: "exec_candidate", value: func(r csvRow) float64 { return float64(r.ExecCandidate) }},
+		{name: "exec_triage", value: func(r csvRow) float64 { return float64(r.ExecTriage) }},
+		{name: "exec_collide", value: func(r csvRow) float64 { return float64(r.ExecCollide) }},
 		{name: "coverage", value: func(r csvRow) float64 { return float64(r.Coverage) }},
 		{name: "corpus", value: func(r csvRow) float64 { return float64(r.Corpus) }},
 		{name: "rpc_results", value: func(r csvRow) float64 { return float64(r.RPCResults) }},
@@ -962,6 +1502,13 @@ func summarizeFinalMetrics(rows []csvRow) []metricSummaryRow {
 		{name: "corpus_saves", value: func(r csvRow) float64 { return float64(r.CorpusSaves) }},
 		{name: "triage_events", value: func(r csvRow) float64 { return float64(r.TriageEvents) }},
 		{name: "ntfs_triage", value: func(r csvRow) float64 { return float64(r.NTFSTriage) }},
+		{name: "win_template_gen", value: func(r csvRow) float64 { return float64(r.WinTemplateGen) }},
+		{name: "win_template_corpus", value: func(r csvRow) float64 { return float64(r.WinTemplateCorpus) }},
+		{name: "win_template_collide", value: func(r csvRow) float64 { return float64(r.WinTemplateCollide) }},
+		{name: "win_rc_try", value: func(r csvRow) float64 { return float64(r.WinResourceCentricTry) }},
+		{name: "win_rc_hit", value: func(r csvRow) float64 { return float64(r.WinResourceCentricHit) }},
+		{name: "win_rc_no_candidates", value: func(r csvRow) float64 { return float64(r.WinResourceCentricNoCandidates) }},
+		{name: "win_rc_zero_score", value: func(r csvRow) float64 { return float64(r.WinResourceCentricZeroScore) }},
 		{name: "runner_exec_results", value: func(r csvRow) float64 { return float64(r.RunnerExecResults) }},
 		{name: "runner_nonzero_cover", value: func(r csvRow) float64 { return float64(r.RunnerNonZeroCover) }},
 		{name: "restart_completed", value: func(r csvRow) float64 { return float64(r.RestartCompleted) }},
@@ -1124,48 +1671,60 @@ func readCSV(path string) ([]csvRow, error) {
 			continue
 		}
 		rows = append(rows, csvRow{
-			TimestampUnix:         mustAtoi64(rec[0]),
-			ElapsedSec:            mustAtof(rec[1]),
-			ExecTotal:             mustAtoi(rec[2]),
-			ExecPerMin:            mustAtoi(rec[3]),
-			Coverage:              mustAtoi(rec[4]),
-			Corpus:                mustAtoi(rec[5]),
-			Candidates:            mustAtoi(rec[6]),
-			RPCResults:            mustAtoi(rec[7]),
-			NonZeroExec:           mustAtoi(rec[8]),
-			HangedCount:           mustAtoi(rec[9]),
-			RawNonEmpty:           mustAtoi(rec[10]),
-			RawSignal:             mustAtoi(rec[11]),
-			RawCover:              mustAtoi(rec[12]),
-			PostNonEmpty:          mustAtoi(rec[13]),
-			PostSignal:            mustAtoi(rec[14]),
-			PostCover:             mustAtoi(rec[15]),
-			CorpusSaves:           mustAtoi(rec[16]),
-			TriageEvents:          mustAtoi(rec[17]),
-			NTFSTriage:            mustAtoi(rec[18]),
-			RunnerExecResults:     mustAtoi(rec[19]),
-			RunnerNonZeroCover:    mustAtoi(rec[20]),
-			RunnerLastExecID:      mustAtoi(rec[21]),
-			RunnerLastExecCalls:   mustAtoi(rec[22]),
-			RunnerLastCoverRecs:   mustAtoi(rec[23]),
-			HandshakeCount:        mustAtoi(rec[24]),
-			RestartScheduled:      mustAtoi(rec[25]),
-			RestartCompleted:      mustAtoi(rec[26]),
-			BrokenPipeCount:       mustAtoi(rec[27]),
-			SubmitCR3Count:        mustAtoi(rec[28]),
-			LastSubmitCR3:         rec[29],
-			PTDecodeCount:         mustAtoi(rec[30]),
-			PTLastBytes:           mustAtoi(rec[31]),
-			PTLastDecodeBytes:     mustAtoi(rec[32]),
-			PTLastResult:          mustAtoi(rec[33]),
-			PTLastBBAfter:         mustAtoi(rec[34]),
-			PTLastTraceSize:       mustAtoi(rec[35]),
-			SYZCovDumpCount:       mustAtoi(rec[36]),
-			SYZCovLastRecords:     mustAtoi(rec[37]),
-			SYZCovLastCall:        mustAtoi(rec[38]),
-			SYZCovLastPCs:         mustAtoi(rec[39]),
-			SYZCovLastIPCallbacks: mustAtoi(rec[40]),
-			SYZCovLastIPRecorded:  mustAtoi(rec[41]),
+			TimestampUnix:                  mustAtoi64(rec[0]),
+			ElapsedSec:                     mustAtof(rec[1]),
+			ExecTotal:                      mustAtoi(rec[2]),
+			ExecPerMin:                     mustAtoi(rec[3]),
+			Coverage:                       mustAtoi(rec[4]),
+			Corpus:                         mustAtoi(rec[5]),
+			Candidates:                     mustAtoi(rec[6]),
+			RPCResults:                     mustAtoi(rec[7]),
+			NonZeroExec:                    mustAtoi(rec[8]),
+			HangedCount:                    mustAtoi(rec[9]),
+			ExecGen:                        mustAtoi(rec[10]),
+			ExecFuzz:                       mustAtoi(rec[11]),
+			ExecCandidate:                  mustAtoi(rec[12]),
+			ExecTriage:                     mustAtoi(rec[13]),
+			ExecCollide:                    mustAtoi(rec[14]),
+			RawNonEmpty:                    mustAtoi(rec[15]),
+			RawSignal:                      mustAtoi(rec[16]),
+			RawCover:                       mustAtoi(rec[17]),
+			PostNonEmpty:                   mustAtoi(rec[18]),
+			PostSignal:                     mustAtoi(rec[19]),
+			PostCover:                      mustAtoi(rec[20]),
+			CorpusSaves:                    mustAtoi(rec[21]),
+			TriageEvents:                   mustAtoi(rec[22]),
+			NTFSTriage:                     mustAtoi(rec[23]),
+			WinTemplateGen:                 mustAtoi(rec[24]),
+			WinTemplateCorpus:              mustAtoi(rec[25]),
+			WinTemplateCollide:             mustAtoi(rec[26]),
+			WinResourceCentricTry:          mustAtoi(rec[27]),
+			WinResourceCentricHit:          mustAtoi(rec[28]),
+			WinResourceCentricNoCandidates: mustAtoi(rec[29]),
+			WinResourceCentricZeroScore:    mustAtoi(rec[30]),
+			RunnerExecResults:              mustAtoi(rec[31]),
+			RunnerNonZeroCover:             mustAtoi(rec[32]),
+			RunnerLastExecID:               mustAtoi(rec[33]),
+			RunnerLastExecCalls:            mustAtoi(rec[34]),
+			RunnerLastCoverRecs:            mustAtoi(rec[35]),
+			HandshakeCount:                 mustAtoi(rec[36]),
+			RestartScheduled:               mustAtoi(rec[37]),
+			RestartCompleted:               mustAtoi(rec[38]),
+			BrokenPipeCount:                mustAtoi(rec[39]),
+			SubmitCR3Count:                 mustAtoi(rec[40]),
+			LastSubmitCR3:                  rec[41],
+			PTDecodeCount:                  mustAtoi(rec[42]),
+			PTLastBytes:                    mustAtoi(rec[43]),
+			PTLastDecodeBytes:              mustAtoi(rec[44]),
+			PTLastResult:                   mustAtoi(rec[45]),
+			PTLastBBAfter:                  mustAtoi(rec[46]),
+			PTLastTraceSize:                mustAtoi(rec[47]),
+			SYZCovDumpCount:                mustAtoi(rec[48]),
+			SYZCovLastRecords:              mustAtoi(rec[49]),
+			SYZCovLastCall:                 mustAtoi(rec[50]),
+			SYZCovLastPCs:                  mustAtoi(rec[51]),
+			SYZCovLastIPCallbacks:          mustAtoi(rec[52]),
+			SYZCovLastIPRecorded:           mustAtoi(rec[53]),
 		})
 	}
 	return rows, nil

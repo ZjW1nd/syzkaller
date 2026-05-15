@@ -17,14 +17,15 @@ import (
 )
 
 type state struct {
-	target    *Target
-	ct        *ChoiceTable
-	corpus    []*Prog
-	files     map[string]bool
-	resources map[string][]*ResultArg
-	strings   map[string]bool
-	ma        *memAlloc
-	va        *vmaAlloc
+	target         *Target
+	ct             *ChoiceTable
+	corpus         []*Prog
+	files          map[string]bool
+	resources      map[string][]*ResultArg
+	resourceScores map[*ResultArg]int
+	strings        map[string]bool
+	ma             *memAlloc
+	va             *vmaAlloc
 }
 
 // analyze analyzes the program p up to but not including call c.
@@ -42,14 +43,15 @@ func analyze(ct *ChoiceTable, corpus []*Prog, p *Prog, c *Call) *state {
 
 func newState(target *Target, ct *ChoiceTable, corpus []*Prog) *state {
 	s := &state{
-		target:    target,
-		ct:        ct,
-		corpus:    corpus,
-		files:     make(map[string]bool),
-		resources: make(map[string][]*ResultArg),
-		strings:   make(map[string]bool),
-		ma:        newMemAlloc(target.NumPages * target.PageSize),
-		va:        newVmaAlloc(target.NumPages),
+		target:         target,
+		ct:             ct,
+		corpus:         corpus,
+		files:          make(map[string]bool),
+		resources:      make(map[string][]*ResultArg),
+		resourceScores: make(map[*ResultArg]int),
+		strings:        make(map[string]bool),
+		ma:             newMemAlloc(target.NumPages * target.PageSize),
+		va:             newVmaAlloc(target.NumPages),
 	}
 	return s
 }
@@ -77,6 +79,12 @@ func (s *state) analyzeImpl(c *Call, resources bool) {
 				s.resources[typ.Desc.Name] = append(s.resources[typ.Desc.Name], a)
 				// TODO: negative PIDs and add them as well (that's process groups).
 			}
+			if a.Dir() != DirOut && a.Res != nil {
+				score := s.target.callResourceUseScore(c.Meta)
+				if score > s.resourceScores[a.Res] {
+					s.resourceScores[a.Res] = score
+				}
+			}
 		case *BufferType:
 			a := arg.(*DataArg)
 			if a.Dir() != DirOut && len(a.Data()) != 0 &&
@@ -102,6 +110,13 @@ func (s *state) analyzeImpl(c *Call, resources bool) {
 			}
 		}
 	})
+}
+
+func (target *Target) callResourceUseScore(call *Syscall) int {
+	if target.ResourceUseScore != nil {
+		return target.ResourceUseScore(call)
+	}
+	return 0
 }
 
 type parentStack []Arg

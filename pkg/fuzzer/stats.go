@@ -35,6 +35,13 @@ type Stats struct {
 	statExecCollide         *stat.Val
 	statCoverOverflows      *stat.Val
 	statCompsOverflows      *stat.Val
+	statWindowsTemplateGen     *stat.Val
+	statWindowsTemplateCorpus  *stat.Val
+	statWindowsTemplateCollide *stat.Val
+	statWindowsResourceCentricTry *stat.Val
+	statWindowsResourceCentricHit *stat.Val
+	statWindowsResourceCentricNoCandidates *stat.Val
+	statWindowsResourceCentricZeroScore    *stat.Val
 }
 
 type SyscallStats struct {
@@ -62,13 +69,13 @@ func newStats(target *prog.Target) Stats {
 		statJobsHints: stat.New("hints jobs", "Running hints jobs", stat.StackedGraph("jobs"),
 			stat.Link("/jobs?type=hints")),
 		statExecTime: stat.New("prog exec time", "Test program execution time (ms)", stat.Distribution{}),
-		statExecGenerate: stat.New("exec gen", "Executions of generated programs", stat.Rate{},
+		statExecGenerate: stat.New("exec gen", "Executions of generated programs", stat.Console, stat.Rate{},
 			stat.StackedGraph("exec")),
-		statExecFuzz: stat.New("exec fuzz", "Executions of mutated programs",
+		statExecFuzz: stat.New("exec fuzz", "Executions of mutated programs", stat.Console,
 			stat.Rate{}, stat.StackedGraph("exec")),
-		statExecCandidate: stat.New("exec candidate", "Executions of candidate programs",
+		statExecCandidate: stat.New("exec candidate", "Executions of candidate programs", stat.Console,
 			stat.Rate{}, stat.StackedGraph("exec")),
-		statExecTriage: stat.New("exec triage", "Executions of corpus triage programs",
+		statExecTriage: stat.New("exec triage", "Executions of corpus triage programs", stat.Console,
 			stat.Rate{}, stat.StackedGraph("exec")),
 		statExecMinimize: stat.New("exec minimize", "Executions of programs during minimization",
 			stat.Rate{}, stat.StackedGraph("exec")),
@@ -80,11 +87,25 @@ func newStats(target *prog.Target) Stats {
 			stat.Rate{}, stat.StackedGraph("exec")),
 		statExecSeed: stat.New("exec seeds", "Executions of programs for hints extraction",
 			stat.Rate{}, stat.StackedGraph("exec")),
-		statExecCollide: stat.New("exec collide", "Executions of programs in collide mode",
+		statExecCollide: stat.New("exec collide", "Executions of programs in collide mode", stat.Console,
 			stat.Rate{}, stat.StackedGraph("exec")),
 		statCoverOverflows: stat.New("cover overflows", "Number of times the coverage buffer overflowed",
 			stat.Rate{}, stat.NoGraph),
 		statCompsOverflows: stat.New("comps overflows", "Number of times the comparisons buffer overflowed",
 			stat.Rate{}, stat.NoGraph),
+		statWindowsTemplateGen: stat.New("win_tmpl_gen", "Windows template-guided generation decisions",
+			stat.Console, stat.Rate{}, stat.NoGraph),
+		statWindowsTemplateCorpus: stat.New("win_tmpl_corpus", "Windows template-guided corpus borrowing decisions",
+			stat.Console, stat.Rate{}, stat.NoGraph),
+		statWindowsTemplateCollide: stat.New("win_tmpl_collide", "Windows template-guided collide decisions",
+			stat.Console, stat.Rate{}, stat.NoGraph),
+		statWindowsResourceCentricTry: stat.New("win_rc_try", "Windows resourceCentric borrowing attempts",
+			stat.Console, stat.Rate{}, stat.NoGraph),
+		statWindowsResourceCentricHit: stat.New("win_rc_hit", "Windows resourceCentric borrowing hits",
+			stat.Console, stat.Rate{}, stat.NoGraph),
+		statWindowsResourceCentricNoCandidates: stat.New("win_rc_no_candidates", "Windows resourceCentric attempts with no compatible corpus candidates",
+			stat.Console, stat.Rate{}, stat.NoGraph),
+		statWindowsResourceCentricZeroScore: stat.New("win_rc_zero_score", "Windows resourceCentric attempts where all corpus candidates scored zero",
+			stat.Console, stat.Rate{}, stat.NoGraph),
 	}
 }

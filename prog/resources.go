@@ -201,6 +201,9 @@ func (target *Target) transitivelyEnabled(enabled map[*Syscall]bool) (map[*Sysca
 }
 
 func (target *Target) TransitivelyEnabledCalls(enabled map[*Syscall]bool) (map[*Syscall]bool, map[*Syscall]string) {
+	if target.ExpandEnabledCalls != nil {
+		enabled = target.ExpandEnabledCalls(target, enabled)
+	}
 	supported, canCreate := target.transitivelyEnabled(enabled)
 	disabled := make(map[*Syscall]string)
 	ctors := make(map[string][]string)

@@ -21,6 +21,7 @@ var (
 	CalcChecksumsCall = calcChecksumsCall
 	InitTest          = initTest
 	initTargetTest    = InitTargetTest
+	ChooseCall        = chooseCall
 )
 
 func initRandomTargetTest(t *testing.T, os, arch string) (*Target, rand.Source, int) {
