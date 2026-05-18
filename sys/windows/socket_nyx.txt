@@ -17,12 +17,12 @@ sockaddr_in {
 	zero	array[const[0, int8], 8]
 } [size[16]]
 
-socket$inet_tcp(af const[2], type const[1], protocol const[6]) SOCKET_TCP
-socket$inet_udp(af const[2], type const[2], protocol const[17]) SOCKET_UDP
-socket$listener_tcp(af const[2], type const[1], protocol const[6]) SOCKET_LISTENER
-socket$connected_tcp(af const[2], type const[1], protocol const[6]) SOCKET_CONNECTED
-socket$accept_tcp(af const[2], type const[1], protocol const[6]) SOCKET_ACCEPT
-closesocket$any(s SOCKET)
+socket$inet_tcp(af const[2], type const[1], protocol const[6]) SOCKET_TCP (automatic_helper)
+socket$inet_udp(af const[2], type const[2], protocol const[17]) SOCKET_UDP (automatic_helper)
+socket$listener_tcp(af const[2], type const[1], protocol const[6]) SOCKET_LISTENER (automatic_helper)
+socket$connected_tcp(af const[2], type const[1], protocol const[6]) SOCKET_CONNECTED (automatic_helper)
+socket$accept_tcp(af const[2], type const[1], protocol const[6]) SOCKET_ACCEPT (automatic_helper)
+closesocket$any(s SOCKET) (automatic_helper)
 
 bind$inet_tcp(s SOCKET_LISTENER, addr ptr[in, sockaddr_in], namelen len[addr])
 bind$inet_udp(s SOCKET_UDP, addr ptr[in, sockaddr_in], namelen len[addr])

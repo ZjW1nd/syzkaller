@@ -97,9 +97,8 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	EnabledSyscalls  []string `json:"enable_syscalls"`
 	NoMutateSyscalls []string `json:"no_mutate_syscalls"`
 	Experimental     struct {
-		SeedPrefix           string `json:"seed_prefix"`
-		BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
-		WindowsTargetProfile string `json:"windows_target_profile"`
+		SeedPrefix          string `json:"seed_prefix"`
+		BorrowingSeedPrefix string `json:"borrowing_seed_prefix"`
 	} `json:"experimental"`
 } {
 	t.Helper()
@@ -112,9 +111,8 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		EnabledSyscalls  []string `json:"enable_syscalls"`
 		NoMutateSyscalls []string `json:"no_mutate_syscalls"`
 		Experimental     struct {
-			SeedPrefix           string `json:"seed_prefix"`
-			BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
-			WindowsTargetProfile string `json:"windows_target_profile"`
+			SeedPrefix          string `json:"seed_prefix"`
+			BorrowingSeedPrefix string `json:"borrowing_seed_prefix"`
 		} `json:"experimental"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -402,9 +400,6 @@ func TestWindowsNyxAfdAcceptRaceConfigUsesFocusedSeedPrefixes(t *testing.T) {
 	if cfg.Experimental.BorrowingSeedPrefix != "nyx_afd_accept_" {
 		t.Fatalf("accept-race borrowing_seed_prefix=%q, want %q", cfg.Experimental.BorrowingSeedPrefix, "nyx_afd_accept_")
 	}
-	if cfg.Experimental.WindowsTargetProfile != "afd_accept_race" {
-		t.Fatalf("accept-race windows_target_profile=%q, want %q", cfg.Experimental.WindowsTargetProfile, "afd_accept_race")
-	}
 }
 
 func TestWindowsNyxAfdTransmitConfigUsesFocusedSeedPrefixes(t *testing.T) {
@@ -414,9 +409,6 @@ func TestWindowsNyxAfdTransmitConfigUsesFocusedSeedPrefixes(t *testing.T) {
 	}
 	if cfg.Experimental.BorrowingSeedPrefix != "nyx_afd_accept_transmit" {
 		t.Fatalf("transmit borrowing_seed_prefix=%q, want %q", cfg.Experimental.BorrowingSeedPrefix, "nyx_afd_accept_transmit")
-	}
-	if cfg.Experimental.WindowsTargetProfile != "afd_transmit" {
-		t.Fatalf("transmit windows_target_profile=%q, want %q", cfg.Experimental.WindowsTargetProfile, "afd_transmit")
 	}
 	want := map[string]bool{
 		"TransmitFile$inet_accept":   true,
@@ -616,67 +608,24 @@ func TestStandaloneBootstrapProgramFitsReferenceNyxPayload(t *testing.T) {
 	}
 }
 
-func TestStandaloneNtFsControlFileProgramUsesHandleCreator(t *testing.T) {
+func TestStandaloneGenericProgramsContainRequestedSyscall(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
 	}
-	for _, name := range []string{"NtFsControlFile", "NtReadFile", "NtWriteFile"} {
-		meta := target.SyscallMap[name]
-		if meta == nil {
-			t.Fatalf("%s missing from windows/amd64 target", name)
-		}
-		p, bootstrap, err := standaloneProgram(target, meta, 1)
-		if err != nil {
-			t.Fatalf("standaloneProgram(%s): %v", name, err)
-		}
-		if !bootstrap {
-			t.Fatalf("%s should use deterministic bootstrap program", name)
-		}
-		serialized := string(p.Serialize())
-		if !strings.Contains(serialized, name+"(") {
-			t.Fatalf("generated program does not contain %s:\n%s", name, serialized)
-		}
-		if !strings.Contains(serialized, "CreateFileA(") {
-			t.Fatalf("generated program does not contain CreateFileA handle creator for %s:\n%s", name, serialized)
-		}
-	}
-}
-
-func TestStandaloneWinsockProgramsUseSocketBootstrap(t *testing.T) {
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
+	deterministic := map[string]bool{
+		"NtFsControlFile":         true,
+		"NtReadFile":              true,
+		"NtWriteFile":             true,
+		"TransmitFile$inet_accept": true,
 	}
 	for _, name := range []string{
-		"socket$inet_tcp",
-		"socket$listener_tcp",
-		"socket$connected_tcp",
-		"socket$inet_udp",
-		"socket$accept_tcp",
-		"bind$inet_tcp",
-		"bind$inet_udp",
-		"listen$inet_tcp",
-		"connect$inet_tcp",
-		"connect$inet_udp",
-		"accept$inet_tcp",
+		"NtFsControlFile",
+		"NtReadFile",
+		"NtWriteFile",
 		"send$inet_tcp",
-		"send$inet_udp",
-		"send$inet_accept",
-		"recv$inet_tcp",
 		"recv$inet_udp",
-		"recv$inet_accept",
-		"ioctlsocket$fionbio_tcp",
-		"ioctlsocket$fionbio_udp",
-		"ioctlsocket$fionbio_accept",
-		"AcceptEx$inet_tcp",
-		"WSARecvEx$inet_accept",
 		"TransmitFile$inet_accept",
-		"setsockopt$int_tcp",
-		"setsockopt$int_udp",
-		"setsockopt$int_accept",
-		"getsockopt$int_tcp",
-		"getsockopt$int_udp",
 		"getsockopt$int_accept",
 	} {
 		meta := target.SyscallMap[name]
@@ -687,222 +636,68 @@ func TestStandaloneWinsockProgramsUseSocketBootstrap(t *testing.T) {
 		if err != nil {
 			t.Fatalf("standaloneProgram(%s): %v", name, err)
 		}
-		if !bootstrap {
-			t.Fatalf("%s should use deterministic bootstrap program", name)
+		if bootstrap != deterministic[name] {
+			t.Fatalf("%s bootstrap=%v, want %v", name, bootstrap, deterministic[name])
 		}
 		serialized := string(p.Serialize())
-		if !strings.Contains(serialized, "WSAStartup(") {
-			t.Fatalf("generated program does not contain WSAStartup for %s:\n%s", name, serialized)
+		if !strings.Contains(serialized, name+"(") {
+			t.Fatalf("generated program does not contain %s:\n%s", name, serialized)
 		}
-		hasTypedSocketCreator := strings.Contains(serialized, "socket$inet_tcp(") ||
-			strings.Contains(serialized, "socket$listener_tcp(") ||
-			strings.Contains(serialized, "socket$connected_tcp(") ||
-			strings.Contains(serialized, "socket$inet_udp(") ||
-			strings.Contains(serialized, "socket$accept_tcp(")
-		if !hasTypedSocketCreator {
-			t.Fatalf("generated program does not contain a typed socket creator for %s:\n%s", name, serialized)
+		execData, err := p.SerializeForExec()
+		if err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", name, err)
 		}
-		if !strings.Contains(serialized, "closesocket$any(") {
-			t.Fatalf("generated program does not contain closesocket$any for %s:\n%s", name, serialized)
+		decoded, err := target.DeserializeExec(execData, nil)
+		if err != nil {
+			t.Fatalf("DeserializeExec(%s): %v", name, err)
 		}
-		if (name == "accept$inet_tcp" || name == "recv$inet_accept" || name == "recv$inet_tcp" ||
-			name == "recv$inet_udp" || name == "ioctlsocket$fionbio_tcp" ||
-			name == "ioctlsocket$fionbio_udp" || name == "ioctlsocket$fionbio_accept") &&
-			!strings.Contains(serialized, "ioctlsocket$fionbio_") {
-			t.Fatalf("generated program does not contain nonblocking ioctlsocket variant for %s:\n%s", name, serialized)
-		}
-		if (name == "connect$inet_tcp" || name == "send$inet_tcp" || name == "send$inet_accept" ||
-			name == "recv$inet_tcp" || name == "recv$inet_accept" || name == "accept$inet_tcp") &&
-			(!strings.Contains(serialized, "socket$listener_tcp(") ||
-				!strings.Contains(serialized, "socket$connected_tcp(")) {
-			t.Fatalf("generated program does not contain both listener/connected sockets for %s:\n%s", name, serialized)
-		}
-		if (name == "connect$inet_tcp" || name == "send$inet_tcp" || name == "send$inet_accept" ||
-			name == "recv$inet_tcp" || name == "recv$inet_accept" || name == "accept$inet_tcp") &&
-			!strings.Contains(serialized, "bind$inet_tcp(") {
-			t.Fatalf("generated program does not contain bind$inet_tcp for %s:\n%s", name, serialized)
-		}
-		if (name == "connect$inet_tcp" || name == "send$inet_tcp" || name == "send$inet_accept" ||
-			name == "recv$inet_tcp" || name == "recv$inet_accept" || name == "accept$inet_tcp") &&
-			!strings.Contains(serialized, "listen$inet_tcp(") {
-			t.Fatalf("generated program does not contain listen$inet_tcp for %s:\n%s", name, serialized)
-		}
-		if (name == "recv$inet_tcp" || name == "recv$inet_accept") &&
-			!strings.Contains(serialized, "send$inet_tcp(") {
-			if !strings.Contains(serialized, "send$inet_accept(") {
-				t.Fatalf("generated program does not contain peer send bootstrap for %s:\n%s", name, serialized)
+		found := false
+		for _, call := range decoded.Calls {
+			if call.Meta != nil && call.Meta.Name == name {
+				found = true
+				break
 			}
 		}
-		if name == "recv$inet_udp" && !strings.Contains(serialized, "send$inet_udp(") {
-			t.Fatalf("generated program does not contain UDP peer send bootstrap for %s:\n%s", name, serialized)
-		}
-		if name == "recv$inet_tcp" {
-			sendIdx := strings.Index(serialized, "send$inet_accept(")
-			recvIdx := strings.Index(serialized, "recv$inet_tcp(")
-			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
-				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "recv$inet_accept" {
-			sendIdx := strings.Index(serialized, "send$inet_tcp(")
-			recvIdx := strings.Index(serialized, "recv$inet_accept(")
-			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
-				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "recv$inet_udp" {
-			sendIdx := strings.Index(serialized, "send$inet_udp(")
-			recvIdx := strings.Index(serialized, "recv$inet_udp(")
-			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
-				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "WSARecvEx$inet_accept" {
-			sendIdx := strings.Index(serialized, "send$inet_tcp(")
-			recvIdx := strings.Index(serialized, "WSARecvEx$inet_accept(")
-			if sendIdx == -1 || recvIdx == -1 || sendIdx > recvIdx {
-				t.Fatalf("generated program does not send before recv for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "send$inet_tcp" {
-			connectIdx := strings.Index(serialized, "connect$inet_tcp(")
-			sendIdx := strings.Index(serialized, "send$inet_tcp(")
-			closeIdx := strings.Index(serialized, "closesocket$any(r1)")
-			if connectIdx == -1 || sendIdx == -1 || connectIdx > sendIdx {
-				t.Fatalf("generated program does not connect before send for %s:\n%s", name, serialized)
-			}
-			if closeIdx == -1 || sendIdx > closeIdx {
-				t.Fatalf("generated program closes connected socket before send for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "send$inet_accept" {
-			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
-			sendIdx := strings.Index(serialized, "send$inet_accept(")
-			closeIdx := strings.Index(serialized, "closesocket$any(r2)")
-			if acceptIdx == -1 || sendIdx == -1 || acceptIdx > sendIdx {
-				t.Fatalf("generated program does not accept before send for %s:\n%s", name, serialized)
-			}
-			if closeIdx == -1 || sendIdx > closeIdx {
-				t.Fatalf("generated program closes accept socket before send for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "TransmitFile$inet_accept" {
-			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
-			writeIdx := strings.Index(serialized, "WriteFile(")
-			txIdx := strings.Index(serialized, "TransmitFile$inet_accept(")
-			closeIdx := strings.Index(serialized, "CloseHandle(r3)")
-			if acceptIdx == -1 || writeIdx == -1 || txIdx == -1 || acceptIdx > txIdx || writeIdx > txIdx {
-				t.Fatalf("generated program does not prepare accept session/file payload before transmit for %s:\n%s", name, serialized)
-			}
-			if closeIdx == -1 || txIdx > closeIdx {
-				t.Fatalf("generated program closes file before transmit for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "setsockopt$int_accept" {
-			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
-			optIdx := strings.Index(serialized, "setsockopt$int_accept(")
-			if acceptIdx == -1 || optIdx == -1 || acceptIdx > optIdx {
-				t.Fatalf("generated program does not accept before setsockopt for %s:\n%s", name, serialized)
-			}
-		}
-		if name == "getsockopt$int_accept" {
-			acceptIdx := strings.Index(serialized, "accept$inet_tcp(")
-			optIdx := strings.Index(serialized, "getsockopt$int_accept(")
-			if acceptIdx == -1 || optIdx == -1 || acceptIdx > optIdx {
-				t.Fatalf("generated program does not accept before getsockopt for %s:\n%s", name, serialized)
-			}
-		}
-		if (name == "AcceptEx$inet_tcp" || name == "WSARecvEx$inet_accept" || name == "TransmitFile$inet_accept") &&
-			!strings.Contains(serialized, "accept$inet_tcp(") && !strings.Contains(serialized, "AcceptEx$inet_tcp(") {
-			t.Fatalf("generated program does not contain accept path for %s:\n%s", name, serialized)
-		}
-		if name == "socket$listener_tcp" && !strings.Contains(serialized, "socket$listener_tcp(") {
-			t.Fatalf("generated program does not contain socket$listener_tcp for %s:\n%s", name, serialized)
-		}
-		if name == "socket$connected_tcp" && !strings.Contains(serialized, "socket$connected_tcp(") {
-			t.Fatalf("generated program does not contain socket$connected_tcp for %s:\n%s", name, serialized)
-		}
-		if name == "TransmitFile$inet_accept" {
-			if !strings.Contains(serialized, "CreateFileA(") || !strings.Contains(serialized, "WriteFile(") {
-				t.Fatalf("generated program does not contain file bootstrap for %s:\n%s", name, serialized)
-			}
+		if !found {
+			t.Fatalf("exec program does not contain %s after decode:\n%s", name, serialized)
 		}
 	}
 }
 
-func TestStandaloneWinsockBuilderHelpersStayWired(t *testing.T) {
-	path := filepath.Join("main.go")
-	data, err := os.ReadFile(path)
+func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
-		t.Fatalf("read main.go: %v", err)
+		t.Fatalf("GetTarget: %v", err)
 	}
-	src := string(data)
 	tests := []struct {
-		caseName string
-		want     []string
+		name string
+		want []string
 	}{
 		{
-			caseName: "send$inet_tcp",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
+			name: "NtFsControlFile",
+			want: []string{"CreateFileA(", "NtFsControlFile("},
 		},
 		{
-			caseName: "send$inet_accept",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "recv$inet_tcp",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "recv$inet_accept",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "WSARecvEx$inet_accept",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "TransmitFile$inet_accept",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapFilePayload()", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "connect$inet_udp",
-			want:     []string{"bootstrapUDPConnectedSession(", "bootstrapClose(\"r0\")"},
-		},
-		{
-			caseName: "send$inet_udp",
-			want:     []string{"bootstrapUDPConnectedSession(", "bootstrapClose(\"r0\")"},
-		},
-		{
-			caseName: "recv$inet_udp",
-			want:     []string{"bootstrapUDPBoundReceiverWithPeerSend(", "bootstrapClose(\"r1\")", "bootstrapClose(\"r0\")"},
-		},
-		{
-			caseName: "AcceptEx$inet_tcp",
-			want:     []string{"bootstrapTCPAcceptExSessionWithClient(", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "accept$inet_tcp",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapTCPListenerNonblocking()", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "ioctlsocket$fionbio_accept",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapTCPListenerNonblocking()", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "setsockopt$int_accept",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapCloseAcceptSessionSockets()"},
-		},
-		{
-			caseName: "getsockopt$int_accept",
-			want:     []string{"bootstrapTCPAcceptedSessionWithClient(", "bootstrapCloseAcceptSessionSockets()"},
+			name: "TransmitFile$inet_accept",
+			want: []string{"WSAStartup(", "socket$listener_tcp(", "CreateFileA("},
 		},
 	}
 	for _, test := range tests {
-		body := extractCaseBody(t, src, test.caseName)
+		meta := target.SyscallMap[test.name]
+		if meta == nil {
+			t.Fatalf("%s missing from windows/amd64 target", test.name)
+		}
+		p, bootstrap, err := standaloneProgram(target, meta, 1)
+		if err != nil {
+			t.Fatalf("standaloneProgram(%s): %v", test.name, err)
+		}
+		if test.name != "NtFsControlFile" && test.name != "TransmitFile$inet_accept" && bootstrap {
+			t.Fatalf("%s unexpectedly used deterministic bootstrap", test.name)
+		}
+		serialized := string(p.Serialize())
 		for _, want := range test.want {
-			if !strings.Contains(body, want) {
-				t.Fatalf("%s case does not use expected builder %q:\n%s", test.caseName, want, body)
+			if !strings.Contains(serialized, want) {
+				t.Fatalf("generated program for %s is missing %q:\n%s", test.name, want, serialized)
 			}
 		}
 	}

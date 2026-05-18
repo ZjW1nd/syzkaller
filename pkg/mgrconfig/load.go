@@ -131,19 +131,7 @@ func SetTargets(cfg *Config) error {
 	var err error
 	cfg.TargetOS, cfg.TargetVMArch, cfg.TargetArch, cfg.Target, cfg.SysTarget,
 		err = SplitTarget(cfg.RawTarget)
-	if err != nil {
-		return err
-	}
-	if cfg.TargetOS == "windows" && cfg.Experimental.WindowsTargetProfile != "" {
-		cfg.Target = cfg.Target.Clone()
-		if cfg.Target.ConfigureProfile == nil {
-			return fmt.Errorf("windows target does not support configurable profiles")
-		}
-		if err := cfg.Target.ConfigureProfile(cfg.Target, cfg.Experimental.WindowsTargetProfile); err != nil {
-			return err
-		}
-	}
-	return nil
+	return err
 }
 
 func Complete(cfg *Config) error {

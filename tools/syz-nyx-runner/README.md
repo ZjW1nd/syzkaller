@@ -13,13 +13,14 @@ Current v1 expectations:
 
 A minimal manager config is provided in `windows-nyx-none.cfg`.
 
-Focused configs can also select Windows target-policy profiles through
-`experimental.windows_target_profile`, for example:
+Focused configs now narrow the Windows surface through
+`enable_syscalls`, `disable_syscalls`, `seed_prefix`, and
+`borrowing_seed_prefix`, for example:
 
-- `windows-nyx-afd-none.cfg` uses `afd`
-- `windows-nyx-fsctl-none.cfg` uses `fsctl`
-- `windows-nyx-network-none.cfg` uses `afd`
-- `windows-nyx-ntfs-none.cfg` uses `fsctl`
+- `windows-nyx-afd-none.cfg` enables a small accept/transmit-oriented socket set
+- `windows-nyx-fsctl-none.cfg` enables a focused file/FSCTL set
+- `windows-nyx-afd-accept-race-none.cfg` narrows corpus and borrowing seeds to `nyx_afd_accept_`
+- `windows-nyx-afd-transmit-none.cfg` narrows corpus and borrowing seeds to `nyx_afd_accept_transmit`
 
 Example:
 

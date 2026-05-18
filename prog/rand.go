@@ -560,7 +560,7 @@ func createTargetIfuzzConfig(target *Target) *ifuzz.Config {
 	case "386":
 		cfg.Mode = ifuzz.ModeProt32
 		cfg.Arch = ifuzz.ArchX86
-	case "ppc64":
+	case "ppc64le":
 		cfg.Mode = ifuzz.ModeLong64
 		cfg.Arch = ifuzz.ArchPowerPC
 	case "arm64":

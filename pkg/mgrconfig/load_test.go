@@ -209,37 +209,20 @@ func TestParseEnabledSyscallsExpandsWindowsFsctlFocusedTargets(t *testing.T) {
 	}
 }
 
-func TestSetTargetsAppliesWindowsTargetProfile(t *testing.T) {
+func TestSetTargetsUsesSharedWindowsTarget(t *testing.T) {
 	cfg := DefaultValues()
 	cfg.RawTarget = "windows/amd64"
 	cfg.Workdir = t.TempDir()
 	cfg.Syzkaller = "."
 	cfg.Type = "none"
-	cfg.Experimental.WindowsTargetProfile = "afd"
 
 	err := SetTargets(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, cfg.Target)
-	require.NotNil(t, cfg.Target.ConfigureProfile)
 
 	global, err := prog.GetTarget("windows", "amd64")
 	require.NoError(t, err)
-	require.NotSame(t, global, cfg.Target)
-
-	fsctl := cfg.Target.SyscallMap["NtFsControlFile"]
-	require.NotNil(t, fsctl)
-	assert.Less(t, cfg.Target.CallRelevance(fsctl), 0)
-	assert.GreaterOrEqual(t, global.CallRelevance(fsctl), 0)
-}
-
-func TestSetTargetsRejectsUnknownWindowsTargetProfile(t *testing.T) {
-	cfg := DefaultValues()
-	cfg.RawTarget = "windows/amd64"
-	cfg.Experimental.WindowsTargetProfile = "missing"
-
-	err := SetTargets(cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unknown windows target profile")
+	require.Same(t, global, cfg.Target)
 }
 
 func TestExperimentalForceGenerateEveryNIsPreserved(t *testing.T) {

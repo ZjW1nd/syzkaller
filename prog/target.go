@@ -120,12 +120,6 @@ type Target struct {
 	ConstMap   map[string]uint64
 	FlagsMap   map[string][]string
 
-	// ConfigureProfile applies a target-specific fuzzing profile to a cloned target instance.
-	// It is intentionally target-local and optional, so generic layers can stay profile-agnostic.
-	ConfigureProfile func(target *Target, profile string) error
-	// ConfiguredProfile records the target-local policy profile currently installed on this
-	// target instance, if any.
-	ConfiguredProfile string
 	// ObserveTemplateHook is an optional callback for target-level policy code to report when
 	// a local interaction template materially influenced a choice (generation, corpus borrowing,
 	// collide selection, etc.). The payload should be a short stable identifier.
@@ -704,8 +698,6 @@ func (target *Target) Clone() *Target {
 		SyscallMap:                         target.SyscallMap,
 		ConstMap:                           target.ConstMap,
 		FlagsMap:                           target.FlagsMap,
-		ConfigureProfile:                   target.ConfigureProfile,
-		ConfiguredProfile:                  target.ConfiguredProfile,
 		ObserveTemplateHook:                target.ObserveTemplateHook,
 		fillArch:                           target.fillArch,
 		initArch:                           target.initArch,
@@ -713,9 +705,6 @@ func (target *Target) Clone() *Target {
 		resourceCtors:                      target.resourceCtors,
 		any:                                target.any,
 		kFuzzTestID:                        target.kFuzzTestID,
-	}
-	if clone.ConfigureProfile != nil && clone.ConfiguredProfile != "" {
-		_ = clone.ConfigureProfile(clone, clone.ConfiguredProfile)
 	}
 	return clone
 }

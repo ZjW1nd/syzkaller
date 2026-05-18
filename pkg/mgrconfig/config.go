@@ -279,10 +279,6 @@ type Experimental struct {
 	// specified prefix. Empty means load all matching test seeds as usual.
 	SeedPrefix string `json:"seed_prefix,omitempty"`
 
-	// WindowsTargetProfile selects a Windows-specific target policy profile.
-	// Empty means target default behavior.
-	WindowsTargetProfile string `json:"windows_target_profile,omitempty"`
-
 	// WindowsVMLessCollide re-enables collide mode for Windows VMLess/Nyx paths.
 	// Disabled by default because the current path can still wedge on some async
 	// collide programs; enable only for focused experiments.
