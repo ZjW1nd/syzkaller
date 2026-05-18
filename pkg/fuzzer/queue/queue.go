@@ -538,6 +538,15 @@ func (do *defaultOpts) Next() *Request {
 		return nil
 	}
 	req.ExecOpts.ExecFlags |= do.opts.ExecFlags
+	// On the Nyx/Windows path the default ExecFlags include
+	// CollectSignal|CollectCover so regular fuzz requests get
+	// PT-derived feedback.  Hints requests set CollectComps, which
+	// is mutually exclusive with signal/coverage on KCOV targets.
+	// Clear the collect flags when CollectComps was requested so
+	// each request picks exactly one collection mode.
+	if req.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectComps != 0 {
+		req.ExecOpts.ExecFlags &^= flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover
+	}
 	req.ExecOpts.EnvFlags |= do.opts.EnvFlags
 	req.ExecOpts.SandboxArg = do.opts.SandboxArg
 	return req

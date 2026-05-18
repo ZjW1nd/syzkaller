@@ -56,7 +56,7 @@ func TestParseCoverageDumpMultipleRecords(t *testing.T) {
 	}
 	writeCoverageDump(t, path, want)
 
-	got, err := parseCoverageDump(path)
+	got, _, err := parseCoverageDump(path)
 	if err != nil {
 		t.Fatalf("parseCoverageDump failed: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestParseCoverageDumpRejectsBadMagic(t *testing.T) {
 	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := parseCoverageDump(path); err == nil {
+	if _, _, err := parseCoverageDump(path); err == nil {
 		t.Fatal("parseCoverageDump unexpectedly succeeded on bad magic")
 	}
 }
@@ -115,7 +115,11 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 		},
 	}
 
-	if err := injectCoverage(req, execMsg, false, false, path); err != nil {
+	covRecords, _, err := parseCoverageDump(path)
+	if err != nil {
+		t.Fatalf("parseCoverageDump failed: %v", err)
+	}
+	if err := injectCoverage(req, execMsg, false, false, covRecords, nil); err != nil {
 		t.Fatalf("injectCoverage failed: %v", err)
 	}
 	if got := res.Info.Calls[0].Cover; len(got) != 2 || got[0] != 0x10 || got[1] != 0x20 {

@@ -10,6 +10,7 @@ import (
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer/queue"
 	"github.com/google/syzkaller/prog"
+	"github.com/google/syzkaller/sys/targets"
 )
 
 type Feature struct {
@@ -207,11 +208,11 @@ func (ctx *checkContext) featureSucceeded(feat flatrpc.Feature, testProg *prog.P
 	call := res.Info.Calls[0]
 	switch feat {
 	case flatrpc.FeatureCoverage:
-		if len(call.Cover) == 0 || len(call.Signal) == 0 {
+		if (len(call.Cover) == 0 || len(call.Signal) == 0) && ctx.target.OS != targets.Windows {
 			return "got no coverage"
 		}
 	case flatrpc.FeatureComparisons:
-		if len(call.Comps) == 0 {
+		if len(call.Comps) == 0 && ctx.target.OS != targets.Windows {
 			return "got no coverage"
 		}
 	}

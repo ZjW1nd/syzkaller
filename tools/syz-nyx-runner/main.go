@@ -252,9 +252,26 @@ type nyxCovDumpRecord struct {
 	PCs       []uint64
 }
 
+type nyxCompEntry struct {
+	Pc    uint64
+	Op1   uint64
+	Op2   uint64
+	Size  uint8
+	Kind  uint8
+	IsImm uint8
+}
+
+type nyxCovCompRecord struct {
+	CallIndex uint32
+	SlotID    uint32
+	Flags     uint64
+	Comps     []nyxCompEntry
+}
+
 const (
-	nyxCovMagic   = 0x564f4353
-	nyxCovVersion = 1
+	nyxCovMagic        = 0x564f4353
+	nyxCovVersion      = 2
+	nyxCovVersionMinV1 = 1
 )
 
 type qemuAux struct {
@@ -381,6 +398,8 @@ type nyxVM struct {
 	ctx         context.Context
 	payloadFile *os.File
 	payloadMM   []byte
+	auxFile     *os.File
+	auxMM       []byte
 	control     net.Conn
 	aux         *qemuAux
 	process     *exec.Cmd
@@ -550,6 +569,26 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	return nil
 }
 
+// ensureAuxMmap opens and mmaps the aux buffer file, which is created
+// by QEMU at startup (not by the runner).  Called lazily on first use.
+func (vm *nyxVM) ensureAuxMmap() error {
+	if vm.auxMM != nil {
+		return nil
+	}
+	f, err := os.OpenFile(vm.auxPath, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	mm, err := unix.Mmap(int(f.Fd()), 0, 4096, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil {
+		f.Close()
+		return err
+	}
+	vm.auxFile = f
+	vm.auxMM = mm
+	return nil
+}
+
 func (vm *nyxVM) applyHardTimeout() {
 	t := vm.hardTimeout
 	if t <= 0 {
@@ -602,6 +641,14 @@ func (vm *nyxVM) close() {
 	if vm.payloadFile != nil {
 		_ = vm.payloadFile.Close()
 		vm.payloadFile = nil
+	}
+	if vm.auxMM != nil {
+		_ = unix.Munmap(vm.auxMM)
+		vm.auxMM = nil
+	}
+	if vm.auxFile != nil {
+		_ = vm.auxFile.Close()
+		vm.auxFile = nil
 	}
 	if vm.process != nil && vm.process.Process != nil {
 		_ = vm.process.Process.Kill()
@@ -786,17 +833,15 @@ func normalizeWindowsNyxEnvFlags(env flatrpc.ExecEnv) flatrpc.ExecEnv {
 	return (env & keep) | flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone
 }
 
-func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage, coverEdges, kernel64Bit bool, coverPath string) error {
+func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
+	coverEdges, kernel64Bit bool,
+	covRecords []nyxCovDumpRecord, compRecords []nyxCovCompRecord) error {
 	res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
 	if !ok || res.Info == nil || len(res.Info.Calls) == 0 {
 		return nil
 	}
-	records, err := parseCoverageDump(coverPath)
-	if err != nil {
-		return err
-	}
 	callCover := make(map[uint32][]uint64)
-	for _, rec := range records {
+	for _, rec := range covRecords {
 		if int(rec.CallIndex) >= len(res.Info.Calls) {
 			return fmt.Errorf("coverage record for call %d out of range (%d calls)",
 				rec.CallIndex, len(res.Info.Calls))
@@ -814,6 +859,28 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage, 
 		}
 		if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectSignal != 0 {
 			call.Signal = append(call.Signal[:0], pcsToSignal(pcs, coverEdges)...)
+		}
+	}
+	if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectComps != 0 {
+		total := 0
+		for _, crec := range compRecords {
+			if int(crec.CallIndex) >= len(res.Info.Calls) {
+				continue
+			}
+			call := res.Info.Calls[crec.CallIndex]
+			for _, comp := range crec.Comps {
+				call.Comps = append(call.Comps, &flatrpc.ComparisonRawT{
+					Pc:      comp.Pc,
+					Op1:     comp.Op2,
+					Op2:     comp.Op1,
+					IsConst: comp.IsImm != 0,
+				})
+			}
+			total += len(crec.Comps)
+		}
+		if total > 0 {
+			log.Logf(0, "runner injected comps: id=%d total=%d records=%d",
+				msg.Id, total, len(compRecords))
 		}
 	}
 	return nil
@@ -841,42 +908,56 @@ func isLikelyKernelPC64(pc uint64) bool {
 	return pc >= canonicalKernelBase
 }
 
-func parseCoverageDump(path string) ([]nyxCovDumpRecord, error) {
+func readCompEntry(data []byte) (nyxCompEntry, error) {
+	if len(data) < 28 {
+		return nyxCompEntry{}, errors.New("short comp entry")
+	}
+	return nyxCompEntry{
+		Pc:    binary.LittleEndian.Uint64(data[0:8]),
+		Op1:   binary.LittleEndian.Uint64(data[8:16]),
+		Op2:   binary.LittleEndian.Uint64(data[16:24]),
+		Size:  data[24],
+		Kind:  data[25],
+		IsImm: data[26],
+	}, nil
+}
+
+func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(data) < binary.Size(nyxCovHeader{}) {
-		return nil, errors.New("short coverage dump")
+		return nil, nil, errors.New("short coverage dump")
 	}
 	var hdr nyxCovHeader
 	if err := binary.Read(bytes.NewReader(data[:binary.Size(hdr)]), binary.LittleEndian, &hdr); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if hdr.Magic != nyxCovMagic {
-		return nil, fmt.Errorf("unexpected syz_cov magic 0x%x", hdr.Magic)
+		return nil, nil, fmt.Errorf("unexpected syz_cov magic 0x%x", hdr.Magic)
 	}
-	if hdr.Version != nyxCovVersion {
-		return nil, fmt.Errorf("unsupported syz_cov version %d", hdr.Version)
+	if hdr.Version < nyxCovVersionMinV1 || hdr.Version > nyxCovVersion {
+		return nil, nil, fmt.Errorf("unsupported syz_cov version %d", hdr.Version)
 	}
-	if hdr.RecordCount == 0 {
-		return nil, nil
+	if hdr.RecordCount == 0 && hdr.Version < 2 {
+		return nil, nil, nil
 	}
 	off := binary.Size(hdr)
 	records := make([]nyxCovDumpRecord, 0, hdr.RecordCount)
 	for range hdr.RecordCount {
 		if off+binary.Size(nyxCovRecord{}) > len(data) {
-			return nil, errors.New("coverage record truncated")
+			return nil, nil, errors.New("coverage record truncated")
 		}
 		var rec nyxCovRecord
 		if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		off += binary.Size(rec)
 		pcs := make([]uint64, rec.PCCount)
 		for i := range pcs {
 			if off+8 > len(data) {
-				return nil, errors.New("coverage body truncated")
+				return nil, nil, errors.New("coverage body truncated")
 			}
 			pcs[i] = binary.LittleEndian.Uint64(data[off : off+8])
 			off += 8
@@ -888,10 +969,44 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, error) {
 			PCs:       pcs,
 		})
 	}
-	if off != len(data) {
-		return nil, fmt.Errorf("unexpected trailing syz_cov data: %d bytes", len(data)-off)
+	var compRecords []nyxCovCompRecord
+	if hdr.Version >= 2 && off < len(data) {
+		if off+4 > len(data) {
+			return nil, nil, errors.New("comp record count truncated")
+		}
+		compRecordCount := binary.LittleEndian.Uint32(data[off : off+4])
+		off += 4
+		compRecords = make([]nyxCovCompRecord, 0, compRecordCount)
+		for i := uint32(0); i < compRecordCount; i++ {
+			if off+binary.Size(nyxCovRecord{}) > len(data) {
+				return nil, nil, errors.New("comp record header truncated")
+			}
+			var rec nyxCovRecord
+			if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
+				return nil, nil, err
+			}
+			off += binary.Size(rec)
+			comps := make([]nyxCompEntry, rec.PCCount)
+			for j := range comps {
+				ce, err := readCompEntry(data[off : off+28])
+				if err != nil {
+					return nil, nil, err
+				}
+				comps[j] = ce
+				off += 28
+			}
+			compRecords = append(compRecords, nyxCovCompRecord{
+				CallIndex: rec.CallIndex,
+				SlotID:    rec.SlotID,
+				Flags:     rec.Flags,
+				Comps:     comps,
+			})
+		}
 	}
-	return records, nil
+	if off != len(data) {
+		return nil, nil, fmt.Errorf("unexpected trailing syz_cov data: %d bytes", len(data)-off)
+	}
+	return records, compRecords, nil
 }
 
 func pcsToSignal(pcs []uint64, coverEdges bool) []uint64 {
@@ -1109,6 +1224,24 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	log.Logf(0, "%s request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
 		requestLabel, req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
 	log.Logf(0, "%s program: id=%d %s", requestLabel, req.Id, describeExecProgram(req.Data))
+
+	// Control redqueen via aux buffer, mirroring kAFL's set_redqueen_mode().
+	// hintsJob sends CollectComps → enable redqueen before execution.
+	// Normal fuzz sends CollectCover/Signal → disable after execution.
+	// We write redqueen_mode directly WITHOUT the changed flag, so the
+	// aux buffer poll loop does NOT process it (avoids pt_pre_kvm_run).
+	// syz_cov_dump() reads the byte directly to insert/remove hooks.
+	needComps := execFlags&flatrpc.ExecFlagCollectComps != 0
+	if needComps {
+		if err := r.vm.ensureAuxMmap(); err != nil {
+			log.Logf(0, "runner aux mmap failed: %v", err)
+		}
+	}
+	if len(r.vm.auxMM) >= 391 {
+		if needComps {
+			r.vm.auxMM[390] = 1 // redqueen_mode = 1 (enable)
+		}
+	}
 	r.vm.applyHardTimeout()
 	meta := &nyxExecMeta{RequestID: req.Id, ProcID: 0}
 	body := &flatrpc.SnapshotRequestT{
@@ -1122,12 +1255,20 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	if err != nil {
 		return nil, err
 	}
-	if err := injectCoverage(req, execMsg, r.connectReply.CoverEdges, r.connectReply.Kernel64Bit, r.vm.coverPath); err != nil {
+	if needComps && len(r.vm.auxMM) >= 391 {
+		r.vm.auxMM[390] = 0   // redqueen_mode = 0 (disable)
+	}
+	covRecords, compRecords, covErr := parseCoverageDump(r.vm.coverPath)
+	if covErr == nil {
+		covErr = injectCoverage(req, execMsg, r.connectReply.CoverEdges,
+			r.connectReply.Kernel64Bit, covRecords, compRecords)
+	}
+	if covErr != nil {
 		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
-		if ok && res.Hanged && errors.Is(err, os.ErrNotExist) {
+		if ok && res.Hanged && errors.Is(covErr, os.ErrNotExist) {
 			log.Logf(0, "runner exec hanged and coverage dump is absent; continuing without coverage")
 		} else {
-			return nil, err
+			return nil, covErr
 		}
 	}
 	if execResultHanged(execMsg) {
@@ -1346,17 +1487,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 	if err != nil {
 		return err
 	}
-	enabled := map[*prog.Syscall]bool{meta: true}
-	for _, name := range []string{"VirtualAlloc", "CloseHandle", "CreateFileA", "CreateFile2", "ReadFile", "WriteFile", "FlushFileBuffers", "DeleteFileA",
-		"SetFileInformationByHandle", "NtFsControlFile", "NtReadFile", "NtWriteFile",
-		"NtDelayExecution", "NtYieldExecution", "NtQueryTimerResolution", "NtSetTimerResolution",
-		"NtQuerySystemTime", "NtQueryPerformanceCounter", "NtPowerInformation",
-		"NtFlushInstructionCache", "NtFlushWriteBuffer",
-		"NtQueryDefaultLocale", "NtQueryDefaultUILanguage"} {
-		if s, ok := target.SyscallMap[name]; ok {
-			enabled[s] = true
-		}
-	}
+	enabled := standaloneEnabledCalls(target, meta)
 	ct := target.BuildChoiceTable(nil, enabled)
 	connectReply := &flatrpc.ConnectReply{
 		Cover:            true,
@@ -1466,457 +1597,121 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 		}
 		return p, true, nil
 	}
-	if meta.Name == "NtFsControlFile" {
-		src := []byte(
-			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
-				"NtFsControlFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, 0x9c040, &(0x7f0000000200)='\\x00'/512, 0x200)\n" +
-				"CloseHandle(r0)\n")
+	if standaloneNeedsFileHandleProgram(meta) {
+		src, err := standaloneFileHandleProgram(meta.Name)
+		if err != nil {
+			return nil, false, err
+		}
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
-			return nil, false, fmt.Errorf("build standalone NtFsControlFile bootstrap program: %w", err)
+			return nil, false, fmt.Errorf("build standalone %s file-handle program: %w", meta.Name, err)
 		}
 		return p, true, nil
 	}
-	if meta.Name == "NtReadFile" {
-		src := []byte(
-			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-read\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
-				"NtReadFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)='\\x00'/256, 0x100, 0x0, 0x0)\n" +
-				"CloseHandle(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone NtReadFile bootstrap program: %w", err)
+	ct := target.BuildChoiceTable(nil, standaloneEnabledCalls(target, meta))
+	for attempts := 0; attempts < 32; attempts++ {
+		p := target.Generate(mrand.NewSource(seed+int64(attempts)), 1, ct)
+		if standaloneProgramContainsCall(p, meta.Name) {
+			return p, false, nil
 		}
-		return p, true, nil
 	}
-	if meta.Name == "NtWriteFile" {
-		src := []byte(
-			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-write\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
-				"NtWriteFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)=\"abcd\", 0x4, 0x0, 0x0)\n" +
-				"CloseHandle(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone NtWriteFile bootstrap program: %w", err)
+	return nil, false, fmt.Errorf("failed to generate standalone program containing %s", meta.Name)
+}
+
+func standaloneEnabledCalls(target *prog.Target, meta *prog.Syscall) map[*prog.Syscall]bool {
+	enabled := map[*prog.Syscall]bool{meta: true}
+	for _, name := range []string{
+		"VirtualAlloc",
+		"CloseHandle",
+		"CreateFileA",
+		"CreateFile2",
+		"ReadFile",
+		"WriteFile",
+		"FlushFileBuffers",
+		"DeleteFileA",
+		"SetFileInformationByHandle",
+		"NtFsControlFile",
+		"NtReadFile",
+		"NtWriteFile",
+		"NtDelayExecution",
+		"NtYieldExecution",
+		"NtQueryTimerResolution",
+		"NtSetTimerResolution",
+		"NtQuerySystemTime",
+		"NtQueryPerformanceCounter",
+		"NtPowerInformation",
+		"NtFlushInstructionCache",
+		"NtFlushWriteBuffer",
+		"NtQueryDefaultLocale",
+		"NtQueryDefaultUILanguage",
+	} {
+		if s, ok := target.SyscallMap[name]; ok {
+			enabled[s] = true
 		}
-		return p, true, nil
+	}
+	enabled, _ = target.TransitivelyEnabledCalls(enabled)
+	return enabled
+}
+
+func standaloneProgramContainsCall(p *prog.Prog, name string) bool {
+	if p == nil {
+		return false
+	}
+	for _, call := range p.Calls {
+		if call != nil && call.Meta != nil && call.Meta.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func standaloneNeedsFileHandleProgram(meta *prog.Syscall) bool {
+	if meta == nil {
+		return false
 	}
 	switch meta.Name {
-	case "socket$inet_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone socket$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "socket$listener_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone socket$listener_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "socket$connected_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone socket$connected_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "socket$inet_udp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone socket$inet_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "socket$accept_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$accept_tcp(0x2, 0x1, 0x6)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone socket$accept_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "bind$inet_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone bind$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "bind$inet_udp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
-				"bind$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone bind$inet_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "listen$inet_tcp":
-		src := []byte(
+	case "NtFsControlFile", "NtReadFile", "NtWriteFile", "TransmitFile$inet_accept":
+		return true
+	}
+	return false
+}
+
+func standaloneFileHandleProgram(name string) ([]byte, error) {
+	switch name {
+	case "NtFsControlFile":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtFsControlFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, 0x9c040, &(0x7f0000000200)='\\x00'/512, 0x200)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtReadFile":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-read\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtReadFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)='\\x00'/256, 0x100, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtWriteFile":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-write\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtWriteFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)=\"abcd\", 0x4, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "TransmitFile$inet_accept":
+		return []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
 				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
 				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
 				"listen$inet_tcp(r0, 0x1)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone listen$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "connect$inet_tcp":
-		src := []byte(
-			bootstrapTCPServer("&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
-				bootstrapTCPClient("&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
-				bootstrapClose("r1") +
-				bootstrapClose("r0"))
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone connect$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "connect$inet_udp":
-		src := []byte(
-			bootstrapUDPConnectedSession("&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
-				bootstrapClose("r0"))
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone connect$inet_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "send$inet_tcp":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone send$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "send$inet_udp":
-		src := []byte(
-			bootstrapUDPConnectedSession("&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
-				"send$inet_udp(r0, 'abcd', 0x4, 0x0)\n" +
-				bootstrapClose("r0"))
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone send$inet_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "send$inet_accept":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone send$inet_accept bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "recv$inet_tcp":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClientAcceptPeerSend(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				"ioctlsocket$fionbio_tcp(r1, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"recv$inet_tcp(r1, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone recv$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "recv$inet_udp":
-		src := []byte(
-			bootstrapUDPBoundReceiverWithPeerSend(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				"ioctlsocket$fionbio_udp(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"recv$inet_udp(r0, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
-				bootstrapClose("r1") +
-				bootstrapClose("r0"))
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone recv$inet_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "recv$inet_accept":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				"ioctlsocket$fionbio_accept(r2, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"recv$inet_accept(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone recv$inet_accept bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "accept$inet_tcp":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClient(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				bootstrapTCPListenerNonblocking() +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone accept$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "ioctlsocket$fionbio_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
-				"ioctlsocket$fionbio_tcp(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "ioctlsocket$fionbio_udp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
-				"ioctlsocket$fionbio_udp(r0, 0x8004667e, &(0x7f0000000080)=0x1)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "ioctlsocket$fionbio_accept":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClient(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				bootstrapTCPListenerNonblocking() +
-				"ioctlsocket$fionbio_accept(r2, 0x8004667e, &(0x7f00000000a0)=0x1)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone ioctlsocket$fionbio_accept bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "AcceptEx$inet_tcp":
-		src := []byte(
-			bootstrapTCPAcceptExSessionWithClient(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				"AcceptEx$inet_tcp(r0, r2, &(0x7f0000000140)='\\x00'/512, 0x0, 0x40, 0x40, &(0x7f0000000340)=0x0, 0x0)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone AcceptEx$inet_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "WSARecvEx$inet_accept":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				"WSARecvEx$inet_accept(r2, &(0x7f00000001a0)='\\x00'/64, 0x40, &(0x7f0000000200)=0x0)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone WSARecvEx$inet_accept bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "TransmitFile$inet_accept":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClient(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				bootstrapFilePayload() +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"r3 = CreateFileA(&(0x7f0000000200)='./nyx-txfile\\x00', 0xffffffff, 0x7, 0x0, 0x2, 0x80, 0xffffffffffffffff)\n" +
+				"WriteFile(r3, &(0x7f0000000240)='abcd', 0x4, &(0x7f0000000280)=0x0, 0x0)\n" +
 				"TransmitFile$inet_accept(r2, r3, 0x4, 0x0, 0x0, 0x0, 0x0)\n" +
 				"CloseHandle(r3)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone TransmitFile$inet_accept bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "setsockopt$int_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
-				"setsockopt$int_tcp(r0, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone setsockopt$int_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "setsockopt$int_udp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
-				"setsockopt$int_udp(r0, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone setsockopt$int_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "setsockopt$int_accept":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClient(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				"setsockopt$int_accept(r2, 0xffff, 0x4, &(0x7f0000000100)=0x1, 0x4)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone setsockopt$int_accept bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "getsockopt$int_tcp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
-				"getsockopt$int_tcp(r0, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone getsockopt$int_tcp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "getsockopt$int_udp":
-		src := []byte(
-			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
-				"getsockopt$int_udp(r0, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
-				"closesocket$any(r0)\n")
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone getsockopt$int_udp bootstrap program: %w", err)
-		}
-		return p, true, nil
-	case "getsockopt$int_accept":
-		src := []byte(
-			bootstrapTCPAcceptedSessionWithClient(
-				"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-				"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
-			) +
-				"getsockopt$int_accept(r2, 0xffff, 0x1008, &(0x7f0000000100)=0x0, &(0x7f0000000200)=0x4)\n" +
-				bootstrapCloseAcceptSessionSockets())
-		p, err := target.Deserialize(src, prog.NonStrict)
-		if err != nil {
-			return nil, false, fmt.Errorf("build standalone getsockopt$int_accept bootstrap program: %w", err)
-		}
-		return p, true, nil
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n"), nil
+	default:
+		return nil, fmt.Errorf("unsupported file-handle standalone syscall %q", name)
 	}
-	enabled := map[*prog.Syscall]bool{meta: true}
-	if va, ok := target.SyscallMap["VirtualAlloc"]; ok {
-		enabled[va] = true
-	}
-	switch meta.Name {
-	case "NtReadFile", "NtWriteFile", "NtFsControlFile":
-		for _, name := range []string{
-			"CreateFileA",
-			"CreateFile2",
-			"CloseHandle",
-			"ReadFile",
-			"WriteFile",
-			"FlushFileBuffers",
-			"SetFileInformationByHandle",
-			"DeleteFileA",
-		} {
-			if s, ok := target.SyscallMap[name]; ok {
-				enabled[s] = true
-			}
-		}
-	case "socket$inet_tcp", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "socket$inet_udp",
-		"bind$inet_tcp", "bind$inet_udp",
-		"listen$inet_tcp",
-		"connect$inet_tcp", "connect$inet_udp",
-		"accept$inet_tcp",
-		"send$inet_tcp", "send$inet_udp", "send$inet_accept",
-		"recv$inet_tcp", "recv$inet_udp", "recv$inet_accept",
-		"ioctlsocket$fionbio_tcp", "ioctlsocket$fionbio_udp", "ioctlsocket$fionbio_accept",
-		"AcceptEx$inet_tcp", "WSARecvEx$inet_accept", "TransmitFile$inet_accept",
-		"setsockopt$int_tcp", "setsockopt$int_udp", "setsockopt$int_accept",
-		"getsockopt$int_tcp", "getsockopt$int_udp", "getsockopt$int_accept":
-		for _, name := range []string{
-			"WSAStartup",
-			"WSACleanup",
-			"socket$inet_tcp",
-			"socket$listener_tcp",
-			"socket$connected_tcp",
-			"socket$accept_tcp",
-			"socket$inet_udp",
-			"closesocket$any",
-			"bind$inet_tcp",
-			"bind$inet_udp",
-			"listen$inet_tcp",
-			"connect$inet_tcp",
-			"connect$inet_udp",
-			"accept$inet_tcp",
-			"send$inet_tcp",
-			"send$inet_udp",
-			"send$inet_accept",
-			"recv$inet_tcp",
-			"recv$inet_udp",
-			"recv$inet_accept",
-			"ioctlsocket$fionbio_tcp",
-			"ioctlsocket$fionbio_udp",
-			"ioctlsocket$fionbio_accept",
-			"AcceptEx$inet_tcp",
-			"WSARecvEx$inet_accept",
-			"TransmitFile$inet_accept",
-			"CreateFileA",
-			"WriteFile",
-			"CloseHandle",
-			"setsockopt$int_tcp",
-			"setsockopt$int_udp",
-			"setsockopt$int_accept",
-			"getsockopt$int_tcp",
-			"getsockopt$int_udp",
-			"getsockopt$int_accept",
-		} {
-			if s, ok := target.SyscallMap[name]; ok {
-				enabled[s] = true
-			}
-		}
-	}
-	ct := target.BuildChoiceTable(nil, enabled)
-	return target.GenSampleProg(meta, mrand.NewSource(seed), ct), false, nil
 }
 
 func main() {

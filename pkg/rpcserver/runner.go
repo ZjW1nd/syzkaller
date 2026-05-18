@@ -425,7 +425,7 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 	delete(runner.requests, msg.Id)
 	delete(runner.executing, msg.Id)
 	if req.Type == flatrpc.RequestTypeProgram && msg.Info != nil {
-		rawSignals, rawCover, rawNonEmpty := summarizeProgInfo(msg.Info)
+		rawSignals, rawCover, rawNonEmpty, rawComps := summarizeProgInfo(msg.Info)
 		for len(msg.Info.Calls) < len(req.Prog.Calls) {
 			msg.Info.Calls = append(msg.Info.Calls, &flatrpc.CallInfo{
 				Error: 999,
@@ -456,10 +456,10 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 			addFallbackSignal(req.Prog, msg.Info)
 		}
 		if runner.sysTarget != nil && runner.sysTarget.OS == targets.Windows {
-			postSignals, postCover, postNonEmpty := summarizeProgInfo(msg.Info)
-			log.Logf(0, "rpcserver exec result: id=%d calls=%d raw_nonempty=%d raw_signal=%d raw_cover=%d post_nonempty=%d post_signal=%d post_cover=%d hanged=%v",
-				msg.Id, len(msg.Info.Calls), rawNonEmpty, rawSignals, rawCover,
-				postNonEmpty, postSignals, postCover, msg.Hanged)
+			postSignals, postCover, postNonEmpty, postComps := summarizeProgInfo(msg.Info)
+			log.Logf(0, "rpcserver exec result: id=%d calls=%d raw_nonempty=%d raw_signal=%d raw_cover=%d raw_comps=%d post_nonempty=%d post_signal=%d post_cover=%d post_comps=%d hanged=%v",
+				msg.Id, len(msg.Info.Calls), rawNonEmpty, rawSignals, rawCover, rawComps,
+				postNonEmpty, postSignals, postCover, postComps, msg.Hanged)
 		}
 	}
 	status := queue.Success
@@ -488,9 +488,9 @@ func (runner *Runner) handleExecResult(msg *flatrpc.ExecResult) error {
 	return nil
 }
 
-func summarizeProgInfo(info *flatrpc.ProgInfo) (signal, cover, nonEmpty int) {
+func summarizeProgInfo(info *flatrpc.ProgInfo) (signal, cover, nonEmpty int, comps int) {
 	if info == nil {
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
 	for _, call := range info.Calls {
 		if call == nil {
@@ -498,11 +498,12 @@ func summarizeProgInfo(info *flatrpc.ProgInfo) (signal, cover, nonEmpty int) {
 		}
 		signal += len(call.Signal)
 		cover += len(call.Cover)
+		comps += len(call.Comps)
 		if len(call.Signal) != 0 || len(call.Cover) != 0 {
 			nonEmpty++
 		}
 	}
-	return signal, cover, nonEmpty
+	return signal, cover, nonEmpty, comps
 }
 
 func (runner *Runner) convertCallInfo(call *flatrpc.CallInfo) {
