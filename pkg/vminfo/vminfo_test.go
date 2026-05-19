@@ -123,6 +123,47 @@ func createSuccessfulResults(source queue.Source, stop chan struct{}) {
 	}
 }
 
+func TestWindowsFeatureProbeRequiresFeedback(t *testing.T) {
+	target, err := prog.GetTarget(targets.Windows, targets.AMD64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := &checkContext{target: target}
+	testProg := target.DataMmapProg()
+	if len(testProg.Calls) == 0 {
+		t.Fatal("windows data mmap test program has no calls")
+	}
+
+	result := func(call *flatrpc.CallInfo) *queue.Result {
+		info := &flatrpc.ProgInfo{}
+		for range testProg.Calls {
+			info.Calls = append(info.Calls, &flatrpc.CallInfo{})
+		}
+		info.Calls[0] = call
+		return &queue.Result{
+			Status: queue.Success,
+			Info:   info,
+		}
+	}
+
+	if reason := ctx.featureSucceeded(flatrpc.FeatureCoverage, testProg,
+		result(&flatrpc.CallInfo{})); reason == "" {
+		t.Fatal("empty Windows coverage probe unexpectedly succeeded")
+	}
+	if reason := ctx.featureSucceeded(flatrpc.FeatureComparisons, testProg,
+		result(&flatrpc.CallInfo{})); reason == "" {
+		t.Fatal("empty Windows comparison probe unexpectedly succeeded")
+	}
+	if reason := ctx.featureSucceeded(flatrpc.FeatureCoverage, testProg,
+		result(&flatrpc.CallInfo{Cover: []uint64{1}, Signal: []uint64{1}})); reason != "" {
+		t.Fatalf("valid Windows coverage probe failed: %v", reason)
+	}
+	if reason := ctx.featureSucceeded(flatrpc.FeatureComparisons, testProg,
+		result(&flatrpc.CallInfo{Comps: []*flatrpc.Comparison{{Op1: 1, Op2: 2}}})); reason != "" {
+		t.Fatalf("valid Windows comparison probe failed: %v", reason)
+	}
+}
+
 func hostChecker(t *testing.T) (*Checker, []*flatrpc.FileInfo) {
 	cfg := testConfig(t, runtime.GOOS, runtime.GOARCH)
 	checker := New(cfg)

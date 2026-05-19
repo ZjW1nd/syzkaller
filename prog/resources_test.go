@@ -237,6 +237,49 @@ func TestPreferPreciseResources(t *testing.T) {
 	assert.Greater(t, counts["test$produce_subtype_of_common"], 1000)
 }
 
+func TestResourceCentricUsesBorrowingCorpus(t *testing.T) {
+	t.Parallel()
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	corpusProg, err := target.Deserialize([]byte(
+		"r0 = test$produce_common()\n"+
+			"test$consume_common(r0)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := string(corpusProg.Serialize())
+	meta := target.SyscallMap["test$consume_common"]
+	if meta == nil {
+		t.Fatal("test$consume_common is missing")
+	}
+	resType, ok := meta.Args[0].Type.(*ResourceType)
+	if !ok {
+		t.Fatalf("test$consume_common arg0 has unexpected type %T", meta.Args[0].Type)
+	}
+	r := newRand(target, rand.NewSource(0))
+	r.currentMeta = meta
+	s := newState(target, target.DefaultChoiceTable(), []*Prog{corpusProg})
+	arg, calls := r.resourceCentric(s, resType, DirIn)
+	if arg == nil {
+		t.Fatal("resourceCentric returned nil")
+	}
+	if got := string(corpusProg.Serialize()); got != before {
+		t.Fatalf("borrowing corpus was mutated:\n%s\nwant:\n%s", got, before)
+	}
+	foundProducer := false
+	for _, call := range calls {
+		if call.Meta.Name == "test$produce_common" {
+			foundProducer = true
+		}
+	}
+	if !foundProducer {
+		t.Fatalf("resourceCentric did not borrow the corpus producer:\n%s",
+			string((&Prog{Target: target, Calls: calls}).Serialize()))
+	}
+}
+
 func TestResourceCentricUsesCorpusResourceScoreHook(t *testing.T) {
 	t.Parallel()
 	target, err := GetTarget("test", "64")

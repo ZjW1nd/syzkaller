@@ -23,12 +23,12 @@ func TestCollideEnabledForConfig(t *testing.T) {
 			VMLess:   true,
 		},
 	}
-	if collideEnabledForConfig(cfg) {
-		t.Fatal("windows vmless should default to collide disabled")
+	if !collideEnabledForConfig(cfg) {
+		t.Fatal("windows vmless should default to collide enabled")
 	}
 	cfg.Experimental.WindowsVMLessCollide = true
 	if !collideEnabledForConfig(cfg) {
-		t.Fatal("windows vmless collide opt-in should enable collide")
+		t.Fatal("windows vmless compatibility option should keep collide enabled")
 	}
 	cfg.TargetOS = "linux"
 	cfg.Experimental.WindowsVMLessCollide = false
@@ -68,7 +68,7 @@ func TestLoadBorrowingSeedsFiltersByPrefix(t *testing.T) {
 			Target:   target,
 		},
 	}
-	progs := loadBorrowingSeeds(cfg)
+	progs := manager.LoadBorrowingSeeds(cfg)
 	if len(progs) != 1 {
 		t.Fatalf("got %d borrowing seeds, want 1", len(progs))
 	}

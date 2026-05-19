@@ -108,6 +108,32 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 	return info, nil
 }
 
+func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
+	if cfg == nil || cfg.Target == nil || cfg.Experimental.BorrowingSeedPrefix == "" {
+		return nil
+	}
+	seedPath := filepath.Join("sys", cfg.TargetOS, "test")
+	seeds, err := readSeedInputs(cfg, seedPath, cfg.Experimental.BorrowingSeedPrefix)
+	if err != nil {
+		log.Logf(0, "failed to read borrowing seeds: %v", err)
+		return nil
+	}
+	var progs []*prog.Prog
+	for _, seed := range seeds {
+		p, err := ParseSeed(cfg.Target, seed.Data)
+		if err != nil {
+			log.Logf(0, "failed to parse borrowing seed %s: %v", seed.Path, err)
+			continue
+		}
+		progs = append(progs, p)
+	}
+	if len(progs) != 0 {
+		log.Logf(0, "loaded %d borrowing-only seeds with prefix %q", len(progs),
+			cfg.Experimental.BorrowingSeedPrefix)
+	}
+	return progs
+}
+
 type input struct {
 	IsSeed bool
 	Key    string
@@ -142,28 +168,41 @@ func readInputs(cfg *mgrconfig.Config, db *db.DB, output chan *input) error {
 		}
 	}
 	seedPath := filepath.Join("sys", cfg.TargetOS, "test")
-	seedDir := filepath.Join(cfg.Syzkaller, seedPath)
-	if osutil.IsExist(seedDir) {
-		seeds, err := os.ReadDir(seedDir)
-		if err != nil {
-			return fmt.Errorf("failed to read seeds dir: %w", err)
-		}
-		for _, seed := range seeds {
-			if cfg.Experimental.SeedPrefix != "" && !strings.HasPrefix(seed.Name(), cfg.Experimental.SeedPrefix) {
-				continue
-			}
-			data, err := os.ReadFile(filepath.Join(seedDir, seed.Name()))
-			if err != nil {
-				return fmt.Errorf("failed to read seed %v: %w", seed.Name(), err)
-			}
-			inputs <- &input{
-				IsSeed: true,
-				Path:   filepath.Join(seedPath, seed.Name()),
-				Data:   data,
-			}
-		}
+	seeds, err := readSeedInputs(cfg, seedPath, cfg.Experimental.SeedPrefix)
+	if err != nil {
+		return err
+	}
+	for _, seed := range seeds {
+		inputs <- seed
 	}
 	return nil
+}
+
+func readSeedInputs(cfg *mgrconfig.Config, seedPath, prefix string) ([]*input, error) {
+	seedDir := filepath.Join(cfg.Syzkaller, seedPath)
+	if !osutil.IsExist(seedDir) {
+		return nil, nil
+	}
+	seeds, err := os.ReadDir(seedDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read seeds dir: %w", err)
+	}
+	var inputs []*input
+	for _, seed := range seeds {
+		if seed.IsDir() || prefix != "" && !strings.HasPrefix(seed.Name(), prefix) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(seedDir, seed.Name()))
+		if err != nil {
+			return nil, fmt.Errorf("failed to read seed %v: %w", seed.Name(), err)
+		}
+		inputs = append(inputs, &input{
+			IsSeed: true,
+			Path:   filepath.Join(seedPath, seed.Name()),
+			Data:   data,
+		})
+	}
+	return inputs, nil
 }
 
 const CurrentDBVersion = 5

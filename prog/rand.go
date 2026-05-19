@@ -1183,13 +1183,29 @@ func (r *randGen) resourceCentric(s *state, t *ResourceType, dir Dir) (arg Arg, 
 		}
 	}
 
+	calls = p.Calls
+	minLen := 2
+	for idx, call := range calls {
+		found := false
+		ForeachArg(call, func(arg Arg, ctx *ArgCtx) {
+			if arg == resource {
+				found = true
+				ctx.Stop = true
+			}
+		})
+		if found {
+			minLen = max(minLen, idx+1)
+			break
+		}
+	}
 	// Selects a biased random length of the returned calls (more calls could offer more
-	// interesting programs). The values returned (n = len(calls): n, n-1, ..., 2.
-	biasedLen := 2 + r.biasedRand(len(calls)-1, 10)
-
-	// Removes the references that are not used anymore.
-	for i := biasedLen; i < len(calls); i++ {
-		p.RemoveCall(i)
+	// interesting programs). The values returned (n = len(calls)): n, n-1, ..., minLen.
+	if len(calls) > minLen {
+		biasedLen := minLen + r.biasedRand(len(calls)-minLen+1, 10)
+		// Removes the references that are not used anymore.
+		for i := len(calls) - 1; i >= biasedLen; i-- {
+			p.RemoveCall(i)
+		}
 	}
 
 	return MakeResultArg(t, dir, resource, 0), p.Calls

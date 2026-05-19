@@ -1,6 +1,8 @@
 package windows_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/google/syzkaller/prog"
@@ -46,6 +48,47 @@ func TestInitTargetMarksWindowsHelpers(t *testing.T) {
 		if !target.CallIsAutomaticHelper(call) {
 			t.Fatalf("syscall %q is not classified as AutomaticHelper", name)
 		}
+	}
+}
+
+func TestWindowsCallRelevance(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	if target.CallRelevanceScore == nil {
+		t.Fatal("windows target did not set CallRelevanceScore")
+	}
+	tests := []struct {
+		name string
+		want int
+	}{
+		{name: "CreateFileA", want: -1},
+		{name: "Sleep", want: 0},
+		{name: "NtQuerySystemInformation", want: 1},
+		{name: "recv$inet_udp", want: 2},
+		{name: "send$inet_tcp", want: 3},
+		{name: "recv$inet_accept", want: 4},
+		{name: "TransmitFile$inet_accept", want: 5},
+		{name: "NtFsControlFile", want: 5},
+	}
+	for _, test := range tests {
+		call := target.SyscallMap[test.name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", test.name)
+		}
+		if got := target.CallRelevance(call); got != test.want {
+			t.Fatalf("%s relevance: got %d, want %d", test.name, got, test.want)
+		}
+		if got := target.TriageRelevance(call); got != test.want {
+			t.Fatalf("%s triage relevance: got %d, want %d", test.name, got, test.want)
+		}
+	}
+	if target.CallEligibleForTriage(target.SyscallMap["CreateFileA"]) {
+		t.Fatal("automatic helper should not be eligible for triage")
+	}
+	if !target.CallEligibleForTriage(target.SyscallMap["Sleep"]) {
+		t.Fatal("unscored non-helper syscall should remain eligible for triage")
 	}
 }
 
@@ -257,34 +300,22 @@ func TestWindowsNeutralize(t *testing.T) {
 		t.Fatal("Neutralize not set")
 	}
 	tests := []struct {
-		name   string
-		args   []prog.Arg
-		verify func(t *testing.T, c *prog.Call)
+		name     string
+		argIndex int
 	}{
-		{
-			name: "ExitProcess",
-			args: []prog.Arg{
-				prog.MakeConstArg(target.SyscallMap["ExitProcess"].Args[0].Type, prog.DirIn, 42),
-			},
-			verify: func(t *testing.T, c *prog.Call) {
-				code := c.Args[0].(*prog.ConstArg)
-				if code.Val != 0 {
-					t.Fatalf("ExitProcess exit code not neutralized: got %d, want 0", code.Val)
-				}
-			},
-		},
-		{
-			name: "Sleep",
-			args: []prog.Arg{
-				prog.MakeConstArg(target.SyscallMap["Sleep"].Args[0].Type, prog.DirIn, 5000),
-			},
-			verify: func(t *testing.T, c *prog.Call) {
-				ms := c.Args[0].(*prog.ConstArg)
-				if ms.Val != 0 {
-					t.Fatalf("Sleep duration not neutralized: got %d, want 0", ms.Val)
-				}
-			},
-		},
+		{name: "ExitProcess", argIndex: 0},
+		{name: "ExitThread", argIndex: 0},
+		{name: "TerminateProcess", argIndex: 1},
+		{name: "TerminateJobObject", argIndex: 1},
+		{name: "Sleep", argIndex: 0},
+		{name: "SleepEx", argIndex: 0},
+		{name: "WaitForSingleObject", argIndex: 1},
+		{name: "WaitForSingleObjectEx", argIndex: 1},
+		{name: "WaitForMultipleObjects", argIndex: 3},
+		{name: "WaitForMultipleObjectsEx", argIndex: 3},
+		{name: "WaitOnAddress", argIndex: 3},
+		{name: "MsgWaitForMultipleObjectsEx", argIndex: 2},
+		{name: "RegisterWaitForSingleObject", argIndex: 3},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -292,12 +323,33 @@ func TestWindowsNeutralize(t *testing.T) {
 			if meta == nil {
 				t.Fatalf("syscall %q not found", tt.name)
 			}
-			call := &prog.Call{Meta: meta, Args: tt.args}
+			args := make([]prog.Arg, len(meta.Args))
+			args[tt.argIndex] = prog.MakeConstArg(meta.Args[tt.argIndex].Type, prog.DirIn, 5000)
+			call := &prog.Call{Meta: meta, Args: args}
 			if err := target.Neutralize(call, false); err != nil {
 				t.Fatalf("Neutralize error: %v", err)
 			}
-			tt.verify(t, call)
+			value := call.Args[tt.argIndex].(*prog.ConstArg)
+			if value.Val != 0 {
+				t.Fatalf("%s argument %d not neutralized: got %d, want 0", tt.name, tt.argIndex, value.Val)
+			}
 		})
+	}
+	meta := target.SyscallMap["NtQuerySystemInformation"]
+	if meta == nil {
+		t.Fatal("NtQuerySystemInformation not found")
+	}
+	call := &prog.Call{
+		Meta: meta,
+		Args: []prog.Arg{
+			prog.MakeConstArg(meta.Args[0].Type, prog.DirIn, 7),
+		},
+	}
+	if err := target.Neutralize(call, false); err != nil {
+		t.Fatalf("Neutralize error: %v", err)
+	}
+	if got := call.Args[0].(*prog.ConstArg).Val; got != 7 {
+		t.Fatalf("ordinary syscall was changed: got %d, want 7", got)
 	}
 }
 
@@ -308,8 +360,8 @@ func TestWindowsChoiceTableResourcePriorities(t *testing.T) {
 	}
 	// Enable FILE_HANDLE consumers + socket CONNECTED consumer + a plain query.
 	enabled := map[*prog.Syscall]bool{
-		target.SyscallMap["NtFsControlFile"]:   true, // uses FILE_HANDLE
-		target.SyscallMap["getsockopt$int_tcp"]: true, // uses SOCKET_CONNECTED
+		target.SyscallMap["NtFsControlFile"]:          true, // uses FILE_HANDLE
+		target.SyscallMap["getsockopt$int_tcp"]:       true, // uses SOCKET_CONNECTED
 		target.SyscallMap["NtQuerySystemInformation"]: true, // no resources
 	}
 	// ExpandEnabledCalls auto-adds scaffold.
@@ -341,6 +393,29 @@ func TestWindowsChoiceTableResourcePriorities(t *testing.T) {
 		}
 		if !ct.Generatable(call.ID) {
 			t.Fatalf("scaffold syscall %q is not generatable after expansion", name)
+		}
+	}
+}
+
+func TestWindowsSeedProgramsDeserialize(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	files, err := filepath.Glob("test/*.txt")
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no windows seed programs found")
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		if _, err := target.Deserialize(data, prog.NonStrict); err != nil {
+			t.Fatalf("Deserialize(%s): %v", file, err)
 		}
 	}
 }

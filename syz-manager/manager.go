@@ -18,7 +18,6 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,39 +52,6 @@ import (
 	"github.com/google/syzkaller/vm"
 	"github.com/google/syzkaller/vm/dispatcher"
 )
-
-func loadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
-	if cfg == nil || cfg.Target == nil || cfg.Experimental.BorrowingSeedPrefix == "" {
-		return nil
-	}
-	seedDir := filepath.Join(cfg.Syzkaller, "sys", cfg.TargetOS, "test")
-	entries, err := os.ReadDir(seedDir)
-	if err != nil {
-		log.Logf(0, "failed to read borrowing seed dir %s: %v", seedDir, err)
-		return nil
-	}
-	var progs []*prog.Prog
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), cfg.Experimental.BorrowingSeedPrefix) {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(seedDir, entry.Name()))
-		if err != nil {
-			log.Logf(0, "failed to read borrowing seed %s: %v", entry.Name(), err)
-			continue
-		}
-		p, err := manager.ParseSeed(cfg.Target, data)
-		if err != nil {
-			log.Logf(0, "failed to parse borrowing seed %s: %v", entry.Name(), err)
-			continue
-		}
-		progs = append(progs, p)
-	}
-	if len(progs) != 0 {
-		log.Logf(0, "loaded %d borrowing-only seeds with prefix %q", len(progs), cfg.Experimental.BorrowingSeedPrefix)
-	}
-	return progs
-}
 
 var (
 	flagConfig = flag.String("config", "", "configuration file")
@@ -1259,21 +1225,21 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		mgr.corpus = corpus.NewFocusedCorpus(context.Background(),
 			corpusUpdates, mgr.coverFilters.Areas)
 		mgr.http.Corpus.Store(mgr.corpus)
-		borrowingSeeds := loadBorrowingSeeds(mgr.cfg)
+		borrowingSeeds := manager.LoadBorrowingSeeds(mgr.cfg)
 
-			rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
-			collide := collideEnabledForConfig(mgr.cfg)
-			fuzzerObj := fuzzer.NewFuzzer(context.Background(), &fuzzer.Config{
-				Corpus:         mgr.corpus,
-				Snapshot:       mgr.cfg.Snapshot,
-				Coverage:       mgr.cfg.Cover,
-				FaultInjection: features&flatrpc.FeatureFault != 0,
-				Comparisons: features&flatrpc.FeatureComparisons != 0,
-				Collide:        collide,
-				EnabledCalls:   enabledSyscalls,
-				NoMutateCalls:  mgr.cfg.NoMutateCalls,
-				BorrowingCorpus: borrowingSeeds,
-			FetchRawCover:  mgr.cfg.RawCover,
+		rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
+		collide := collideEnabledForConfig(mgr.cfg)
+		fuzzerObj := fuzzer.NewFuzzer(context.Background(), &fuzzer.Config{
+			Corpus:          mgr.corpus,
+			Snapshot:        mgr.cfg.Snapshot,
+			Coverage:        mgr.cfg.Cover,
+			FaultInjection:  features&flatrpc.FeatureFault != 0,
+			Comparisons:     features&flatrpc.FeatureComparisons != 0,
+			Collide:         collide,
+			EnabledCalls:    enabledSyscalls,
+			NoMutateCalls:   mgr.cfg.NoMutateCalls,
+			BorrowingCorpus: borrowingSeeds,
+			FetchRawCover:   mgr.cfg.RawCover,
 			Logf: func(level int, msg string, args ...any) {
 				if level != 0 {
 					return
@@ -1361,17 +1327,7 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 }
 
 func collideEnabledForConfig(cfg *mgrconfig.Config) bool {
-	if cfg == nil {
-		return true
-	}
-	if cfg.TargetOS == "windows" && cfg.VMLess && !cfg.Experimental.WindowsVMLessCollide {
-		// The current Windows Nyx path still trips over double-exec/async
-		// collide programs that exceed the normal per-program call budget
-		// and can wedge the guest before triage has a chance to run.
-		// Keep the regular single-program fuzzing path enabled first unless
-		// a focused experiment explicitly opts in.
-		return false
-	}
+	_ = cfg
 	return true
 }
 

@@ -93,7 +93,7 @@ func TestFuzz(t *testing.T) {
 	}
 }
 
-func TestDefaultExecOptsWindowsVMLessCollectsFeedback(t *testing.T) {
+func TestDefaultExecOptsWindowsVMLessDoesNotForceFeedback(t *testing.T) {
 	cfg := &mgrconfig.Config{
 		Cover:   true,
 		Sandbox: "none",
@@ -104,11 +104,12 @@ func TestDefaultExecOptsWindowsVMLessCollectsFeedback(t *testing.T) {
 	}
 	opts := DefaultExecOpts(cfg, flatrpc.FeatureCoverage, false)
 	want := flatrpc.ExecFlagThreaded |
-		flatrpc.ExecFlagDedupCover |
-		flatrpc.ExecFlagCollectSignal |
-		flatrpc.ExecFlagCollectCover
+		flatrpc.ExecFlagDedupCover
 	if opts.ExecFlags != want {
 		t.Fatalf("unexpected exec flags: got=%v want=%v", opts.ExecFlags, want)
+	}
+	if opts.EnvFlags&flatrpc.ExecEnvSignal == 0 {
+		t.Fatal("coverage-enabled config should still negotiate signal support in env flags")
 	}
 }
 

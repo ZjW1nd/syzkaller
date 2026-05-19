@@ -614,10 +614,11 @@ func TestStandaloneGenericProgramsContainRequestedSyscall(t *testing.T) {
 		t.Fatalf("GetTarget: %v", err)
 	}
 	deterministic := map[string]bool{
-		"NtFsControlFile":         true,
-		"NtReadFile":              true,
-		"NtWriteFile":             true,
+		"NtFsControlFile":          true,
+		"NtReadFile":               true,
+		"NtWriteFile":              true,
 		"TransmitFile$inet_accept": true,
+		"getsockopt$int_accept":    true,
 	}
 	for _, name := range []string{
 		"NtFsControlFile",

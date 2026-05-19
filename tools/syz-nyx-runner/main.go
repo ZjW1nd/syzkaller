@@ -727,7 +727,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		return nil, err
 	}
 	steps := 0
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(vm.execWaitTimeout())
 	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
 	for {
 		if data, err := os.ReadFile(resultPath); err == nil {
@@ -735,7 +735,8 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			return parseExecResult(data)
 		}
 		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("timed out waiting for %s after %d steps", resultPath, steps)
+			log.Logf(0, "runner exec wait deadline expired after %d steps; synthesizing hanged result", steps)
+			return synthesizeHangedResult(req), nil
 		}
 		log.Logf(0, "runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
@@ -767,6 +768,17 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	}
 }
 
+func (vm *nyxVM) execWaitTimeout() time.Duration {
+	timeout := vm.hardTimeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	return timeout + 5*time.Second
+}
+
 func parseExecResult(data []byte) (*flatrpc.ExecutorMessage, error) {
 	if len(data) < 4 {
 		return nil, errors.New("short nyx exec result")
@@ -779,10 +791,19 @@ func parseExecResult(data []byte) (*flatrpc.ExecutorMessage, error) {
 }
 
 func synthesizeHangedResult(req *flatrpc.ExecRequest) *flatrpc.ExecutorMessage {
+	callCount := 0
+	var id int64
+	if req != nil {
+		id = req.Id
+		callCount = progExecCallCountOrPanic(req.Data)
+	}
 	return &flatrpc.ExecutorMessage{
 		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
 			Value: &flatrpc.ExecResult{
-				Info:   flatrpc.EmptyProgInfo(progExecCallCountOrPanic(req.Data)),
+				Id:     id,
+				Proc:   0,
+				Info:   flatrpc.EmptyProgInfo(callCount),
 				Hanged: true,
 			},
 		},
@@ -865,7 +886,8 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 		total := 0
 		for _, crec := range compRecords {
 			if int(crec.CallIndex) >= len(res.Info.Calls) {
-				continue
+				return fmt.Errorf("comparison record for call %d out of range (%d calls)",
+					crec.CallIndex, len(res.Info.Calls))
 			}
 			call := res.Info.Calls[crec.CallIndex]
 			for _, comp := range crec.Comps {
@@ -1240,6 +1262,9 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	if len(r.vm.auxMM) >= 391 {
 		if needComps {
 			r.vm.auxMM[390] = 1 // redqueen_mode = 1 (enable)
+			defer func() {
+				r.vm.auxMM[390] = 0 // redqueen_mode = 0 (disable)
+			}()
 		}
 	}
 	r.vm.applyHardTimeout()
@@ -1253,10 +1278,8 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	}
 	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req)
 	if err != nil {
+		r.markForRestart(fmt.Sprintf("request %d failed: %v", req.Id, err))
 		return nil, err
-	}
-	if needComps && len(r.vm.auxMM) >= 391 {
-		r.vm.auxMM[390] = 0   // redqueen_mode = 0 (disable)
 	}
 	covRecords, compRecords, covErr := parseCoverageDump(r.vm.coverPath)
 	if covErr == nil {
@@ -1605,6 +1628,18 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
 			return nil, false, fmt.Errorf("build standalone %s file-handle program: %w", meta.Name, err)
+		}
+		return p, true, nil
+	}
+	if meta.Name == "getsockopt$int_accept" {
+		src := bootstrapTCPAcceptedSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"getsockopt$int_accept(r2, 0x1, 0x1, &(0x7f0000000200)=0x0, &(0x7f0000000240)=0x4)\n" +
+			bootstrapCloseAcceptSessionSockets()
+		p, err := target.Deserialize([]byte(src), prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone getsockopt$int_accept program: %w", err)
 		}
 		return p, true, nil
 	}

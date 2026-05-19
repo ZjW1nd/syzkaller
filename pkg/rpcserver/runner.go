@@ -180,10 +180,7 @@ func (runner *Runner) ConnectionLoop() error {
 		// already-issued requests. That defeats fuzzer-side priority queues
 		// (notably triage/deflake) because new high-priority requests cannot
 		// preempt the long tail until it fully drains.
-		limit := 2 * runner.procs
-		if runner.hasPendingReturnAllSignal() {
-			limit = 1
-		}
+		limit := runner.inflightLimit()
 		for len(runner.requests) < limit {
 			req := runner.source.Next(runner.id)
 			if req == nil {
@@ -237,13 +234,12 @@ func (runner *Runner) ConnectionLoop() error {
 	}
 }
 
-func (runner *Runner) hasPendingReturnAllSignal() bool {
-	for _, req := range runner.requests {
-		if req != nil && len(req.ReturnAllSignal) != 0 {
-			return true
-		}
+func (runner *Runner) inflightLimit() int {
+	limit := 2 * runner.procs
+	if limit < 1 {
+		return 1
 	}
-	return false
+	return limit
 }
 
 func wrappedRecv[Raw flatrpc.RecvType[T], T any](runner *Runner) (*T, error) {

@@ -24,6 +24,8 @@ var windowsAutomaticHelpers = []string{
 	"closesocket$any",
 }
 
+var windowsAutomaticHelperSet = windowsCallSet(windowsAutomaticHelpers)
+
 func InitTarget(target *prog.Target) {
 	arch := &arch{
 		target:                 target,
@@ -34,6 +36,8 @@ func InitTarget(target *prog.Target) {
 	}
 
 	configureWindowsHelpers(target)
+	target.CallRelevanceScore = windowsCallRelevanceScore
+	target.TriageCallScore = windowsCallRelevanceScore
 	target.ExpandEnabledCalls = expandWindowsEnabledCalls
 	target.MakeDataMmap = arch.makeMmap
 	target.Neutralize = arch.neutralize
@@ -52,15 +56,8 @@ func InitTarget(target *prog.Target) {
 }
 
 func configureWindowsHelpers(target *prog.Target) {
-	helperSet := make(map[string]bool, len(windowsAutomaticHelpers))
-	for _, name := range windowsAutomaticHelpers {
-		helperSet[name] = true
-	}
 	target.Helpers.AutomaticHelperPredicate = func(call *prog.Syscall) bool {
-		if call == nil {
-			return false
-		}
-		return helperSet[call.Name] || call.Attrs.AutomaticHelper
+		return windowsCallIsAutomaticHelper(call)
 	}
 	target.Helpers.DeprioritizeAutomaticHelpers = true
 	target.Helpers.AvoidCollidingAutomaticHelpers = true
@@ -69,6 +66,56 @@ func configureWindowsHelpers(target *prog.Target) {
 	target.Helpers.SkipCorpusForAutomaticHelpers = true
 	target.Helpers.SkipTriageForAutomaticHelpers = true
 	target.Helpers.AvoidAutomaticHelperBias = true
+}
+
+func windowsCallSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, name := range names {
+		set[name] = true
+	}
+	return set
+}
+
+func windowsCallIsAutomaticHelper(call *prog.Syscall) bool {
+	if call == nil {
+		return false
+	}
+	return windowsAutomaticHelperSet[call.Name] || call.Attrs.AutomaticHelper
+}
+
+func windowsCallRelevanceScore(call *prog.Syscall) int {
+	if call == nil {
+		return 0
+	}
+	if windowsCallIsAutomaticHelper(call) {
+		return -1
+	}
+	score := 0
+	if windowsCallUsesInputResourcePrefix(call, "HANDLE") {
+		score = max(score, 1)
+	}
+	if windowsCallUsesInputResourcePrefix(call, "FILE_HANDLE") {
+		score = max(score, 3)
+	}
+	if windowsCallUsesInputResourceKind(call, "SOCKET_UDP") {
+		score = max(score, 2)
+	}
+	if windowsCallUsesInputResourceKind(call, "SOCKET_CONNECTED") {
+		score = max(score, 3)
+	}
+	if windowsCallUsesInputResourceKind(call, "SOCKET_LISTENER") ||
+		windowsCallUsesInputResourceKind(call, "SOCKET_ACCEPT") {
+		score = max(score, 4)
+	}
+	switch call.Name {
+	case "NtQuerySystemInformation", "NtQueryInformationProcess", "NtSetInformationProcess":
+		score = max(score, 1)
+	case "NtReadFile", "NtWriteFile":
+		score = max(score, 4)
+	case "AcceptEx$inet_tcp", "TransmitFile$inet_accept", "WSARecvEx$inet_accept", "NtFsControlFile":
+		score = max(score, 5)
+	}
+	return score
 }
 
 func expandWindowsEnabledCalls(target *prog.Target, enabled map[*prog.Syscall]bool) map[*prog.Syscall]bool {
@@ -354,18 +401,31 @@ func (arch *arch) makeMmap() []*prog.Call {
 
 func (arch *arch) neutralize(c *prog.Call, fixStructure bool) error {
 	switch c.Meta.CallName {
-	case "ExitProcess", "TerminateProcess", "TerminateJobObject":
-		if n := len(c.Args); n > 0 {
-			if code, ok := c.Args[n-1].(*prog.ConstArg); ok {
-				code.Val = 0
-			}
-		}
+	case "ExitProcess", "ExitThread", "FatalExit",
+		"TerminateProcess", "TerminateThread", "TerminateJobObject":
+		windowsNeutralizeConstArg(c, len(c.Args)-1)
 	case "Sleep", "SleepEx":
-		if len(c.Args) > 0 {
-			if ms, ok := c.Args[0].(*prog.ConstArg); ok {
-				ms.Val = 0
-			}
-		}
+		windowsNeutralizeConstArg(c, 0)
+	case "WaitForDebugEvent", "WaitForDebugEventEx",
+		"WaitForSingleObject", "WaitForSingleObjectEx",
+		"WaitForInputIdle", "WaitNamedPipeA":
+		windowsNeutralizeConstArg(c, 1)
+	case "SleepConditionVariableCS", "SignalObjectAndWait",
+		"MsgWaitForMultipleObjectsEx":
+		windowsNeutralizeConstArg(c, 2)
+	case "WaitForMultipleObjects", "WaitForMultipleObjectsEx",
+		"WaitOnAddress", "MsgWaitForMultipleObjects",
+		"RegisterWaitForSingleObject":
+		windowsNeutralizeConstArg(c, 3)
 	}
 	return nil
+}
+
+func windowsNeutralizeConstArg(c *prog.Call, arg int) {
+	if arg < 0 || arg >= len(c.Args) {
+		return
+	}
+	if value, ok := c.Args[arg].(*prog.ConstArg); ok {
+		value.Val = 0
+	}
 }

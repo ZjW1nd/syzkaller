@@ -667,13 +667,6 @@ func DefaultExecOpts(cfg *mgrconfig.Config, features flatrpc.Feature, debug bool
 	if !cfg.RawCover {
 		exec |= flatrpc.ExecFlagDedupCover
 	}
-	if cfg.TargetOS == "windows" && cfg.VMLess {
-		// The Windows Nyx path only reports PT-derived feedback through the
-		// explicit per-request result channel, so the default Linux-style
-		// "threaded + dedup only" execution would otherwise produce no signal
-		// for regular fuzzing requests after machine-check completes.
-		exec |= flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover
-	}
 	return flatrpc.ExecOpts{
 		EnvFlags:   env,
 		ExecFlags:  exec,

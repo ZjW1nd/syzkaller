@@ -80,6 +80,27 @@ func TestTee(t *testing.T) {
 	assert.Empty(t, copy.Important)
 }
 
+func TestDefaultOptsDoesNotRewriteCollectModes(t *testing.T) {
+	base := Plain()
+	base.Submit(&Request{
+		Type:       flatrpc.RequestTypeBinary,
+		BinaryFile: "executor",
+		ExecOpts: flatrpc.ExecOpts{
+			ExecFlags: flatrpc.ExecFlagCollectComps,
+		},
+	})
+
+	source := DefaultOpts(base, flatrpc.ExecOpts{
+		ExecFlags: flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover,
+	})
+	req := source.Next()
+	want := flatrpc.ExecFlagCollectComps |
+		flatrpc.ExecFlagCollectSignal |
+		flatrpc.ExecFlagCollectCover
+	assert.Equal(t, want, req.ExecOpts.ExecFlags)
+	assert.Error(t, req.Validate())
+}
+
 func TestInterleaveInjectsSecondaryPeriodically(t *testing.T) {
 	primary := Plain()
 	secondary := Plain()

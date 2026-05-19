@@ -93,6 +93,29 @@ func TestParseCoverageDumpRejectsBadMagic(t *testing.T) {
 	}
 }
 
+func TestSynthesizeHangedResultPreservesRequest(t *testing.T) {
+	var data [binary.MaxVarintLen64]byte
+	n := binary.PutVarint(data[:], 2)
+	req := &flatrpc.ExecRequest{
+		Id:   42,
+		Data: data[:n],
+	}
+	msg := synthesizeHangedResult(req)
+	if msg.Msg.Type != flatrpc.ExecutorMessagesRawExecResult {
+		t.Fatalf("message type=%v, want ExecResult", msg.Msg.Type)
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok {
+		t.Fatalf("message value has type %T", msg.Msg.Value)
+	}
+	if res.Id != req.Id || res.Proc != 0 || !res.Hanged {
+		t.Fatalf("bad hanged result metadata: id=%d proc=%d hanged=%v", res.Id, res.Proc, res.Hanged)
+	}
+	if res.Info == nil || len(res.Info.Calls) != 2 {
+		t.Fatalf("hanged result call info len=%d, want 2", len(res.Info.Calls))
+	}
+}
+
 func TestInjectCoverageByCallIndex(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syz_cov.bin")
 	writeCoverageDump(t, path, []nyxCovDumpRecord{

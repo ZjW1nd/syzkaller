@@ -72,13 +72,13 @@ func buildMockSyzCovV2(t *testing.T) []byte {
 
 	// Two comp entries (28 bytes each)
 	type compEntry struct {
-		Pc     uint64
-		Op1    uint64
-		Op2    uint64
-		Size   uint8
-		Kind   uint8
-		IsImm  uint8
-		_pad   uint8
+		Pc    uint64
+		Op1   uint64
+		Op2   uint64
+		Size  uint8
+		Kind  uint8
+		IsImm uint8
+		_pad  uint8
 	}
 	comp1 := compEntry{
 		Pc:    0xfffff8000a000000,
@@ -208,6 +208,28 @@ func TestInjectCompsFromRecords(t *testing.T) {
 	}
 	if !cmp.IsConst {
 		t.Errorf("IsConst = false, want true (IsImm=1)")
+	}
+}
+
+func TestInjectCompsRejectsOutOfRangeCall(t *testing.T) {
+	req := &flatrpc.ExecRequest{
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags: flatrpc.ExecFlagCollectComps,
+		},
+	}
+	execMsg := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Value: &flatrpc.ExecResult{
+				Info: flatrpc.EmptyProgInfo(1),
+			},
+		},
+	}
+
+	err := injectCoverage(req, execMsg, false, true, nil, []nyxCovCompRecord{
+		{CallIndex: 1, Comps: []nyxCompEntry{{Pc: 0x100}}},
+	})
+	if err == nil {
+		t.Fatal("injectCoverage unexpectedly accepted an out-of-range comparison record")
 	}
 }
 

@@ -344,38 +344,30 @@ func TestMachineCheckCrash(t *testing.T) {
 	}
 }
 
-func TestRunnerPendingReturnAllSignalReducesInflightLimit(t *testing.T) {
-	src := &countingSource{
-		reqs: []*queue.Request{
-			{Prog: &prog.Prog{}, ReturnAllSignal: []int{1}},
-			{Prog: &prog.Prog{}},
-			{Prog: &prog.Prog{}},
-		},
+func TestRunnerInflightLimitDoesNotSpecialCaseReturnAllSignal(t *testing.T) {
+	var reqs []*queue.Request
+	for i := 0; i < 8; i++ {
+		reqs = append(reqs, &queue.Request{Prog: &prog.Prog{}})
 	}
+	reqs[0].ReturnAllSignal = []int{1}
+	src := &countingSource{reqs: reqs}
 	runner := &Runner{
 		source: queue.Distribute(queue.Callback(func() *queue.Request {
 			return src.Next(0)
 		})),
-		procs:    4,
-		requests: map[int64]*queue.Request{},
+		procs:     4,
+		requests:  map[int64]*queue.Request{},
 		executing: map[int64]bool{},
-		hanged:   map[int64]bool{},
-	}
-
-	if runner.hasPendingReturnAllSignal() {
-		t.Fatal("fresh runner should not report pending return-all-signal requests")
+		hanged:    map[int64]bool{},
 	}
 
 	runner.requests[1] = &queue.Request{ReturnAllSignal: []int{3}}
-	if !runner.hasPendingReturnAllSignal() {
-		t.Fatal("runner should detect pending return-all-signal request")
+	if got, want := runner.inflightLimit(), 8; got != want {
+		t.Fatalf("inflight limit with pending return-all-signal request = %d, want %d", got, want)
 	}
 	delete(runner.requests, 1)
 
-	limit := 2 * runner.procs
-	if runner.hasPendingReturnAllSignal() {
-		limit = 1
-	}
+	limit := runner.inflightLimit()
 	for len(runner.requests) < limit {
 		req := runner.source.Next(runner.id)
 		if req == nil {
@@ -383,16 +375,8 @@ func TestRunnerPendingReturnAllSignalReducesInflightLimit(t *testing.T) {
 		}
 		runner.nextRequestID++
 		runner.requests[runner.nextRequestID] = req
-		if len(req.ReturnAllSignal) != 0 {
-			limit = 1
-		}
 	}
-	if got := len(runner.requests); got != 1 {
-		t.Fatalf("runner queued %d requests, want 1 when first request needs return-all-signal", got)
-	}
-	for _, req := range runner.requests {
-		if len(req.ReturnAllSignal) == 0 {
-			t.Fatal("runner did not keep the return-all-signal request as the sole inflight request")
-		}
+	if got := len(runner.requests); got != limit {
+		t.Fatalf("runner queued %d requests, want %d", got, limit)
 	}
 }

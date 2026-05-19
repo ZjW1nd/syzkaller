@@ -279,9 +279,8 @@ type Experimental struct {
 	// specified prefix. Empty means load all matching test seeds as usual.
 	SeedPrefix string `json:"seed_prefix,omitempty"`
 
-	// WindowsVMLessCollide re-enables collide mode for Windows VMLess/Nyx paths.
-	// Disabled by default because the current path can still wedge on some async
-	// collide programs; enable only for focused experiments.
+	// WindowsVMLessCollide is kept for compatibility with existing configs.
+	// Windows VMLess/Nyx collide now follows the normal target-neutral default.
 	WindowsVMLessCollide bool `json:"windows_vmless_collide,omitempty"`
 }
 
