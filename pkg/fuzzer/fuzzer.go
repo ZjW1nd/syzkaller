@@ -71,25 +71,19 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 		target.ObserveTemplateHook = func(name string) {
 			switch {
 			case strings.HasPrefix(name, "gen:"):
-				f.statWindowsTemplateGen.Add(1)
+				f.statTemplateGen.Add(1)
 			case strings.HasPrefix(name, "corpus:"):
-				f.statWindowsTemplateCorpus.Add(1)
+				f.statTemplateCorpus.Add(1)
 			case strings.HasPrefix(name, "collide:"):
-				f.statWindowsTemplateCollide.Add(1)
+				f.statTemplateCollide.Add(1)
 			case strings.HasPrefix(name, "rc_try:"):
-				f.statWindowsResourceCentricTry.Add(1)
+				f.statResourceCentricTry.Add(1)
 			case strings.HasPrefix(name, "rc_hit:"):
-				f.statWindowsResourceCentricHit.Add(1)
+				f.statResourceCentricHit.Add(1)
 			case strings.HasPrefix(name, "rc_no_candidates:"):
-				f.statWindowsResourceCentricNoCandidates.Add(1)
+				f.statResourceCentricNoCandidates.Add(1)
 			case strings.HasPrefix(name, "rc_zero_score:"):
-				f.statWindowsResourceCentricZeroScore.Add(1)
-			}
-			if f.isWindowsTarget() && (strings.HasPrefix(name, "gen:") ||
-				strings.HasPrefix(name, "corpus:") || strings.HasPrefix(name, "collide:") ||
-				strings.HasPrefix(name, "rc_hit:") ||
-				strings.HasPrefix(name, "rc_no_candidates:") || strings.HasPrefix(name, "rc_zero_score:")) {
-				f.Logf(0, "windows template observer: %s", name)
+				f.statResourceCentricZeroScore.Add(1)
 			}
 		}
 	}
@@ -193,10 +187,6 @@ func (fuzzer *Fuzzer) execute(executor queue.Executor, req *queue.Request) *queu
 	return fuzzer.executeWithFlags(executor, req, 0)
 }
 
-func (fuzzer *Fuzzer) isWindowsTarget() bool {
-	return fuzzer.target != nil && fuzzer.target.OS == "windows"
-}
-
 func (fuzzer *Fuzzer) executeWithFlags(executor queue.Executor, req *queue.Request, flags ProgFlags) *queue.Result {
 	fuzzer.enqueue(executor, req, flags, 0)
 	return req.Wait(fuzzer.ctx)
@@ -250,10 +240,6 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 				job.info.Calls = append(job.info.Calls, job.p.CallName(id))
 			}
 			slices.Sort(job.info.Calls)
-			if fuzzer.isWindowsTarget() {
-				fuzzer.Logf(0, "windows triage job queued: origin=%s trace=%s calls=%v flags=0x%x attempt=%d status=%s",
-					req.Origin, req.TraceID, job.info.Calls, flags, attempt, res.Status)
-			}
 			fuzzer.startJob(stat, job)
 			<-job.ready
 		}
@@ -265,18 +251,6 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 			fuzzer.handleCallInfo(req, info, call)
 		}
 		fuzzer.handleCallInfo(req, res.Info.Extra, -1)
-		if fuzzer.isWindowsTarget() && strings.HasPrefix(req.Origin, "collide:") && req.Prog != nil {
-			var active []string
-			for call, info := range res.Info.Calls {
-				if info == nil || (len(info.Signal) == 0 && len(info.Cover) == 0) {
-					continue
-				}
-				active = append(active, fmt.Sprintf("%d:%s(sig=%d cover=%d err=%d)",
-					call, req.Prog.CallName(call), len(info.Signal), len(info.Cover), info.Error))
-			}
-			fuzzer.Logf(0, "windows collide result: origin=%s trace=%s active=%v\n%s",
-				req.Origin, req.TraceID, active, req.Prog.Serialize())
-		}
 	}
 
 	// Corpus candidates may have flaky coverage, so we give them a second chance.
@@ -325,24 +299,18 @@ func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.
 	}
 	prio := signalPrio(p, info, call)
 	newMaxSignal := fuzzer.Cover.addRawMaxSignal(info.Signal, prio)
-	if fuzzer.target != nil && fuzzer.target.OS == "windows" && (len(info.Signal) != 0 || len(info.Cover) != 0) {
-		fuzzer.Logf(0, "windows triage: call=%d name=%s signal=%d cover=%d prio=%d new=%d errno=%d flags=0x%x",
-			call, p.CallName(call), len(info.Signal), len(info.Cover), prio, newMaxSignal.Len(), info.Error, info.Flags)
-	}
 	if !fuzzer.Config.NewInputFilter(p.CallName(call)) {
 		return
 	}
 	if call >= 0 && !fuzzer.target.CallEligibleForTriage(p.Calls[call].Meta) {
 		return
 	}
-	forced := false
 	if newMaxSignal.Empty() {
 		if fuzzer.target == nil || fuzzer.target.RuntimePolicy.ShouldForceTriageCall == nil ||
 			!fuzzer.target.RuntimePolicy.ShouldForceTriageCall(origin, p, call) {
 			return
 		}
 		newMaxSignal = signal.FromRaw([]uint64{1}, 0)
-		forced = true
 	}
 	if fuzzer.pruneLessRelevantTriage(p, call, triage) {
 		return
@@ -356,10 +324,6 @@ func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.
 		newSignal: newMaxSignal,
 		origin:    origin,
 		signals:   [deflakeNeedRuns]signal.Signal{signal.FromRaw(info.Signal, prio)},
-	}
-	if forced && fuzzer.isWindowsTarget() {
-		fuzzer.Logf(0, "windows forced triage: call=%d name=%s origin=%s",
-			call, p.CallName(call), origin)
 	}
 }
 
@@ -436,10 +400,6 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 	if fuzzer.Config.Collide && (fuzzer.Config.MaxCallsPerProg == 0 || fuzzer.Config.MaxCallsPerProg > 1) &&
 		rnd.Intn(collideChance) == 0 {
 		collidedProg := randomCollide(req.Prog, rnd)
-		if fuzzer.isWindowsTarget() && req.Prog != nil {
-			fuzzer.Logf(0, "windows collide source: original_calls=%d collided_calls=%d\n%s",
-				len(req.Prog.Calls), len(collidedProg.Calls), collidedProg.Serialize())
-		}
 		req = &queue.Request{
 			Prog:       collidedProg,
 			Stat:       fuzzer.statExecCollide,
@@ -496,23 +456,12 @@ func (fuzzer *Fuzzer) Next() *queue.Request {
 	for tries := 0; ; tries++ {
 		req := fuzzer.source.Next()
 		if req != nil {
-			if fuzzer.isWindowsTarget() && len(req.ReturnAllSignal) != 0 {
-				progCalls := 0
-				if req.Prog != nil {
-					progCalls = len(req.Prog.Calls)
-				}
-				fuzzer.Logf(0, "windows source next: prog_calls=%d return_all_signal=%v",
-					progCalls, req.ReturnAllSignal)
-			}
 			return req
 		}
 		// Some focused modes can temporarily exhaust candidate/corpus-driven sources,
 		// especially when mutation has no available base program. Fall back to a fresh
 		// generation request instead of panicking the whole manager.
 		if req = genProgRequest(fuzzer, fuzzer.rand()); req != nil {
-			if fuzzer.isWindowsTarget() {
-				fuzzer.Logf(0, "windows source fallback: generated fresh request after nil source result (tries=%d)", tries+1)
-			}
 			return req
 		}
 		if tries >= 2 {

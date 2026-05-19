@@ -286,7 +286,7 @@ func TestResourceCentricUsesCorpusResourceScoreHook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clone := *target
+	clone := target.Clone()
 	prog1, err := clone.Deserialize([]byte(
 		"r0 = test$produce_common()\n"+
 			"test$consume_common(r0)\n"), Strict)
@@ -322,9 +322,9 @@ func TestResourceCentricUsesCorpusResourceScoreHook(t *testing.T) {
 	if !ok {
 		t.Fatalf("test$consume_common arg0 has unexpected type %T", meta.Args[0].Type)
 	}
-	r := newRand(&clone, rand.NewSource(0))
+	r := newRand(clone, rand.NewSource(0))
 	r.currentMeta = meta
-	s := newState(&clone, clone.DefaultChoiceTable(), []*Prog{prog1, prog2})
+	s := newState(clone, clone.DefaultChoiceTable(), []*Prog{prog1, prog2})
 	arg, calls := r.resourceCentric(s, resType, DirIn)
 	if arg == nil {
 		t.Fatal("resourceCentric returned nil")
@@ -337,6 +337,6 @@ func TestResourceCentricUsesCorpusResourceScoreHook(t *testing.T) {
 	}
 	if !foundPreferredProducer {
 		t.Fatalf("resourceCentric did not follow CorpusResourceScore hook:\n%s",
-			string((&Prog{Target: &clone, Calls: calls}).Serialize()))
+			string((&Prog{Target: clone, Calls: calls}).Serialize()))
 	}
 }

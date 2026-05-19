@@ -14,34 +14,34 @@ type Stats struct {
 	// Indexed by prog.Syscall.ID + the last element for extra/remote.
 	Syscalls []SyscallStats
 
-	statCandidates          *stat.Val
-	statNewInputs           *stat.Val
-	statJobs                *stat.Val
-	statJobsTriage          *stat.Val
-	statJobsTriageCandidate *stat.Val
-	statJobsSmash           *stat.Val
-	statJobsFaultInjection  *stat.Val
-	statJobsHints           *stat.Val
-	statExecTime            *stat.Val
-	statExecGenerate        *stat.Val
-	statExecFuzz            *stat.Val
-	statExecCandidate       *stat.Val
-	statExecTriage          *stat.Val
-	statExecMinimize        *stat.Val
-	statExecSmash           *stat.Val
-	statExecFaultInject     *stat.Val
-	statExecHint            *stat.Val
-	statExecSeed            *stat.Val
-	statExecCollide         *stat.Val
-	statCoverOverflows      *stat.Val
-	statCompsOverflows      *stat.Val
-	statWindowsTemplateGen     *stat.Val
-	statWindowsTemplateCorpus  *stat.Val
-	statWindowsTemplateCollide *stat.Val
-	statWindowsResourceCentricTry *stat.Val
-	statWindowsResourceCentricHit *stat.Val
-	statWindowsResourceCentricNoCandidates *stat.Val
-	statWindowsResourceCentricZeroScore    *stat.Val
+	statCandidates                  *stat.Val
+	statNewInputs                   *stat.Val
+	statJobs                        *stat.Val
+	statJobsTriage                  *stat.Val
+	statJobsTriageCandidate         *stat.Val
+	statJobsSmash                   *stat.Val
+	statJobsFaultInjection          *stat.Val
+	statJobsHints                   *stat.Val
+	statExecTime                    *stat.Val
+	statExecGenerate                *stat.Val
+	statExecFuzz                    *stat.Val
+	statExecCandidate               *stat.Val
+	statExecTriage                  *stat.Val
+	statExecMinimize                *stat.Val
+	statExecSmash                   *stat.Val
+	statExecFaultInject             *stat.Val
+	statExecHint                    *stat.Val
+	statExecSeed                    *stat.Val
+	statExecCollide                 *stat.Val
+	statCoverOverflows              *stat.Val
+	statCompsOverflows              *stat.Val
+	statTemplateGen                 *stat.Val
+	statTemplateCorpus              *stat.Val
+	statTemplateCollide             *stat.Val
+	statResourceCentricTry          *stat.Val
+	statResourceCentricHit          *stat.Val
+	statResourceCentricNoCandidates *stat.Val
+	statResourceCentricZeroScore    *stat.Val
 }
 
 type SyscallStats struct {
@@ -93,19 +93,19 @@ func newStats(target *prog.Target) Stats {
 			stat.Rate{}, stat.NoGraph),
 		statCompsOverflows: stat.New("comps overflows", "Number of times the comparisons buffer overflowed",
 			stat.Rate{}, stat.NoGraph),
-		statWindowsTemplateGen: stat.New("win_tmpl_gen", "Windows template-guided generation decisions",
+		statTemplateGen: stat.New("tmpl_gen", "Template-guided generation decisions",
 			stat.Console, stat.Rate{}, stat.NoGraph),
-		statWindowsTemplateCorpus: stat.New("win_tmpl_corpus", "Windows template-guided corpus borrowing decisions",
+		statTemplateCorpus: stat.New("tmpl_corpus", "Template-guided corpus borrowing decisions",
 			stat.Console, stat.Rate{}, stat.NoGraph),
-		statWindowsTemplateCollide: stat.New("win_tmpl_collide", "Windows template-guided collide decisions",
+		statTemplateCollide: stat.New("tmpl_collide", "Template-guided collide decisions",
 			stat.Console, stat.Rate{}, stat.NoGraph),
-		statWindowsResourceCentricTry: stat.New("win_rc_try", "Windows resourceCentric borrowing attempts",
+		statResourceCentricTry: stat.New("rc_try", "resourceCentric borrowing attempts",
 			stat.Console, stat.Rate{}, stat.NoGraph),
-		statWindowsResourceCentricHit: stat.New("win_rc_hit", "Windows resourceCentric borrowing hits",
+		statResourceCentricHit: stat.New("rc_hit", "resourceCentric borrowing hits",
 			stat.Console, stat.Rate{}, stat.NoGraph),
-		statWindowsResourceCentricNoCandidates: stat.New("win_rc_no_candidates", "Windows resourceCentric attempts with no compatible corpus candidates",
+		statResourceCentricNoCandidates: stat.New("rc_no_candidates", "resourceCentric attempts with no compatible corpus candidates",
 			stat.Console, stat.Rate{}, stat.NoGraph),
-		statWindowsResourceCentricZeroScore: stat.New("win_rc_zero_score", "Windows resourceCentric attempts where all corpus candidates scored zero",
+		statResourceCentricZeroScore: stat.New("rc_zero_score", "resourceCentric attempts where all corpus candidates scored zero",
 			stat.Console, stat.Rate{}, stat.NoGraph),
 	}
 }
