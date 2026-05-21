@@ -37,6 +37,7 @@ import (
 	"github.com/google/syzkaller/pkg/vcs"
 	"github.com/google/syzkaller/pkg/vminfo"
 	"github.com/google/syzkaller/prog"
+	"github.com/google/syzkaller/sys/targets"
 	"github.com/google/syzkaller/vm"
 	"github.com/google/syzkaller/vm/dispatcher"
 	"github.com/gorilla/handlers"
@@ -153,7 +154,7 @@ func (serv *HTTPServer) httpMain(w http.ResponseWriter, r *http.Request) {
 	data := &UISummaryData{
 		UIPageHeader:     serv.pageHeader(r, "syzkaller"),
 		Log:              log.CachedLogOutput(),
-		ShowCore:         serv.Cfg.MemoryDump,
+		ShowCore:         serv.Cfg.MemoryDump || serv.Cfg.TargetOS == targets.Windows,
 		FilterSubsystems: filterSubsystems,
 	}
 

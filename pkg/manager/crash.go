@@ -38,6 +38,8 @@ type CrashStore struct {
 const reproFileName = "repro.prog"
 const cReproFileName = "repro.cprog"
 const straceFileName = "strace.log"
+const linuxMemoryDumpFileName = "vmcore"
+const windowsMinidumpFileName = "minidump.dmp"
 
 const MaxReproAttempts = 3
 
@@ -105,7 +107,7 @@ func (cs *CrashStore) SaveCrash(crash *Crash) (bool, error) {
 	}
 
 	if crash.MemoryDump != "" {
-		if err := osutil.Rename(crash.MemoryDump, filepath.Join(dir, "vmcore")); err != nil {
+		if err := osutil.Rename(crash.MemoryDump, filepath.Join(dir, memoryDumpFileName(crash.MemoryDump))); err != nil {
 			return false, fmt.Errorf("failed to move memory dump: %w", err)
 		}
 	}
@@ -293,7 +295,7 @@ func (cs *CrashStore) BugInfo(id string, full bool) (*BugInfo, error) {
 			ret.StraceFile = filepath.Join(dir, f)
 		} else if strings.HasPrefix(f, "repro") {
 			ret.ReproAttempts++
-		} else if f == "vmcore" {
+		} else if isMemoryDumpFileName(f) {
 			ret.MemoryDumpFile = filepath.Join("crashes", id, f)
 		}
 	}
@@ -420,5 +422,22 @@ func (cs *CrashStore) path(title string) string {
 }
 
 func (cs *CrashStore) HasMemoryDump(title string) bool {
-	return osutil.IsExist(filepath.Join(cs.path(title), "vmcore"))
+	dir := cs.path(title)
+	for _, name := range []string{linuxMemoryDumpFileName, windowsMinidumpFileName} {
+		if osutil.IsExist(filepath.Join(dir, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func memoryDumpFileName(path string) string {
+	if strings.EqualFold(filepath.Ext(path), ".dmp") {
+		return windowsMinidumpFileName
+	}
+	return linuxMemoryDumpFileName
+}
+
+func isMemoryDumpFileName(name string) bool {
+	return name == linuxMemoryDumpFileName || name == windowsMinidumpFileName
 }

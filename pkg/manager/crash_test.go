@@ -145,6 +145,35 @@ func TestCrashMemoryDump(t *testing.T) {
 	assert.NotEmpty(t, info.MemoryDumpFile)
 	assert.Contains(t, info.MemoryDumpFile, "vmcore")
 	assert.FileExists(t, filepath.Join(crashStore.BaseDir, info.MemoryDumpFile))
+	assert.True(t, crashStore.HasMemoryDump("Title With Dump"))
+}
+
+func TestCrashWindowsMinidump(t *testing.T) {
+	crashStore := &CrashStore{
+		BaseDir:      t.TempDir(),
+		MaxCrashLogs: 5,
+	}
+
+	tmpDir := t.TempDir()
+	sourceDump := filepath.Join(tmpDir, "crash.dmp")
+	osutil.WriteFile(sourceDump, []byte("MINIDUMP"))
+
+	_, err := crashStore.SaveCrash(&Crash{
+		Report: &report.Report{
+			Title:  "Windows Title With Dump",
+			Output: []byte("Output"),
+		},
+		MemoryDump: sourceDump,
+	})
+	assert.NoError(t, err)
+
+	info, err := crashStore.BugInfo(crashHash("Windows Title With Dump"), false)
+	assert.NoError(t, err)
+
+	assert.NotEmpty(t, info.MemoryDumpFile)
+	assert.Contains(t, info.MemoryDumpFile, "minidump.dmp")
+	assert.FileExists(t, filepath.Join(crashStore.BaseDir, info.MemoryDumpFile))
+	assert.True(t, crashStore.HasMemoryDump("Windows Title With Dump"))
 }
 
 func TestGetSubsystems(t *testing.T) {

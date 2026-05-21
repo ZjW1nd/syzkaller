@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -651,7 +652,7 @@ func (mgr *Manager) fuzzerInstance(ctx context.Context, inst *vm.Instance, updIn
 		extraExecs = []report.ExecutorInfo{*rep.Executor}
 	}
 	var memoryDump string
-	if mgr.cfg.MemoryDump && rep != nil {
+	if rep != nil && mgr.shouldCollectMemoryDump(rep) {
 		memoryDump = mgr.extractMemoryDump(inst, rep)
 	}
 	lastExec, machineInfo := serv.ShutdownInstance(inst.Index(), rep != nil, extraExecs...)
@@ -1025,6 +1026,9 @@ func (mgr *Manager) extractMemoryDump(inst *vm.Instance, rep *report.Report) str
 		// For now let it be the first one.
 		return ""
 	}
+	if mgr.sysTarget.OS == targets.Windows {
+		return mgr.extractWindowsMinidump(inst, rep)
+	}
 	tmpPath, err := osutil.TempFile("vmcore-*")
 	if err != nil {
 		log.Errorf("failed to create temp file for memory dump: %v", err)
@@ -1038,6 +1042,62 @@ func (mgr *Manager) extractMemoryDump(inst *vm.Instance, rep *report.Report) str
 
 	log.Logf(0, "VM %v: extracted memory dump to %v", inst.Index(), tmpPath)
 	return tmpPath
+}
+
+func (mgr *Manager) shouldCollectMemoryDump(rep *report.Report) bool {
+	if mgr.cfg != nil && mgr.cfg.MemoryDump {
+		return true
+	}
+	return mgr.sysTarget != nil && mgr.sysTarget.OS == targets.Windows && windowsMinidumpPath(rep) != ""
+}
+
+func (mgr *Manager) extractWindowsMinidump(inst *vm.Instance, rep *report.Report) string {
+	dumpPath := windowsMinidumpPath(rep)
+	if dumpPath == "" {
+		log.Logf(0, "VM %v: Windows crash report does not contain a minidump path", inst.Index())
+		return ""
+	}
+	if info, err := os.Stat(dumpPath); err != nil {
+		log.Logf(0, "VM %v: Windows minidump %q is not accessible: %v", inst.Index(), dumpPath, err)
+		return ""
+	} else if info.IsDir() {
+		log.Logf(0, "VM %v: Windows minidump path %q is a directory", inst.Index(), dumpPath)
+		return ""
+	}
+	tmpPath, err := copyWindowsMinidump(dumpPath)
+	if err != nil {
+		log.Logf(0, "VM %v: failed to copy Windows minidump %q: %v", inst.Index(), dumpPath, err)
+		return ""
+	}
+	log.Logf(0, "VM %v: copied Windows minidump to %v", inst.Index(), tmpPath)
+	return tmpPath
+}
+
+func windowsMinidumpPath(rep *report.Report) string {
+	const prefix = "dump file:"
+	for _, line := range strings.Split(string(rep.Report), "\n") {
+		if path, ok := strings.CutPrefix(strings.TrimSpace(line), prefix); ok {
+			return strings.TrimSpace(path)
+		}
+	}
+	return ""
+}
+
+func copyWindowsMinidump(dumpPath string) (string, error) {
+	tmp, err := os.CreateTemp("", "minidump-*.dmp")
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file for Windows minidump: %w", err)
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", fmt.Errorf("failed to close temp file for Windows minidump: %w", err)
+	}
+	if err := osutil.CopyFile(dumpPath, tmpPath); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	return tmpPath, nil
 }
 
 func (mgr *Manager) corpusInputHandler(updates <-chan corpus.NewItemEvent) {
