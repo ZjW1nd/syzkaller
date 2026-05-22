@@ -1,6 +1,8 @@
 *~
 *.swp
 *.cfg
+!tools/syz-nyx-runner/windows-nyx-test.cfg
+!tools/syz-nyx-runner/windows-nyx.cfg
 *.tmp
 *.img
 workdir*

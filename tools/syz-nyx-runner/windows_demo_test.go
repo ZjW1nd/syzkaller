@@ -174,9 +174,9 @@ func requireWindowsHelpersEnabled(t *testing.T, cfgPath string, want []string) {
 
 func loadWindowsNyxConfigSyscalls(t *testing.T) []string {
 	t.Helper()
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-none.cfg")
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-test.cfg")
 	if len(cfg.EnabledSyscalls) == 0 {
-		t.Fatalf("windows nyx config %s has no enable_syscalls", "windows-nyx-none.cfg")
+		t.Fatalf("windows nyx config %s has no enable_syscalls", "windows-nyx-test.cfg")
 	}
 	return cfg.EnabledSyscalls
 }
@@ -215,7 +215,7 @@ func TestWindowsNyxConfigSyscallsPresentInSparseTable(t *testing.T) {
 }
 
 func TestWindowsAutomaticHelpersPresentInEnabledSet(t *testing.T) {
-	requireWindowsHelpersEnabled(t, "windows-nyx-none.cfg",
+	requireWindowsHelpersEnabled(t, "windows-nyx-test.cfg",
 		[]string{"CloseHandle", "CreateFileA", "CreateFile2"})
 }
 
@@ -296,170 +296,6 @@ func TestWindowsFileHandleResourceHierarchy(t *testing.T) {
 	assertResource("NtWriteFile", 0, "FILE_HANDLE")
 	assertResource("NtFsControlFile", 0, "FILE_HANDLE")
 	assertResource("TransmitFile$inet_accept", 1, "FILE_HANDLE")
-}
-
-func TestWindowsNyxNetworkConfigSyscallsPresentInSparseTable(t *testing.T) {
-	table := loadDemoSyscallTable(t)
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-network-none.cfg")
-	if len(cfg.EnabledSyscalls) == 0 {
-		t.Fatalf("windows nyx network config has no enable_syscalls")
-	}
-	for _, name := range cfg.EnabledSyscalls {
-		if _, ok := table[name]; !ok {
-			t.Fatalf("windows nyx network config syscall %q missing from sparse Nyx table", name)
-		}
-		if target.SyscallMap[name] == nil {
-			t.Fatalf("windows nyx network config syscall %q missing from windows/amd64 target", name)
-		}
-	}
-	requireWindowsHelpersEnabled(t, "windows-nyx-network-none.cfg",
-		[]string{"WSAStartup", "WSACleanup", "socket$inet_udp", "socket$accept_tcp", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any"})
-}
-
-func TestWindowsNyxAfdConfigSyscallsPresentInSparseTable(t *testing.T) {
-	table := loadDemoSyscallTable(t)
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-none.cfg")
-	if len(cfg.EnabledSyscalls) == 0 {
-		t.Fatalf("windows nyx afd config has no enable_syscalls")
-	}
-	for _, name := range cfg.EnabledSyscalls {
-		if _, ok := table[name]; !ok {
-			t.Fatalf("windows nyx afd config syscall %q missing from sparse Nyx table", name)
-		}
-		if target.SyscallMap[name] == nil {
-			t.Fatalf("windows nyx afd config syscall %q missing from windows/amd64 target", name)
-		}
-	}
-	requireWindowsHelpersEnabled(t, "windows-nyx-afd-none.cfg",
-		[]string{"WSAStartup", "WSACleanup", "socket$accept_tcp", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any"})
-	enabledCalls := make(map[*prog.Syscall]bool)
-	for _, name := range cfg.EnabledSyscalls {
-		enabledCalls[target.SyscallMap[name]] = true
-	}
-	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
-	for _, name := range []string{"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp", "CreateFileA"} {
-		call := target.SyscallMap[name]
-		if call == nil {
-			t.Fatalf("missing syscall %q", name)
-		}
-		if !expanded[call] {
-			t.Fatalf("windows nyx afd config did not transitively enable %q", name)
-		}
-	}
-}
-
-func TestWindowsNyxAfdSessionConfigSyscallsPresentInSparseTable(t *testing.T) {
-	table := loadDemoSyscallTable(t)
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session-none.cfg")
-	if len(cfg.EnabledSyscalls) == 0 {
-		t.Fatalf("windows nyx afd-session config has no enable_syscalls")
-	}
-	for _, name := range cfg.EnabledSyscalls {
-		if _, ok := table[name]; !ok {
-			t.Fatalf("windows nyx afd-session config syscall %q missing from sparse Nyx table", name)
-		}
-		if target.SyscallMap[name] == nil {
-			t.Fatalf("windows nyx afd-session config syscall %q missing from windows/amd64 target", name)
-		}
-	}
-	requireWindowsHelpersEnabled(t, "windows-nyx-afd-session-none.cfg",
-		[]string{"WSAStartup", "WSACleanup", "socket$accept_tcp", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any"})
-	enabledCalls := make(map[*prog.Syscall]bool)
-	for _, name := range cfg.EnabledSyscalls {
-		enabledCalls[target.SyscallMap[name]] = true
-	}
-	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
-	for _, name := range []string{"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp"} {
-		call := target.SyscallMap[name]
-		if call == nil {
-			t.Fatalf("missing syscall %q", name)
-		}
-		if !expanded[call] {
-			t.Fatalf("windows nyx afd-session config did not transitively enable %q", name)
-		}
-	}
-}
-
-func TestWindowsNyxAfdAcceptRaceConfigUsesFocusedSeedPrefixes(t *testing.T) {
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-accept-race-none.cfg")
-	if cfg.Experimental.SeedPrefix != "nyx_afd_accept_" {
-		t.Fatalf("accept-race seed_prefix=%q, want %q", cfg.Experimental.SeedPrefix, "nyx_afd_accept_")
-	}
-	if cfg.Experimental.BorrowingSeedPrefix != "nyx_afd_accept_" {
-		t.Fatalf("accept-race borrowing_seed_prefix=%q, want %q", cfg.Experimental.BorrowingSeedPrefix, "nyx_afd_accept_")
-	}
-}
-
-func TestWindowsNyxAfdTransmitConfigUsesFocusedSeedPrefixes(t *testing.T) {
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-transmit-none.cfg")
-	if cfg.Experimental.SeedPrefix != "nyx_afd_accept_transmit" {
-		t.Fatalf("transmit seed_prefix=%q, want %q", cfg.Experimental.SeedPrefix, "nyx_afd_accept_transmit")
-	}
-	if cfg.Experimental.BorrowingSeedPrefix != "nyx_afd_accept_transmit" {
-		t.Fatalf("transmit borrowing_seed_prefix=%q, want %q", cfg.Experimental.BorrowingSeedPrefix, "nyx_afd_accept_transmit")
-	}
-	want := map[string]bool{
-		"TransmitFile$inet_accept":   true,
-		"WSARecvEx$inet_accept":      true,
-		"getsockopt$int_accept":      true,
-		"ioctlsocket$fionbio_accept": true,
-		"send$inet_accept":           true,
-		"recv$inet_accept":           true,
-	}
-	for _, call := range cfg.EnabledSyscalls {
-		delete(want, call)
-	}
-	if len(want) != 0 {
-		t.Fatalf("transmit config missing enabled syscalls: %+v", want)
-	}
-}
-
-func TestWindowsNyxFsctlConfigSyscallsPresentInSparseTable(t *testing.T) {
-	table := loadDemoSyscallTable(t)
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-fsctl-none.cfg")
-	if len(cfg.EnabledSyscalls) == 0 {
-		t.Fatalf("windows nyx fsctl config has no enable_syscalls")
-	}
-	for _, name := range cfg.EnabledSyscalls {
-		if _, ok := table[name]; !ok {
-			t.Fatalf("windows nyx fsctl config syscall %q missing from sparse Nyx table", name)
-		}
-		if target.SyscallMap[name] == nil {
-			t.Fatalf("windows nyx fsctl config syscall %q missing from windows/amd64 target", name)
-		}
-	}
-	requireWindowsHelpersEnabled(t, "windows-nyx-fsctl-none.cfg",
-		[]string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"})
-	enabledCalls := make(map[*prog.Syscall]bool)
-	for _, name := range cfg.EnabledSyscalls {
-		enabledCalls[target.SyscallMap[name]] = true
-	}
-	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
-	for _, name := range []string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"} {
-		call := target.SyscallMap[name]
-		if call == nil {
-			t.Fatalf("missing syscall %q", name)
-		}
-		if !expanded[call] {
-			t.Fatalf("windows nyx fsctl config did not transitively enable %q", name)
-		}
-	}
 }
 
 func TestWindowsDemoExecEncodingUsesTargetIDs(t *testing.T) {

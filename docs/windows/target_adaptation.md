@@ -36,21 +36,12 @@ and more about:
 - how close the resulting program shapes are to the race patterns we actually
   want on AFD.
 
-At this point there are two practically useful Windows AFD research configs:
+The old focused AFD research configs have been retired from the repository.
+The current tree intentionally keeps only:
 
-- `tools/syz-nyx-runner/windows-nyx-afd-session-none.cfg`
-  Use this as the broader AFD session baseline. It keeps generation,
-  borrowing, collide, and candidate/triage all in play, and is the preferred
-  config for multi-run aggregate studies.
-- `tools/syz-nyx-runner/windows-nyx-afd-accept-race-none.cfg`
-  Use this as a narrower accept-side race research config. It trims the enabled
-  syscall set toward accepted-socket data/option operations and is better for
-  studying concrete accept-side collide shapes.
-- `tools/syz-nyx-runner/windows-nyx-afd-transmit-none.cfg`
-  Use this as a transmit-focused research config. It narrows both the seed set
-  and the target policy toward file-backed accept-side data paths centered on
-  `TransmitFile$inet_accept`, so transmit-specific progression can be studied
-  without competing with the broader accepted-socket option/data mix.
+- `tools/syz-nyx-runner/windows-nyx-test.cfg` for manual `type: "none"` runner
+  testing;
+- `tools/syz-nyx-runner/windows-nyx.cfg` for normal `type: "nyx"` fuzzing.
 
 The current data under `guest-vm/runtime/studies/` already supports both kinds
 of analysis:
@@ -115,17 +106,9 @@ executions whose active calls include `WSARecvEx$inet_accept` or
 stabilize around shallower `bind$inet_tcp` / `listen$inet_tcp` /
 `send$inet_accept` combinations.
 
-This makes `windows-nyx-afd-accept-race-none.cfg` the preferred config for
-studying accept-side race *quality* rather than overall strategy mix.
-
-By contrast, `windows-nyx-afd-transmit-none.cfg` is now the preferred config
-for diagnosing why file-backed accept-side paths do or do not survive through
-candidate triage, corpus retention, and later collide attempts. In recent
-runtime results, it has already demonstrated that `TransmitFile$inet_accept`
-can reach real candidate triage, but it still often fails to survive long
-enough to become the owning collided call. This means further work on transmit
-should focus first on candidate/deflake stability and only secondarily on
-scoring heuristics.
+The historical accept-side and transmit-focused observations remain useful as
+runtime evidence, but new runs should start from the retained fuzzing config and
+adjust `enable_syscalls` only when a focused experiment really needs it.
 
 At this stage, the most accurate distinction is:
 
@@ -620,13 +603,10 @@ their earlier fully explicit helper lists.
 
 ## 6. Current Config Direction
 
-Representative configs:
+Retained configs:
 
-- `tools/syz-nyx-runner/windows-nyx-none.cfg`
-- `tools/syz-nyx-runner/windows-nyx-ntfs-none.cfg`
-- `tools/syz-nyx-runner/windows-nyx-fsctl-none.cfg`
-- `tools/syz-nyx-runner/windows-nyx-network-none.cfg`
-- `tools/syz-nyx-runner/windows-nyx-afd-none.cfg`
+- `tools/syz-nyx-runner/windows-nyx-test.cfg`
+- `tools/syz-nyx-runner/windows-nyx.cfg`
 
 These configs are being progressively reduced from:
 
@@ -639,22 +619,10 @@ to:
 
 This is still in progress, but the direction is deliberate and important.
 
-The new `windows-nyx-afd-none.cfg` is the most target-focused configuration so
-far for the AFD/Winsock path. It intentionally keeps mostly deeper accept-side
-and data-path operations and relies on target-level expansion to reconstruct the
-minimum socket/listener/connect/file scaffolding. It now also explicitly sets
-`experimental.windows_target_profile = "afd"`.
-
-The `windows-nyx-fsctl-none.cfg` configuration now serves as the analogous
-minimal example for file/FSCTL fuzzing: it can be reduced to `NtFsControlFile`
-and still rely on target-level expansion to recover the minimum file-handle
-scaffolding. It now explicitly sets
-`experimental.windows_target_profile = "fsctl"`.
-
-The `windows-nyx-afd-none.cfg` configuration now serves as the analogous
-minimal example for AFD/Winsock fuzzing: it can be reduced to a very small
-set of deep accept-side and transmit-oriented calls while the target rebuilds
-the minimum socket/listener/file scaffolding.
+The retained configs now carry a single broad Windows fuzzing syscall set
+instead of a family of narrow experiment-specific config files. Focused runs
+should be made by editing or deriving a temporary local config, not by keeping
+many near-duplicate checked-in configs.
 
 At this point the configs demonstrate 2 important properties:
 
