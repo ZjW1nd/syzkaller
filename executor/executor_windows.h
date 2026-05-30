@@ -107,7 +107,7 @@ static intptr_t execute_nyx_syscall(const call_t* c, intptr_t a[kMaxArgs])
 						reinterpret_cast<ULONG*>(a[3]));
 	}
 
-	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
 }
 #endif
 
@@ -116,10 +116,10 @@ static intptr_t execute_syscall(const call_t* c, intptr_t a[kMaxArgs])
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE
 	return execute_nyx_syscall(c, a);
 #elif defined(__GNUC__)
-	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
 #else
 	__try {
-		return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+		return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 		return -1;
 	}

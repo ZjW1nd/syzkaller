@@ -37,6 +37,8 @@ func TestInitTargetMarksWindowsHelpers(t *testing.T) {
 	}
 	for _, name := range []string{
 		"CloseHandle", "CreateFileA", "CreateFile2", "VirtualAlloc",
+		"GetCurrentProcess$process", "GetCurrentThread$thread",
+		"CreateEventA$manual", "CreateEventA$auto", "CreateSemaphoreA$sem",
 		"WSAStartup", "WSACleanup",
 		"socket$inet_tcp", "socket$inet_udp", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp",
 		"closesocket$any",
@@ -69,8 +71,21 @@ func TestWindowsCallRelevance(t *testing.T) {
 		{name: "recv$inet_udp", want: 2},
 		{name: "send$inet_tcp", want: 3},
 		{name: "recv$inet_accept", want: 4},
+		{name: "WaitForSingleObject$wait", want: 2},
+		{name: "GetTokenInformation$token", want: 3},
+		{name: "MapViewOfFile$section", want: 3},
+		{name: "GetQueuedCompletionStatus$iocp", want: 3},
+		{name: "ReadFile$pipe", want: 3},
+		{name: "NtQueryInformationFile$basic", want: 4},
+		{name: "NtSetInformationFile$basic", want: 4},
 		{name: "TransmitFile$inet_accept", want: 5},
+		{name: "NtDeviceIoControlFile", want: 5},
 		{name: "NtFsControlFile", want: 5},
+		{name: "NtFsControlFile$ntfs_get_compression", want: 5},
+		{name: "NtFsControlFile$ntfs_set_compression", want: 5},
+		{name: "NtFsControlFile$ntfs_set_sparse", want: 5},
+		{name: "NtFsControlFile$ntfs_set_zero_data", want: 5},
+		{name: "NtFsControlFile$ntfs_query_allocated_ranges", want: 5},
 	}
 	for _, test := range tests {
 		call := target.SyscallMap[test.name]
@@ -240,6 +255,262 @@ func TestWindowsExpandEnabledCallsAddsFileScaffold(t *testing.T) {
 		}
 		if !expanded[call] {
 			t.Fatalf("expanded enabled calls are missing %q", name)
+		}
+	}
+}
+
+func TestWindowsExpandEnabledCallsAddsObjectScaffold(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	tests := []struct {
+		root string
+		want []string
+	}{
+		{
+			root: "NtQueryInformationProcess",
+			want: []string{"GetCurrentProcess$process"},
+		},
+		{
+			root: "SetEvent$event",
+			want: []string{"CreateEventA$manual", "CloseHandle"},
+		},
+		{
+			root: "WaitForSingleObject$wait",
+			want: []string{"CreateEventA$manual", "CloseHandle"},
+		},
+		{
+			root: "GetTokenInformation$token",
+			want: []string{"GetCurrentProcess$process", "OpenProcessToken$process", "CloseHandle"},
+		},
+		{
+			root: "MapViewOfFile$section",
+			want: []string{"CreateFileMappingA$pagefile", "CloseHandle"},
+		},
+		{
+			root: "GetQueuedCompletionStatus$iocp",
+			want: []string{"CreateIoCompletionPort$create", "CloseHandle"},
+		},
+		{
+			root: "ReadFile$pipe",
+			want: []string{"CreatePipe$anon", "CloseHandle"},
+		},
+	}
+	for _, test := range tests {
+		root := target.SyscallMap[test.root]
+		if root == nil {
+			t.Fatalf("missing syscall %q", test.root)
+		}
+		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{
+			root: true,
+		})
+		for _, name := range append([]string{test.root, "VirtualAlloc"}, test.want...) {
+			call := target.SyscallMap[name]
+			if call == nil {
+				t.Fatalf("missing syscall %q", name)
+			}
+			if !expanded[call] {
+				t.Fatalf("%s expansion is missing %q", test.root, name)
+			}
+		}
+	}
+}
+
+func TestWindowsObjectResourceHierarchy(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	assertResource := func(callName string, index int, want string) {
+		t.Helper()
+		meta := target.SyscallMap[callName]
+		if meta == nil {
+			t.Fatalf("missing syscall %q", callName)
+		}
+		var typ prog.Type
+		if index < 0 {
+			typ = meta.Ret
+		}
+		if index >= 0 {
+			typ = meta.Args[index].Type
+		}
+		res, ok := typ.(*prog.ResourceType)
+		if !ok {
+			t.Fatalf("%s[%d] has unexpected type %T", callName, index, typ)
+		}
+		if res.TypeName != want {
+			t.Fatalf("%s[%d] resource=%q want=%q", callName, index, res.TypeName, want)
+		}
+	}
+	assertPtrResource := func(callName string, index int, want string) {
+		t.Helper()
+		meta := target.SyscallMap[callName]
+		if meta == nil {
+			t.Fatalf("missing syscall %q", callName)
+		}
+		ptr, ok := meta.Args[index].Type.(*prog.PtrType)
+		if !ok {
+			t.Fatalf("%s[%d] has unexpected type %T", callName, index, meta.Args[index].Type)
+		}
+		res, ok := ptr.Elem.(*prog.ResourceType)
+		if !ok {
+			t.Fatalf("%s[%d] points to unexpected type %T", callName, index, ptr.Elem)
+		}
+		if res.TypeName != want {
+			t.Fatalf("%s[%d] points to resource=%q want=%q", callName, index, res.TypeName, want)
+		}
+	}
+	assertPtrStruct := func(callName string, index int, want string) {
+		t.Helper()
+		meta := target.SyscallMap[callName]
+		if meta == nil {
+			t.Fatalf("missing syscall %q", callName)
+		}
+		ptr, ok := meta.Args[index].Type.(*prog.PtrType)
+		if !ok {
+			t.Fatalf("%s[%d] has unexpected type %T", callName, index, meta.Args[index].Type)
+		}
+		st, ok := ptr.Elem.(*prog.StructType)
+		if !ok {
+			t.Fatalf("%s[%d] points to unexpected type %T", callName, index, ptr.Elem)
+		}
+		if st.Name() != want {
+			t.Fatalf("%s[%d] points to struct=%q want=%q", callName, index, st.Name(), want)
+		}
+	}
+	assertPtrArrayStruct := func(callName string, index int, want string) {
+		t.Helper()
+		meta := target.SyscallMap[callName]
+		if meta == nil {
+			t.Fatalf("missing syscall %q", callName)
+		}
+		ptr, ok := meta.Args[index].Type.(*prog.PtrType)
+		if !ok {
+			t.Fatalf("%s[%d] has unexpected type %T", callName, index, meta.Args[index].Type)
+		}
+		arr, ok := ptr.Elem.(*prog.ArrayType)
+		if !ok {
+			t.Fatalf("%s[%d] points to unexpected type %T", callName, index, ptr.Elem)
+		}
+		st, ok := arr.Elem.(*prog.StructType)
+		if !ok {
+			t.Fatalf("%s[%d] points to array of unexpected type %T", callName, index, arr.Elem)
+		}
+		if st.Name() != want {
+			t.Fatalf("%s[%d] points to array struct=%q want=%q", callName, index, st.Name(), want)
+		}
+	}
+	assertResource("GetCurrentProcess$process", -1, "PROCESS_HANDLE")
+	assertResource("GetCurrentThread$thread", -1, "THREAD_HANDLE")
+	assertResource("NtQueryInformationProcess", 0, "PROCESS_HANDLE")
+	assertResource("NtSetInformationProcess", 0, "PROCESS_HANDLE")
+	assertResource("NtFlushInstructionCache", 0, "PROCESS_HANDLE")
+	assertResource("CreateEventA$manual", -1, "EVENT_HANDLE")
+	assertResource("SetEvent$event", 0, "EVENT_HANDLE")
+	assertResource("WaitForSingleObject$wait", 0, "WAIT_HANDLE")
+	assertResource("CreateSemaphoreA$sem", -1, "SEMAPHORE_HANDLE")
+	assertResource("ReleaseSemaphore$sem", 0, "SEMAPHORE_HANDLE")
+	assertPtrResource("OpenProcessToken$process", 2, "TOKEN_HANDLE")
+	assertResource("GetTokenInformation$token", 0, "TOKEN_HANDLE")
+	assertResource("CreateFileMappingA$file", -1, "SECTION_HANDLE")
+	assertResource("MapViewOfFile$section", 0, "SECTION_HANDLE")
+	assertResource("CreateIoCompletionPort$create", -1, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$associate", 1, "IOCP_HANDLE")
+	assertResource("GetQueuedCompletionStatus$iocp", 0, "IOCP_HANDLE")
+	assertPtrResource("CreatePipe$anon", 0, "PIPE_READ_HANDLE")
+	assertPtrResource("CreatePipe$anon", 1, "PIPE_WRITE_HANDLE")
+	assertResource("ReadFile$pipe", 0, "PIPE_READ_HANDLE")
+	assertResource("WriteFile$pipe", 0, "PIPE_WRITE_HANDLE")
+	assertResource("NtReadFile", 1, "EVENT_HANDLE")
+	assertResource("NtWriteFile", 1, "EVENT_HANDLE")
+	assertResource("NtDeviceIoControlFile", 0, "FILE_HANDLE")
+	assertResource("NtDeviceIoControlFile", 1, "EVENT_HANDLE")
+	assertResource("NtFsControlFile", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile", 1, "EVENT_HANDLE")
+	assertResource("NtFsControlFile$ntfs_get_compression", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_get_compression", 1, "EVENT_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_compression", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_compression", 1, "EVENT_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_sparse", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_sparse", 1, "EVENT_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_zero_data", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_zero_data", 1, "EVENT_HANDLE")
+	assertResource("NtFsControlFile$ntfs_query_allocated_ranges", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_query_allocated_ranges", 1, "EVENT_HANDLE")
+	assertPtrStruct("NtFsControlFile$ntfs_get_compression", 8, "NTFS_COMPRESSION_FORMAT")
+	assertPtrStruct("NtFsControlFile$ntfs_set_compression", 6, "NTFS_COMPRESSION_FORMAT")
+	assertPtrStruct("NtFsControlFile$ntfs_set_sparse", 6, "FILE_SET_SPARSE_BUFFER")
+	assertPtrStruct("NtFsControlFile$ntfs_set_zero_data", 6, "FILE_ZERO_DATA_INFORMATION")
+	assertPtrStruct("NtFsControlFile$ntfs_query_allocated_ranges", 6, "FILE_ALLOCATED_RANGE_BUFFER")
+	assertPtrArrayStruct("NtFsControlFile$ntfs_query_allocated_ranges", 8, "FILE_ALLOCATED_RANGE_BUFFER")
+	assertPtrStruct("AcceptEx$inet_tcp", 7, "OVERLAPPED")
+	assertPtrStruct("TransmitFile$inet_accept", 4, "OVERLAPPED")
+}
+
+func TestWindowsObjectStructLayouts(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	typeByName := func(name string) prog.Type {
+		t.Helper()
+		for _, typ := range target.Types {
+			if typ.Name() == name {
+				return typ
+			}
+		}
+		t.Fatalf("missing type %q", name)
+		return nil
+	}
+	tests := []struct {
+		name string
+		size uint64
+	}{
+		{name: "SECURITY_ATTRIBUTES", size: 0x18},
+		{name: "SECURITY_DESCRIPTOR", size: 0x28},
+		{name: "ACL", size: 0x8},
+		{name: "OVERLAPPED", size: 0x20},
+		{name: "IO_STATUS_BLOCK", size: 0x10},
+		{name: "LARGE_INTEGER", size: 0x8},
+		{name: "FILE_BASIC_INFORMATION", size: 0x28},
+		{name: "FILE_STANDARD_INFORMATION", size: 0x18},
+		{name: "FILE_NETWORK_OPEN_INFORMATION", size: 0x38},
+		{name: "NTFS_COMPRESSION_FORMAT", size: 0x2},
+		{name: "FILE_SET_SPARSE_BUFFER", size: 0x1},
+		{name: "FILE_ZERO_DATA_INFORMATION", size: 0x10},
+		{name: "FILE_ALLOCATED_RANGE_BUFFER", size: 0x10},
+	}
+	for _, test := range tests {
+		if got := typeByName(test.name).Size(); got != test.size {
+			t.Fatalf("%s size: got %#x, want %#x", test.name, got, test.size)
+		}
+	}
+}
+
+func TestWindowsNtControlCallsHaveFullArity(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range []string{
+		"NtDeviceIoControlFile",
+		"NtFsControlFile",
+		"NtFsControlFile$ntfs_get_compression",
+		"NtFsControlFile$ntfs_set_compression",
+		"NtFsControlFile$ntfs_set_sparse",
+		"NtFsControlFile$ntfs_set_zero_data",
+		"NtFsControlFile$ntfs_query_allocated_ranges",
+	} {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if got := len(meta.Args); got != 10 {
+			t.Fatalf("%s arg count: got %d, want 10", name, got)
+		}
+		if got := prog.MaxArgs; got < len(meta.Args) {
+			t.Fatalf("prog.MaxArgs=%d does not cover %s arg count %d", got, name, len(meta.Args))
 		}
 	}
 }

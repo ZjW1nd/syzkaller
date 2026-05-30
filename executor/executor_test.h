@@ -121,7 +121,7 @@ static intptr_t execute_syscall(const call_t* c, intptr_t a[kMaxArgs])
 	// pkg/fuzzer tests with coverage instrumentation shouldn't be distracted by the additional PC,
 	// and syz_inject_cover overwrites the whole array so will remote it.
 	__sanitizer_cov_trace_pc();
-	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
 }
 
 static void cover_open(cover_t* cov, bool extra)

@@ -3,12 +3,56 @@
 include <windows.h>
 include <winternl.h>
 
-type LARGE_INTEGER int64
+LARGE_INTEGER [
+	QuadPart	int64
+	Parts		LARGE_INTEGER_PARTS
+]
+
+LARGE_INTEGER_PARTS {
+	LowPart		int32
+	HighPart	int32
+}
+
+IO_STATUS_BLOCK {
+	StatusPointer	IO_STATUS_BLOCK_STATUS
+	Information	int64
+}
+
+IO_STATUS_BLOCK_STATUS [
+	Status		int32
+	Pointer		intptr
+]
+
+FILE_BASIC_INFORMATION {
+	CreationTime	LARGE_INTEGER
+	LastAccessTime	LARGE_INTEGER
+	LastWriteTime	LARGE_INTEGER
+	ChangeTime	LARGE_INTEGER
+	FileAttributes	flags[file_basic_attributes, int32]
+}
+
+FILE_STANDARD_INFORMATION {
+	AllocationSize	LARGE_INTEGER
+	EndOfFile	LARGE_INTEGER
+	NumberOfLinks	int32
+	DeletePending	int8
+	Directory	int8
+}
+
+FILE_NETWORK_OPEN_INFORMATION {
+	CreationTime	LARGE_INTEGER
+	LastAccessTime	LARGE_INTEGER
+	LastWriteTime	LARGE_INTEGER
+	ChangeTime	LARGE_INTEGER
+	AllocationSize	LARGE_INTEGER
+	EndOfFile	LARGE_INTEGER
+	FileAttributes	flags[file_basic_attributes, int32]
+}
 
 # System information — native NT syscalls
 NtQuerySystemInformation(SystemInformationClass int32, SystemInformation ptr[inout, array[int8]], SystemInformationLength len[SystemInformation], ReturnLength ptr[inout, int32])
-NtQueryInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation], ReturnLength ptr[inout, int32])
-NtSetInformationProcess(ProcessHandle HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation])
+NtQueryInformationProcess(ProcessHandle PROCESS_HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation], ReturnLength ptr[inout, int32])
+NtSetInformationProcess(ProcessHandle PROCESS_HANDLE, ProcessInformationClass int32, ProcessInformation ptr[inout, array[int8]], ProcessInformationLength len[ProcessInformation])
 
 # Timer / wait — no handles needed
 NtDelayExecution(Alertable bool32, Interval ptr[in, LARGE_INTEGER])
@@ -24,7 +68,7 @@ NtQueryPerformanceCounter(PerformanceCount ptr[out, LARGE_INTEGER], PerformanceF
 NtPowerInformation(InformationLevel int32, InputBuffer ptr[in, array[int8]], InputBufferLength int32, OutputBuffer ptr[out, array[int8]], OutputBufferLength int32)
 
 # Cache / buffer — for current process
-NtFlushInstructionCache(ProcessHandle HANDLE, BaseAddress ptr[in, LARGE_INTEGER], FlushSize int32)
+NtFlushInstructionCache(ProcessHandle PROCESS_HANDLE, BaseAddress ptr[in, LARGE_INTEGER], FlushSize int32)
 NtFlushWriteBuffer()
 
 # Locale
@@ -35,7 +79,39 @@ NtQueryDefaultUILanguage(DefaultUILanguageId ptr[out, int32])
 # Interesting NTFS / TxF FSCTLs from reference/ntfsrev and Windows docs.
 # Keep the list intentionally broad so syzkaller can mutate into richer file-system
 # control paths instead of staying pinned to a single compression probe.
-ntfs_fsctl_code = 0x90028, 0x9002c, 0x9003b, 0x9003c, 0x90064, 0x9006f, 0x90073, 0x90078, 0x90083, 0x900a8, 0x900ac, 0x900b3, 0x900bb, 0x900c0, 0x900c4, 0x900df, 0x900e7, 0x900ef, 0x900f4, 0x900f8, 0x900fc, 0x94148, 0x94160, 0x9416c, 0x94170, 0x9418c, 0x941e4, 0x98144, 0x98150, 0x98154, 0x98158, 0x9815c, 0x98164, 0x98168, 0x98178, 0x9817c, 0x9c040, 0x9c340, 0x9c420, 0x9015f
-NtReadFile(FileHandle FILE_HANDLE, Event HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, array[int8]], Buffer ptr[out, array[int8]], Length len[Buffer], ByteOffset ptr[in, LARGE_INTEGER, opt], Key ptr[in, int32, opt])
-NtWriteFile(FileHandle FILE_HANDLE, Event HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, array[int8]], Buffer ptr[in, array[int8]], Length len[Buffer], ByteOffset ptr[in, LARGE_INTEGER, opt], Key ptr[in, int32, opt])
-NtFsControlFile(FileHandle FILE_HANDLE, Event HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, array[int8]], FsControlCode flags[ntfs_fsctl_code], Buffer ptr[inout, array[int8], opt], BufferLength len[Buffer])
+file_basic_attributes = FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SYSTEM, FILE_ATTRIBUTE_TEMPORARY
+ntfs_fsctl_code = 0x90028, 0x9002c, 0x9003b, 0x9003c, 0x90064, 0x9006f, 0x90073, 0x90078, 0x90083, 0x900a8, 0x900ac, 0x900b3, 0x900bb, 0x900c0, 0x900c4, 0x900df, 0x900e7, 0x900ef, 0x900f4, 0x900f8, 0x900fc, 0x9015f, 0x940cf, 0x94148, 0x94160, 0x9416c, 0x94170, 0x9418c, 0x941e4, 0x980c8, 0x98144, 0x98150, 0x98154, 0x98158, 0x9815c, 0x98164, 0x98168, 0x98178, 0x9817c, 0x9c040, 0x9c340, 0x9c420
+nt_device_ioctl_code = 0x70000, 0x70024, 0x2d0c14, 0x2d1400, 0x560000
+ntfs_compression_format = 0x0, 0x1, 0x2
+
+NTFS_COMPRESSION_FORMAT {
+	Format	flags[ntfs_compression_format, int16]
+}
+
+FILE_SET_SPARSE_BUFFER {
+	SetSparse	bool8
+}
+
+FILE_ZERO_DATA_INFORMATION {
+	FileOffset	LARGE_INTEGER
+	BeyondFinalZero	LARGE_INTEGER
+}
+
+FILE_ALLOCATED_RANGE_BUFFER {
+	FileOffset	LARGE_INTEGER
+	Length		LARGE_INTEGER
+}
+
+NtReadFile(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[out, array[int8]], Length bytesize[Buffer], ByteOffset ptr[in, LARGE_INTEGER, opt], Key ptr[in, int32, opt])
+NtWriteFile(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[in, array[int8]], Length bytesize[Buffer], ByteOffset ptr[in, LARGE_INTEGER, opt], Key ptr[in, int32, opt])
+NtFsControlFile(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FsControlCode flags[ntfs_fsctl_code], InputBuffer ptr[in, array[int8], opt], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8], opt], OutputBufferLength bytesize[OutputBuffer])
+NtFsControlFile$ntfs_get_compression(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FsControlCode const[0x9003c], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, NTFS_COMPRESSION_FORMAT], OutputBufferLength bytesize[OutputBuffer])
+NtFsControlFile$ntfs_set_compression(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FsControlCode const[0x9c040], InputBuffer ptr[in, NTFS_COMPRESSION_FORMAT], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtFsControlFile$ntfs_set_sparse(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FsControlCode const[0x900c4], InputBuffer ptr[in, FILE_SET_SPARSE_BUFFER, opt], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtFsControlFile$ntfs_set_zero_data(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FsControlCode const[0x980c8], InputBuffer ptr[in, FILE_ZERO_DATA_INFORMATION], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtFsControlFile$ntfs_query_allocated_ranges(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FsControlCode const[0x940cf], InputBuffer ptr[in, FILE_ALLOCATED_RANGE_BUFFER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[FILE_ALLOCATED_RANGE_BUFFER]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile(FileHandle FILE_HANDLE, Event EVENT_HANDLE[opt], ApcRoutine ptr[in, intptr, opt], ApcContext ptr[inout, array[int8], opt], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode flags[nt_device_ioctl_code], InputBuffer ptr[in, array[int8], opt], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8], opt], OutputBufferLength bytesize[OutputBuffer])
+NtQueryInformationFile$basic(FileHandle FILE_HANDLE, IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FileInformation ptr[out, FILE_BASIC_INFORMATION], Length bytesize[FileInformation], FileInformationClass const[4])
+NtQueryInformationFile$standard(FileHandle FILE_HANDLE, IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FileInformation ptr[out, FILE_STANDARD_INFORMATION], Length bytesize[FileInformation], FileInformationClass const[5])
+NtQueryInformationFile$network_open(FileHandle FILE_HANDLE, IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FileInformation ptr[out, FILE_NETWORK_OPEN_INFORMATION], Length bytesize[FileInformation], FileInformationClass const[34])
+NtSetInformationFile$basic(FileHandle FILE_HANDLE, IoStatusBlock ptr[inout, IO_STATUS_BLOCK], FileInformation ptr[in, FILE_BASIC_INFORMATION], Length bytesize[FileInformation], FileInformationClass const[4])

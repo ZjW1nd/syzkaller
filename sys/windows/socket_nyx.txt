@@ -47,6 +47,6 @@ setsockopt$int_accept(s SOCKET_ACCEPT, level int32, optname int32, optval ptr[in
 getsockopt$int_tcp(s SOCKET_CONNECTED, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
 getsockopt$int_udp(s SOCKET_UDP, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
 getsockopt$int_accept(s SOCKET_ACCEPT, level int32, optname int32, optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
-AcceptEx$inet_tcp(sListenSocket SOCKET_LISTENER, sAcceptSocket SOCKET_ACCEPT, lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, lpdwBytesReceived ptr[inout, int32], lpOverlapped ptr[inout, intptr])
+AcceptEx$inet_tcp(sListenSocket SOCKET_LISTENER, sAcceptSocket SOCKET_ACCEPT, lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, lpdwBytesReceived ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED, opt])
 WSARecvEx$inet_accept(s SOCKET_ACCEPT, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
-TransmitFile$inet_accept(hSocket SOCKET_ACCEPT, hFile FILE_HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, intptr], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)
+TransmitFile$inet_accept(hSocket SOCKET_ACCEPT, hFile FILE_HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, OVERLAPPED, opt], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)

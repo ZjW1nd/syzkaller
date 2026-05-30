@@ -71,7 +71,7 @@ const int kInPipeFd = kMaxFd - 1; // remapped from stdin
 const int kOutPipeFd = kMaxFd - 2; // remapped from stdout
 const int kCoverFd = kOutPipeFd - kMaxThreads;
 const int kExtraCoverFd = kCoverFd - 1;
-const int kMaxArgs = 9;
+const int kMaxArgs = 10;
 const int kCoverSize = 512 << 10;
 const int kFailStatus = 67;
 
@@ -343,7 +343,7 @@ static const uint64 arg_csum_inet = 0;
 static const uint64 arg_csum_chunk_data = 0;
 static const uint64 arg_csum_chunk_const = 1;
 
-typedef intptr_t(SYSCALLAPI* syscall_t)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t);
+typedef intptr_t(SYSCALLAPI* syscall_t)(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t, intptr_t);
 
 struct call_t {
 	const char* name;
@@ -1987,8 +1987,8 @@ static int nyx_mode_loop(int argc, char** argv)
 	agent_cfg.coverage_bitmap_size = host_cfg.bitmap_size;
 	nyx_hypercall(HYPERCALL_KAFL_SET_AGENT_CONFIG, (uint64_t)(uintptr_t)&agent_cfg);
 	nyx_hypercall(HYPERCALL_KAFL_GET_PAYLOAD, (uint64_t)(uintptr_t)payload);
-	if (!nyx_submit_module_range("ntoskrnl.exe"))
-		fail("failed to submit ntoskrnl.exe range");
+	if (!nyx_submit_module_ranges(payload))
+		fail("failed to submit required module ranges");
 
 	nyx_hprintf("nyx executor build marker=20260427b demo=%d sparse=%d generic=%d\n",
 		    (int)SYZ_NYX_WINDOWS_DEMO,

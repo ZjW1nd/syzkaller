@@ -21,7 +21,7 @@ static void os_init(int argc, char** argv, void* data, size_t data_size)
 
 static intptr_t execute_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {
-	intptr_t res = c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
+	intptr_t res = c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
 	if (strncmp(c->name, "zx_", 3) == 0) {
 		// Convert zircon error convention to the libc convention that executor expects.
 		// The following calls return arbitrary integers instead of error codes.

@@ -13,7 +13,12 @@ var windowsAutomaticHelpers = []string{
 	"CloseHandle",
 	"CreateFileA",
 	"CreateFile2",
+	"CreateEventA$manual",
+	"CreateEventA$auto",
 	"VirtualAlloc",
+	"GetCurrentProcess$process",
+	"GetCurrentThread$thread",
+	"CreateSemaphoreA$sem",
 	"WSAStartup",
 	"WSACleanup",
 	"socket$inet_tcp",
@@ -107,12 +112,30 @@ func windowsCallRelevanceScore(call *prog.Syscall) int {
 		windowsCallUsesInputResourceKind(call, "SOCKET_ACCEPT") {
 		score = max(score, 4)
 	}
+	if windowsCallUsesInputResourceKind(call, "WAIT_HANDLE") ||
+		windowsCallUsesInputResourceKind(call, "EVENT_HANDLE") ||
+		windowsCallUsesInputResourceKind(call, "PROCESS_HANDLE") ||
+		windowsCallUsesInputResourceKind(call, "THREAD_HANDLE") {
+		score = max(score, 2)
+	}
+	if windowsCallUsesInputResourceKind(call, "TOKEN_HANDLE") ||
+		windowsCallUsesInputResourceKind(call, "SECTION_HANDLE") ||
+		windowsCallUsesInputResourceKind(call, "IOCP_HANDLE") ||
+		windowsCallUsesInputResourcePrefix(call, "PIPE_") {
+		score = max(score, 3)
+	}
 	switch call.Name {
 	case "NtQuerySystemInformation", "NtQueryInformationProcess", "NtSetInformationProcess":
 		score = max(score, 1)
-	case "NtReadFile", "NtWriteFile":
+	case "NtReadFile", "NtWriteFile",
+		"NtQueryInformationFile$basic", "NtQueryInformationFile$standard",
+		"NtQueryInformationFile$network_open", "NtSetInformationFile$basic":
 		score = max(score, 4)
-	case "AcceptEx$inet_tcp", "TransmitFile$inet_accept", "WSARecvEx$inet_accept", "NtFsControlFile":
+	case "AcceptEx$inet_tcp", "TransmitFile$inet_accept", "WSARecvEx$inet_accept",
+		"NtDeviceIoControlFile", "NtFsControlFile",
+		"NtFsControlFile$ntfs_get_compression", "NtFsControlFile$ntfs_set_compression",
+		"NtFsControlFile$ntfs_set_sparse", "NtFsControlFile$ntfs_set_zero_data",
+		"NtFsControlFile$ntfs_query_allocated_ranges":
 		score = max(score, 5)
 	}
 	return score
@@ -195,6 +218,30 @@ func windowsScaffoldCalls(target *prog.Target, call *prog.Syscall) []string {
 	if windowsNeedsFileScaffold(call) {
 		addWindowsNames(required, "CreateFileA", "CreateFile2", "CloseHandle")
 	}
+	if windowsNeedsProcessScaffold(call) {
+		addWindowsNames(required, "GetCurrentProcess$process")
+	}
+	if windowsNeedsThreadScaffold(call) {
+		addWindowsNames(required, "GetCurrentThread$thread")
+	}
+	if windowsNeedsWaitScaffold(call) {
+		addWindowsNames(required, "CreateEventA$manual", "CloseHandle")
+	}
+	if windowsNeedsSemaphoreScaffold(call) {
+		addWindowsNames(required, "CreateSemaphoreA$sem", "CloseHandle")
+	}
+	if windowsNeedsTokenScaffold(call) {
+		addWindowsNames(required, "GetCurrentProcess$process", "OpenProcessToken$process", "CloseHandle")
+	}
+	if windowsNeedsSectionScaffold(call) {
+		addWindowsNames(required, "CreateFileMappingA$pagefile", "CloseHandle")
+	}
+	if windowsNeedsIOCPScaffold(call) {
+		addWindowsNames(required, "CreateIoCompletionPort$create", "CloseHandle")
+	}
+	if windowsNeedsPipeScaffold(call) {
+		addWindowsNames(required, "CreatePipe$anon", "CloseHandle")
+	}
 	if windowsNeedsFilePayloadScaffold(call) {
 		addWindowsNames(required, "WriteFile")
 	}
@@ -232,6 +279,16 @@ func windowsPresentCallNames(target *prog.Target, required map[string]bool) []st
 		"send$inet_tcp", "send$inet_udp", "send$inet_accept",
 		"WriteFile",
 		"NtReadFile", "NtWriteFile", "NtFsControlFile",
+		"SetEvent$event", "ResetEvent$event",
+		"WaitForSingleObject$wait", "WaitForSingleObjectEx$wait",
+		"ReleaseSemaphore$sem",
+		"OpenProcessToken$process", "OpenThreadToken$thread",
+		"GetTokenInformation$token",
+		"CreateFileMappingA$file", "CreateFileMappingA$pagefile",
+		"MapViewOfFile$section",
+		"CreateIoCompletionPort$create", "CreateIoCompletionPort$associate",
+		"PostQueuedCompletionStatus$iocp", "GetQueuedCompletionStatus$iocp",
+		"CreatePipe$anon", "ReadFile$pipe", "WriteFile$pipe",
 	} {
 		if required[name] && target.SyscallMap[name] != nil {
 			names = append(names, name)
@@ -307,12 +364,47 @@ func windowsNeedsFileScaffold(call *prog.Syscall) bool {
 	return windowsCallUsesInputResourcePrefix(call, "FILE_HANDLE")
 }
 
+func windowsNeedsProcessScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "PROCESS_HANDLE")
+}
+
+func windowsNeedsThreadScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "THREAD_HANDLE")
+}
+
+func windowsNeedsWaitScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "WAIT_HANDLE") ||
+		windowsCallUsesInputResourceKind(call, "EVENT_HANDLE")
+}
+
+func windowsNeedsSemaphoreScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "SEMAPHORE_HANDLE")
+}
+
+func windowsNeedsTokenScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "TOKEN_HANDLE")
+}
+
+func windowsNeedsSectionScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "SECTION_HANDLE")
+}
+
+func windowsNeedsIOCPScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "IOCP_HANDLE")
+}
+
+func windowsNeedsPipeScaffold(call *prog.Syscall) bool {
+	return windowsCallUsesInputResourceKind(call, "PIPE_READ_HANDLE") ||
+		windowsCallUsesInputResourceKind(call, "PIPE_WRITE_HANDLE")
+}
+
 func windowsNeedsFilePayloadScaffold(call *prog.Syscall) bool {
 	if call == nil {
 		return false
 	}
 	switch call.Name {
-	case "TransmitFile$inet_accept", "WriteFile", "NtWriteFile":
+	case "TransmitFile$inet_accept", "WriteFile", "NtWriteFile",
+		"NtFsControlFile$ntfs_set_zero_data", "NtFsControlFile$ntfs_query_allocated_ranges":
 		return true
 	}
 	return false

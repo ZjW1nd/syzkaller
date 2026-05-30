@@ -3,14 +3,53 @@
 
 include <windows.h>
 
-resource HANDLE[intptr]: INVALID_HANDLE_VALUE
-resource FILE_HANDLE[HANDLE]
+resource HANDLE[intptr]: 0, INVALID_HANDLE_VALUE
+resource FILE_HANDLE[HANDLE]: INVALID_HANDLE_VALUE
+resource WAIT_HANDLE[HANDLE]: 0, INVALID_HANDLE_VALUE
+resource EVENT_HANDLE[WAIT_HANDLE]: 0, INVALID_HANDLE_VALUE
+resource SEMAPHORE_HANDLE[WAIT_HANDLE]: 0, INVALID_HANDLE_VALUE
+resource PROCESS_HANDLE[HANDLE]
+resource THREAD_HANDLE[HANDLE]
+resource TOKEN_HANDLE[HANDLE]
+resource SECTION_HANDLE[HANDLE]
+resource IOCP_HANDLE[HANDLE]
+resource PIPE_READ_HANDLE[FILE_HANDLE]
+resource PIPE_WRITE_HANDLE[FILE_HANDLE]
 
 syz_execute_func(text ptr[in, text[target]])
 
 CloseHandle(hObject HANDLE) (automatic_helper)
-CreateFileA(lpFileName ptr[in, filename], dwDesiredAccess flags[file_access_rights], dwShareMode flags[file_share_mode], lpSecurityAttributes ptr[in, SECURITY_ATTRIBUTES, opt], dwCreationDisposition flags[file_create_disposition], dwFlagsAndAttributes flags[file_attributes], hTemplateFile HANDLE[opt]) FILE_HANDLE (automatic_helper)
+CreateFileA(lpFileName ptr[in, filename], dwDesiredAccess flags[file_access_rights], dwShareMode flags[file_share_mode], lpSecurityAttributes ptr[in, SECURITY_ATTRIBUTES, opt], dwCreationDisposition flags[file_create_disposition], dwFlagsAndAttributes flags[file_attributes], hTemplateFile FILE_HANDLE[opt]) FILE_HANDLE (automatic_helper)
+GetCurrentProcess$process() PROCESS_HANDLE (automatic_helper)
+GetCurrentThread$thread() THREAD_HANDLE (automatic_helper)
 VirtualAlloc(lpAddress vma, dwSize len[lpAddress], flAllocationType flags[allocation_type], flProtect flags[protect_flags]) (automatic_helper)
+
+CreateEventA$manual(lpEventAttributes ptr[in, SECURITY_ATTRIBUTES, opt], bManualReset const[1], bInitialState bool32, lpName ptr[in, string[object_name], opt]) EVENT_HANDLE (automatic_helper)
+CreateEventA$auto(lpEventAttributes ptr[in, SECURITY_ATTRIBUTES, opt], bManualReset const[0], bInitialState bool32, lpName ptr[in, string[object_name], opt]) EVENT_HANDLE (automatic_helper)
+SetEvent$event(hEvent EVENT_HANDLE)
+ResetEvent$event(hEvent EVENT_HANDLE)
+WaitForSingleObject$wait(hHandle WAIT_HANDLE, dwMilliseconds int32[0:10])
+WaitForSingleObjectEx$wait(hHandle WAIT_HANDLE, dwMilliseconds int32[0:10], bAlertable bool32)
+
+CreateSemaphoreA$sem(lpSemaphoreAttributes ptr[in, SECURITY_ATTRIBUTES, opt], lInitialCount int32[0:4], lMaximumCount int32[1:16], lpName ptr[in, string[object_name], opt]) SEMAPHORE_HANDLE (automatic_helper)
+ReleaseSemaphore$sem(hSemaphore SEMAPHORE_HANDLE, lReleaseCount int32[1:4], lpPreviousCount ptr[out, int32, opt])
+
+OpenProcessToken$process(ProcessHandle PROCESS_HANDLE, DesiredAccess flags[token_access_rights], TokenHandle ptr[out, TOKEN_HANDLE])
+OpenThreadToken$thread(ThreadHandle THREAD_HANDLE, DesiredAccess flags[token_access_rights], OpenAsSelf bool32, TokenHandle ptr[out, TOKEN_HANDLE])
+GetTokenInformation$token(TokenHandle TOKEN_HANDLE, TokenInformationClass int32, TokenInformation ptr[out, array[int8]], TokenInformationLength bytesize[TokenInformation], ReturnLength ptr[out, int32])
+
+CreateFileMappingA$file(hFile FILE_HANDLE, lpFileMappingAttributes ptr[in, SECURITY_ATTRIBUTES, opt], flProtect flags[file_mapping_protect_flags], dwMaximumSizeHigh int32, dwMaximumSizeLow int32, lpName ptr[in, string[object_name], opt]) SECTION_HANDLE
+CreateFileMappingA$pagefile(hFile const[INVALID_HANDLE_VALUE], lpFileMappingAttributes ptr[in, SECURITY_ATTRIBUTES, opt], flProtect flags[file_mapping_protect_flags], dwMaximumSizeHigh const[0], dwMaximumSizeLow int32[1:1048576], lpName ptr[in, string[object_name], opt]) SECTION_HANDLE
+MapViewOfFile$section(hFileMappingObject SECTION_HANDLE, dwDesiredAccess flags[file_map_access], dwFileOffsetHigh int32, dwFileOffsetLow int32, dwNumberOfBytesToMap int64)
+
+CreateIoCompletionPort$create(FileHandle const[INVALID_HANDLE_VALUE], ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE
+CreateIoCompletionPort$associate(FileHandle FILE_HANDLE, ExistingCompletionPort IOCP_HANDLE, CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE
+PostQueuedCompletionStatus$iocp(CompletionPort IOCP_HANDLE, dwNumberOfBytesTransferred int32, dwCompletionKey intptr, lpOverlapped ptr[inout, OVERLAPPED, opt])
+GetQueuedCompletionStatus$iocp(CompletionPort IOCP_HANDLE, lpNumberOfBytesTransferred ptr[out, int32], lpCompletionKey ptr[out, intptr], lpOverlapped ptr[out, ptr[inout, OVERLAPPED, opt]], dwMilliseconds int32[0:10])
+
+CreatePipe$anon(hReadPipe ptr[out, PIPE_READ_HANDLE], hWritePipe ptr[out, PIPE_WRITE_HANDLE], lpPipeAttributes ptr[in, SECURITY_ATTRIBUTES, opt], nSize int32[0:65536])
+ReadFile$pipe(hFile PIPE_READ_HANDLE, lpBuffer ptr[out, array[int8]], nNumberOfBytesToRead bytesize[lpBuffer], lpNumberOfBytesRead ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt])
+WriteFile$pipe(hFile PIPE_WRITE_HANDLE, lpBuffer ptr[in, array[int8]], nNumberOfBytesToWrite bytesize[lpBuffer], lpNumberOfBytesWritten ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt])
 
 SECURITY_ATTRIBUTES {
 	nLength			len[parent, int32]
@@ -18,14 +57,48 @@ SECURITY_ATTRIBUTES {
 	bInheritHandle		bool32
 }
 
-# TODO: describe
 SECURITY_DESCRIPTOR {
-	stub	int32
+	Revision	int8
+	Sbz1		int8
+	Control		int16
+	Owner		ptr[in, intptr, opt]
+	Group		ptr[in, intptr, opt]
+	Sacl		ptr[in, ACL, opt]
+	Dacl		ptr[in, ACL, opt]
 }
 
+ACL {
+	AclRevision	int8
+	Sbz1		int8
+	AclSize		len[parent, int16]
+	AceCount	int16
+	Sbz2		int16
+}
+
+OVERLAPPED {
+	Internal	intptr
+	InternalHigh	intptr
+	Offset		OVERLAPPED_OFFSET
+	hEvent		EVENT_HANDLE[opt]
+}
+
+OVERLAPPED_OFFSET [
+	Parts		OVERLAPPED_OFFSET_PARTS
+	Pointer		intptr
+]
+
+OVERLAPPED_OFFSET_PARTS {
+	Offset		int32
+	OffsetHigh	int32
+}
+
+object_name = "syz_obj", "Global\\syz_obj", "Local\\syz_obj"
 file_access_rights = DELETE, READ_CONTROL, SYNCHRONIZE, WRITE_DAC, WRITE_OWNER, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_ALL_ACCESS, FILE_APPEND_DATA, FILE_CREATE_PIPE_INSTANCE, FILE_DELETE_CHILD, FILE_EXECUTE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_READ_EA, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA
 file_share_mode = FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE
 file_create_disposition = CREATE_ALWAYS, CREATE_NEW, OPEN_ALWAYS, OPEN_EXISTING, TRUNCATE_EXISTING
 file_attributes = FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_ENCRYPTED, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_OFFLINE, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_SYSTEM, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_DELETE_ON_CLOSE, FILE_FLAG_NO_BUFFERING, FILE_FLAG_OPEN_NO_RECALL, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_FLAG_POSIX_SEMANTICS, FILE_FLAG_RANDOM_ACCESS, FILE_FLAG_SESSION_AWARE, FILE_FLAG_SEQUENTIAL_SCAN, FILE_FLAG_WRITE_THROUGH, SECURITY_ANONYMOUS, SECURITY_CONTEXT_TRACKING, SECURITY_DELEGATION, SECURITY_EFFECTIVE_ONLY, SECURITY_IDENTIFICATION, SECURITY_IMPERSONATION
 allocation_type = MEM_COMMIT, MEM_RESERVE, MEM_RESET, MEM_RESET_UNDO, MEM_LARGE_PAGES, MEM_PHYSICAL, MEM_TOP_DOWN, MEM_WRITE_WATCH
 protect_flags = PAGE_EXECUTE, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, PAGE_TARGETS_INVALID, PAGE_TARGETS_NO_UPDATE, PAGE_GUARD, PAGE_NOCACHE, PAGE_WRITECOMBINE, PAGE_ENCLAVE_THREAD_CONTROL, PAGE_ENCLAVE_UNVALIDATED
+file_mapping_protect_flags = PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY
+file_map_access = 0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0xf001f
+token_access_rights = 0x8, 0x20008, 0xf01ff
