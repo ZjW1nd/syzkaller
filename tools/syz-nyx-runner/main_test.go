@@ -263,6 +263,7 @@ func TestReorderArgsForFlags(t *testing.T) {
 		"--qemu-path", "/tmp/qemu",
 		"--qemu-arg=-display",
 		"--qemu-arg", "none",
+		"--module-ranges", "ntoskrnl.exe:required,ntfs.sys",
 	}
 	got := reorderArgsForFlags(in)
 	want := []string{
@@ -270,6 +271,7 @@ func TestReorderArgsForFlags(t *testing.T) {
 		"--qemu-path", "/tmp/qemu",
 		"--qemu-arg=-display",
 		"--qemu-arg", "none",
+		"--module-ranges", "ntoskrnl.exe:required,ntfs.sys",
 		"0",
 		"127.0.0.1",
 		"56555",
@@ -281,6 +283,57 @@ func TestReorderArgsForFlags(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("arg %d mismatch: got %q want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestParseModuleRanges(t *testing.T) {
+	ranges, err := parseModuleRanges("ntoskrnl.exe:required, ntfs.sys, win32k*.sys")
+	if err != nil {
+		t.Fatalf("parseModuleRanges: %v", err)
+	}
+	want := []moduleRangeSpec{
+		{Pattern: "ntoskrnl.exe", Required: true},
+		{Pattern: "ntfs.sys"},
+		{Pattern: "win32k*.sys"},
+	}
+	if len(ranges) != len(want) {
+		t.Fatalf("got %d ranges, want %d", len(ranges), len(want))
+	}
+	for i := range want {
+		if ranges[i] != want[i] {
+			t.Fatalf("range %d got %+v want %+v", i, ranges[i], want[i])
+		}
+	}
+}
+
+func TestPackModuleRangeConfig(t *testing.T) {
+	ranges := []moduleRangeSpec{
+		{Pattern: "ntoskrnl.exe", Required: true},
+		{Pattern: "ntfs.sys"},
+	}
+	payload := packModuleRangeConfig(ranges)
+	if got := binary.LittleEndian.Uint32(payload[0:4]); got != nyxModuleRangeConfigMagic {
+		t.Fatalf("magic=%#x want %#x", got, nyxModuleRangeConfigMagic)
+	}
+	if got := binary.LittleEndian.Uint16(payload[4:6]); got != nyxModuleRangeConfigVersion {
+		t.Fatalf("version=%d want %d", got, nyxModuleRangeConfigVersion)
+	}
+	if got := binary.LittleEndian.Uint16(payload[6:8]); got != uint16(len(ranges)) {
+		t.Fatalf("count=%d want %d", got, len(ranges))
+	}
+	entrySize := 1 + nyxModuleRangePatternSize
+	if payload[8] != 1 {
+		t.Fatalf("first entry required=%d want 1", payload[8])
+	}
+	if got := string(bytes.TrimRight(payload[9:9+nyxModuleRangePatternSize], "\x00")); got != "ntoskrnl.exe" {
+		t.Fatalf("first pattern=%q", got)
+	}
+	second := 8 + entrySize
+	if payload[second] != 0 {
+		t.Fatalf("second entry required=%d want 0", payload[second])
+	}
+	if got := string(bytes.TrimRight(payload[second+1:second+1+nyxModuleRangePatternSize], "\x00")); got != "ntfs.sys" {
+		t.Fatalf("second pattern=%q", got)
 	}
 }
 

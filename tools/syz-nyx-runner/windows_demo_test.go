@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/syzkaller/prog"
 )
@@ -91,6 +93,53 @@ func loadDemoSyscallTable(t *testing.T) map[string]int {
 		table[match[2]] = id
 	}
 	return table
+}
+
+func loadWindowsServiceEntries(t *testing.T) []struct {
+	kind        string
+	macro       string
+	targetName  string
+	serviceName string
+	number      int
+} {
+	t.Helper()
+	path := filepath.Join("..", "..", "executor", "windows_service_26200.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read windows service table: %v", err)
+	}
+	re := regexp.MustCompile(`X\((ntos|win32k),\s*(W32_[A-Z0-9_]+),\s*"([^"]+)",\s*"([^"]+)",\s*([0-9]+)\)`)
+	matches := re.FindAllStringSubmatch(string(data), -1)
+	if len(matches) == 0 {
+		t.Fatalf("no service table entries found in %s", path)
+	}
+	var entries []struct {
+		kind        string
+		macro       string
+		targetName  string
+		serviceName string
+		number      int
+	}
+	for _, match := range matches {
+		number, err := strconv.Atoi(match[5])
+		if err != nil {
+			t.Fatalf("parse service number %q: %v", match[5], err)
+		}
+		entries = append(entries, struct {
+			kind        string
+			macro       string
+			targetName  string
+			serviceName string
+			number      int
+		}{
+			kind:        match[1],
+			macro:       match[2],
+			targetName:  match[3],
+			serviceName: match[4],
+			number:      number,
+		})
+	}
+	return entries
 }
 
 func loadWindowsNyxConfig(t *testing.T, path string) struct {
@@ -214,6 +263,73 @@ func TestWindowsNyxConfigSyscallsPresentInSparseTable(t *testing.T) {
 	}
 }
 
+func TestWindowsNyxConfigExpandedSyscallsPresentInSparseTable(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	enabledCalls := make(map[*prog.Syscall]bool)
+	for _, name := range loadWindowsNyxConfigSyscalls(t) {
+		enabledCalls[target.SyscallMap[name]] = true
+	}
+	expanded, disabled := target.TransitivelyEnabledCalls(enabledCalls)
+	if len(disabled) != 0 {
+		t.Fatalf("windows nyx config has disabled calls after expansion: %v", disabled)
+	}
+	for call := range expanded {
+		if _, ok := table[call.Name]; !ok {
+			t.Fatalf("transitively enabled syscall %q missing from sparse Nyx table", call.Name)
+		}
+	}
+}
+
+func TestWindowsNyxServiceTableMatchesTargetIDs(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, entry := range loadWindowsServiceEntries(t) {
+		meta := target.SyscallMap[entry.targetName]
+		if meta == nil {
+			t.Fatalf("service entry target %q missing from windows/amd64 target", entry.targetName)
+		}
+		if gotID, ok := table[entry.targetName]; !ok {
+			t.Fatalf("service entry target %q missing from sparse Nyx table", entry.targetName)
+		} else if gotID != meta.ID {
+			t.Fatalf("service entry target %q has sparse ID %d, want %d", entry.targetName, gotID, meta.ID)
+		}
+		if entry.kind != "ntos" && entry.kind != "win32k" {
+			t.Fatalf("service entry target %q has bad kind %q", entry.targetName, entry.kind)
+		}
+		if entry.kind == "ntos" && !strings.HasPrefix(entry.serviceName, "Nt") {
+			t.Fatalf("ntos service entry %q maps to non-NT service %q", entry.targetName, entry.serviceName)
+		}
+		if entry.number <= 0 {
+			t.Fatalf("service entry %q has bad service number %d", entry.targetName, entry.number)
+		}
+	}
+}
+
+func TestWindowsNyxExecutorUsesGeneratedServiceTable(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "syscalls_windows_nyx_demo.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read demo syscall table: %v", err)
+	}
+	src := string(data)
+	for _, needle := range []string{
+		`#include "windows_service_26200.h"`,
+		"make_nyx_ntos_service_stub",
+		"WINDOWS_NYX_SERVICE_TABLE_26200(INIT_NYX_SERVICE_ENTRY)",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("sparse executor table is missing %q", needle)
+		}
+	}
+}
+
 func TestWindowsAutomaticHelpersPresentInEnabledSet(t *testing.T) {
 	requireWindowsHelpersEnabled(t, "windows-nyx-test.cfg",
 		[]string{"CloseHandle", "CreateFileA", "CreateFile2"})
@@ -294,8 +410,54 @@ func TestWindowsFileHandleResourceHierarchy(t *testing.T) {
 	assertResource("SetFileInformationByHandle", 0, "FILE_HANDLE")
 	assertResource("NtReadFile", 0, "FILE_HANDLE")
 	assertResource("NtWriteFile", 0, "FILE_HANDLE")
+	assertResource("NtDeviceIoControlFile", 0, "FILE_HANDLE")
 	assertResource("NtFsControlFile", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_get_compression", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_compression", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_sparse", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_set_zero_data", 0, "FILE_HANDLE")
+	assertResource("NtFsControlFile$ntfs_query_allocated_ranges", 0, "FILE_HANDLE")
+	assertResource("NtQueryInformationFile$basic", 0, "FILE_HANDLE")
+	assertResource("NtQueryInformationFile$standard", 0, "FILE_HANDLE")
+	assertResource("NtQueryInformationFile$network_open", 0, "FILE_HANDLE")
+	assertResource("NtSetInformationFile$basic", 0, "FILE_HANDLE")
 	assertResource("TransmitFile$inet_accept", 1, "FILE_HANDLE")
+}
+
+func TestWindowsNyxFuzzConfigSyscallsPresentInSparseTable(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx.cfg")
+	if len(cfg.EnabledSyscalls) == 0 {
+		t.Fatalf("windows nyx fuzz config has no enable_syscalls")
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		if _, ok := table[name]; !ok {
+			t.Fatalf("windows nyx fuzz config syscall %q missing from sparse Nyx table", name)
+		}
+		if target.SyscallMap[name] == nil {
+			t.Fatalf("windows nyx fuzz config syscall %q missing from windows/amd64 target", name)
+		}
+	}
+	requireWindowsHelpersEnabled(t, "windows-nyx.cfg",
+		[]string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"})
+	enabledCalls := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		enabledCalls[target.SyscallMap[name]] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
+	for _, name := range []string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("windows nyx fuzz config did not transitively enable %q", name)
+		}
+	}
 }
 
 func TestWindowsDemoExecEncodingUsesTargetIDs(t *testing.T) {
@@ -341,6 +503,122 @@ func TestNyxQueryCR3TargetsCurrentProcess(t *testing.T) {
 	}
 	if strings.Contains(body, "nyx_system_pid()") {
 		t.Fatalf("nyx_query_cr3 still references nyx_system_pid(), body:\n%s", body)
+	}
+}
+
+func TestNyxModuleRangeTargetsDriverModules(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "nyx_windows.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read nyx_windows.h: %v", err)
+	}
+	src := string(data)
+	defaultBody := extractFunctionBody(t, src, "static const nyx_module_target_t* nyx_default_module_targets(size_t* count)")
+	for _, want := range []string{
+		`"ntoskrnl.exe", true`,
+		`"ntfs.sys", false`,
+		`"afd.sys", false`,
+		`"win32k*.sys", false`,
+	} {
+		if !strings.Contains(defaultBody, want) {
+			t.Fatalf("nyx_default_module_targets missing %q, body:\n%s", want, defaultBody)
+		}
+	}
+	configBody := extractFunctionBody(t, src, "static int nyx_module_targets_from_payload(const kAFL_payload* payload")
+	for _, want := range []string{
+		"nyx_module_targets_from_bytes",
+	} {
+		if !strings.Contains(configBody, want) {
+			t.Fatalf("nyx_module_targets_from_payload missing %q, body:\n%s", want, configBody)
+		}
+	}
+	bytesBody := extractFunctionBody(t, src, "static int nyx_module_targets_from_bytes(const uint8_t* data")
+	for _, want := range []string{
+		"SYZ_NYX_MODULE_CONFIG_MAGIC",
+		"SYZ_NYX_MODULE_CONFIG_VERSION",
+		"nyx module range config invalid",
+		"nyx module range config truncated",
+		"nyx module range config bad entry",
+	} {
+		if !strings.Contains(bytesBody, want) {
+			t.Fatalf("nyx_module_targets_from_bytes missing %q, body:\n%s", want, bytesBody)
+		}
+	}
+	sharedirBody := extractFunctionBody(t, src, "static int nyx_module_targets_from_sharedir(nyx_module_target_t* targets")
+	for _, want := range []string{
+		"HYPERCALL_KAFL_REQ_STREAM_DATA",
+		"NYX_MODULE_RANGE_CONFIG_FILE",
+		"nyx module range config sharedir oversized",
+		"nyx_module_targets_from_bytes",
+	} {
+		if !strings.Contains(sharedirBody, want) {
+			t.Fatalf("nyx_module_targets_from_sharedir missing %q, body:\n%s", want, sharedirBody)
+		}
+	}
+	submitBody := extractFunctionBody(t, src, "static bool nyx_submit_module_ranges(const kAFL_payload* config_payload)")
+	for _, want := range []string{
+		"nyx_module_targets_from_payload",
+		"nyx_module_targets_from_sharedir",
+		"NYX_MAX_MODULE_RANGE_TARGETS",
+		"nyx module range config source=%s",
+		`source = "payload"`,
+		`source = "sharedir"`,
+		"nyx module range config source=default",
+		"nyx module range missing",
+		"nyx module range summary",
+		"next_range_id",
+	} {
+		if !strings.Contains(submitBody, want) {
+			t.Fatalf("nyx_submit_module_ranges missing %q, body:\n%s", want, submitBody)
+		}
+	}
+	submitMatchBody := extractFunctionBody(t, src, "static int nyx_submit_module_range_matches(PRTL_PROCESS_MODULES modules")
+	for _, want := range []string{
+		"NYX_MAX_IP_FILTER_RANGES",
+		"nyx module range skipped",
+		"range_submit[2] = range_id",
+		"slot=%d",
+	} {
+		if !strings.Contains(submitMatchBody, want) {
+			t.Fatalf("nyx_submit_module_range_matches missing %q, body:\n%s", want, submitMatchBody)
+		}
+	}
+	if !strings.Contains(src, "nyx module range submitted") {
+		t.Fatal("nyx_windows.h does not log submitted module ranges")
+	}
+	matchBody := extractFunctionBody(t, src, "static bool nyx_module_name_matches(const char* file_name, const char* pattern)")
+	if !strings.Contains(matchBody, "strchr(pattern, '*')") ||
+		!strings.Contains(matchBody, "_strnicmp") ||
+		!strings.Contains(matchBody, "_stricmp(file_name + file_len - suffix_len, suffix)") {
+		t.Fatalf("module matcher should support win32k*.sys-style suffix patterns, body:\n%s", matchBody)
+	}
+
+	execPath := filepath.Join("..", "..", "executor", "executor.cc")
+	execData, err := os.ReadFile(execPath)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	execSrc := string(execData)
+	if !strings.Contains(execSrc, "nyx_submit_module_ranges(payload)") {
+		t.Fatal("nyx_mode_loop does not call nyx_submit_module_ranges")
+	}
+	if strings.Contains(execSrc, `nyx_submit_module_range("ntoskrnl.exe")`) {
+		t.Fatal("nyx_mode_loop still submits only ntoskrnl.exe")
+	}
+
+	runnerData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	runnerSrc := string(runnerData)
+	for _, want := range []string{
+		"nyxModuleRangeConfigFile",
+		"os.WriteFile(path, packModuleRangeConfig(vm.moduleRanges)",
+		"sharedir=%s",
+	} {
+		if !strings.Contains(runnerSrc, want) {
+			t.Fatalf("runner main.go missing %q", want)
+		}
 	}
 }
 
@@ -450,15 +728,35 @@ func TestStandaloneGenericProgramsContainRequestedSyscall(t *testing.T) {
 		t.Fatalf("GetTarget: %v", err)
 	}
 	deterministic := map[string]bool{
-		"NtFsControlFile":          true,
-		"NtReadFile":               true,
-		"NtWriteFile":              true,
-		"TransmitFile$inet_accept": true,
-		"getsockopt$int_accept":    true,
+		"NtDeviceIoControlFile":                       true,
+		"NtFsControlFile":                             true,
+		"NtFsControlFile$ntfs_get_compression":        true,
+		"NtFsControlFile$ntfs_set_compression":        true,
+		"NtFsControlFile$ntfs_set_sparse":             true,
+		"NtFsControlFile$ntfs_set_zero_data":          true,
+		"NtFsControlFile$ntfs_query_allocated_ranges": true,
+		"NtQueryInformationFile$basic":                true,
+		"NtQueryInformationFile$standard":             true,
+		"NtQueryInformationFile$network_open":         true,
+		"NtReadFile":                                  true,
+		"NtSetInformationFile$basic":                  true,
+		"NtWriteFile":                                 true,
+		"TransmitFile$inet_accept":                    true,
+		"getsockopt$int_accept":                       true,
 	}
 	for _, name := range []string{
+		"NtDeviceIoControlFile",
 		"NtFsControlFile",
+		"NtFsControlFile$ntfs_get_compression",
+		"NtFsControlFile$ntfs_set_compression",
+		"NtFsControlFile$ntfs_set_sparse",
+		"NtFsControlFile$ntfs_set_zero_data",
+		"NtFsControlFile$ntfs_query_allocated_ranges",
+		"NtQueryInformationFile$basic",
+		"NtQueryInformationFile$standard",
+		"NtQueryInformationFile$network_open",
 		"NtReadFile",
+		"NtSetInformationFile$basic",
 		"NtWriteFile",
 		"send$inet_tcp",
 		"recv$inet_udp",
@@ -511,8 +809,16 @@ func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 		want []string
 	}{
 		{
+			name: "NtDeviceIoControlFile",
+			want: []string{"CreateFileA(", "NtDeviceIoControlFile("},
+		},
+		{
 			name: "NtFsControlFile",
 			want: []string{"CreateFileA(", "NtFsControlFile("},
+		},
+		{
+			name: "NtFsControlFile$ntfs_set_zero_data",
+			want: []string{"CreateFileA(", "WriteFile(", "NtFsControlFile$ntfs_set_zero_data("},
 		},
 		{
 			name: "TransmitFile$inet_accept",
@@ -528,7 +834,11 @@ func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 		if err != nil {
 			t.Fatalf("standaloneProgram(%s): %v", test.name, err)
 		}
-		if test.name != "NtFsControlFile" && test.name != "TransmitFile$inet_accept" && bootstrap {
+		deterministic := test.name == "NtDeviceIoControlFile" ||
+			test.name == "NtFsControlFile" ||
+			test.name == "NtFsControlFile$ntfs_set_zero_data" ||
+			test.name == "TransmitFile$inet_accept"
+		if !deterministic && bootstrap {
 			t.Fatalf("%s unexpectedly used deterministic bootstrap", test.name)
 		}
 		serialized := string(p.Serialize())
@@ -554,6 +864,35 @@ func TestFilterCoveragePCsDropsUserAddressesOn64BitKernel(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("filterCoveragePCs() = %#x, want %#x", got, want)
+	}
+}
+
+func TestRunQemuWithTimeoutReturnsNetTimeout(t *testing.T) {
+	host, peer := net.Pipe()
+	defer host.Close()
+	defer peer.Close()
+
+	readPing := make(chan error, 1)
+	go func() {
+		var ping [1]byte
+		_, err := peer.Read(ping[:])
+		readPing <- err
+	}()
+
+	vm := &nyxVM{control: host}
+	start := time.Now()
+	err := vm.runQemuWithTimeout(20 * time.Millisecond)
+	if err == nil {
+		t.Fatal("runQemuWithTimeout returned nil, want timeout")
+	}
+	if !isTimeoutError(err) {
+		t.Fatalf("runQemuWithTimeout error %T %v, want net timeout", err, err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("runQemuWithTimeout took %s, want bounded timeout", elapsed)
+	}
+	if err := <-readPing; err != nil {
+		t.Fatalf("peer did not receive ping: %v", err)
 	}
 }
 

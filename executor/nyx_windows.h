@@ -4,6 +4,7 @@
 #include <psapi.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 
@@ -25,6 +26,7 @@
 #define HYPERCALL_KAFL_PRINTF 13
 #define HYPERCALL_KAFL_USER_SUBMIT_MODE 17
 #define HYPERCALL_KAFL_RANGE_SUBMIT 29
+#define HYPERCALL_KAFL_REQ_STREAM_DATA 30
 #define HYPERCALL_KAFL_GET_HOST_CONFIG 35
 #define HYPERCALL_KAFL_SET_AGENT_CONFIG 36
 #define HYPERCALL_KAFL_DUMP_FILE 37
@@ -46,6 +48,12 @@
 
 #define NYX_RESULT_BASENAME "syz_nyx_result.bin"
 #define NYX_HANDSHAKE_ACK_BASENAME "syz_nyx_handshake.ok"
+#define NYX_MAX_IP_FILTER_RANGES 4
+#define NYX_MAX_MODULE_RANGE_TARGETS 16
+#define NYX_MODULE_RANGE_PATTERN_SIZE 64
+#define NYX_MODULE_RANGE_CONFIG_FILE "syz_nyx_module_ranges.bin"
+#define SYZ_NYX_MODULE_CONFIG_MAGIC 0x4d52594e
+#define SYZ_NYX_MODULE_CONFIG_VERSION 1
 
 typedef struct {
 	uint32_t host_magic;
@@ -119,6 +127,22 @@ typedef struct _RTL_PROCESS_MODULES {
 	RTL_PROCESS_MODULE_INFORMATION Modules[1];
 } RTL_PROCESS_MODULES, *PRTL_PROCESS_MODULES;
 
+typedef struct {
+	const char* pattern;
+	bool required;
+} nyx_module_target_t;
+
+typedef struct {
+	uint32_t magic;
+	uint16_t version;
+	uint16_t count;
+} __attribute__((packed)) nyx_module_config_header_t;
+
+typedef struct {
+	uint8_t required;
+	char pattern[NYX_MODULE_RANGE_PATTERN_SIZE];
+} __attribute__((packed)) nyx_module_config_entry_t;
+
 #if defined(__x86_64__)
 static inline uint64_t nyx_hypercall(uint64_t p1, uint64_t p2)
 {
@@ -188,33 +212,215 @@ static bool nyx_query_cr3(uint64_t* out_cr3)
 	return true;
 }
 
-static bool nyx_submit_module_range(const char* module_name)
+static bool nyx_module_name_matches(const char* file_name, const char* pattern)
+{
+	const char* star = strchr(pattern, '*');
+	if (!star)
+		return _stricmp(file_name, pattern) == 0;
+	size_t prefix_len = star - pattern;
+	const char* suffix = star + 1;
+	size_t suffix_len = strlen(suffix);
+	size_t file_len = strlen(file_name);
+	if (file_len < prefix_len + suffix_len)
+		return false;
+	if (_strnicmp(file_name, pattern, prefix_len) != 0)
+		return false;
+	return _stricmp(file_name + file_len - suffix_len, suffix) == 0;
+}
+
+static PRTL_PROCESS_MODULES nyx_query_loaded_modules()
 {
 	ULONG len = 1 << 20;
-	auto* modules = (PRTL_PROCESS_MODULES)VirtualAlloc(NULL, len, MEM_COMMIT | MEM_RESERVE,
-							   PAGE_READWRITE);
-	if (!modules)
-		return false;
-	NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11, modules, len, &len);
-	if (!NT_SUCCESS(status)) {
+	for (int attempt = 0; attempt < 2; attempt++) {
+		ULONG alloc_len = len;
+		auto* modules = (PRTL_PROCESS_MODULES)VirtualAlloc(NULL, alloc_len,
+								   MEM_COMMIT | MEM_RESERVE,
+								   PAGE_READWRITE);
+		if (!modules)
+			return nullptr;
+		NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11,
+							    modules, alloc_len, &len);
+		if (NT_SUCCESS(status))
+			return modules;
 		VirtualFree(modules, 0, MEM_RELEASE);
-		return false;
+		if (len <= alloc_len)
+			len = alloc_len * 2;
 	}
+	return nullptr;
+}
+
+static const nyx_module_target_t* nyx_default_module_targets(size_t* count)
+{
+	static const nyx_module_target_t targets[] = {
+	    {"ntoskrnl.exe", true},
+	    {"ntfs.sys", false},
+	    {"afd.sys", false},
+	    {"win32k*.sys", false},
+	};
+	*count = sizeof(targets) / sizeof(targets[0]);
+	return targets;
+}
+
+static int nyx_module_targets_from_bytes(const uint8_t* data, int32_t size,
+					 nyx_module_target_t* targets,
+					 size_t target_capacity,
+					 const nyx_module_target_t** out_targets,
+					 size_t* out_count)
+{
+	if (!data || size < (int32_t)sizeof(nyx_module_config_header_t))
+		return 0;
+	auto* header = reinterpret_cast<const nyx_module_config_header_t*>(data);
+	if (header->magic != SYZ_NYX_MODULE_CONFIG_MAGIC)
+		return 0;
+	if (header->version != SYZ_NYX_MODULE_CONFIG_VERSION ||
+	    header->count == 0 || header->count > target_capacity) {
+		nyx_hprintf("nyx module range config invalid version=%u count=%u\n",
+			    (unsigned)header->version, (unsigned)header->count);
+		return -1;
+	}
+	uint64_t need = sizeof(*header) +
+			(uint64_t)header->count * sizeof(nyx_module_config_entry_t);
+	if (need > (uint32_t)size) {
+		nyx_hprintf("nyx module range config truncated size=%d need=%llu count=%u\n",
+			    (int)size, (unsigned long long)need,
+			    (unsigned)header->count);
+		return -1;
+	}
+	auto* entries = reinterpret_cast<const nyx_module_config_entry_t*>(
+	    data + sizeof(*header));
+	for (uint16_t i = 0; i < header->count; i++) {
+		if (entries[i].pattern[0] == 0 ||
+		    memchr(entries[i].pattern, 0, sizeof(entries[i].pattern)) == nullptr) {
+			nyx_hprintf("nyx module range config bad entry=%u\n", (unsigned)i);
+			return -1;
+		}
+		targets[i] = {
+		    .pattern = entries[i].pattern,
+		    .required = entries[i].required != 0,
+		};
+	}
+	*out_targets = targets;
+	*out_count = header->count;
+	return 1;
+}
+
+static int nyx_module_targets_from_payload(const kAFL_payload* payload,
+					   nyx_module_target_t* targets,
+					   size_t target_capacity,
+					   const nyx_module_target_t** out_targets,
+					   size_t* out_count)
+{
+	if (!payload)
+		return 0;
+	return nyx_module_targets_from_bytes(payload->data, payload->size, targets,
+					     target_capacity, out_targets, out_count);
+}
+
+static int nyx_module_targets_from_sharedir(nyx_module_target_t* targets,
+					    size_t target_capacity,
+					    const nyx_module_target_t** out_targets,
+					    size_t* out_count)
+{
+	alignas(4096) static uint8_t stream[0x1000];
+	memset(stream, 0, sizeof(stream));
+	strncpy((char*)stream, NYX_MODULE_RANGE_CONFIG_FILE, sizeof(stream) - 1);
+	uint64_t bytes = nyx_hypercall(HYPERCALL_KAFL_REQ_STREAM_DATA,
+				       (uint64_t)(uintptr_t)&stream[0]);
+	if (bytes == 0 || bytes == 0xffffffffffffffffULL)
+		return 0;
+	if (bytes > sizeof(stream)) {
+		nyx_hprintf("nyx module range config sharedir oversized bytes=%llu\n",
+			    (unsigned long long)bytes);
+		return -1;
+	}
+	return nyx_module_targets_from_bytes(stream, (int32_t)bytes, targets,
+					     target_capacity, out_targets, out_count);
+}
+
+static int nyx_submit_module_range_matches(PRTL_PROCESS_MODULES modules,
+					   const nyx_module_target_t* target,
+					   int* next_range_id)
+{
 	alignas(4096) static volatile uint64_t range_submit[3];
-	bool submitted = false;
+	int submitted = 0;
 	for (ULONG i = 0; i < modules->NumberOfModules; i++) {
-		char* file_name = (char*)modules->Modules[i].FullPathName + modules->Modules[i].OffsetToFileName;
-		if (_stricmp(file_name, module_name) != 0)
+		char* file_name = (char*)modules->Modules[i].FullPathName +
+				  modules->Modules[i].OffsetToFileName;
+		if (!nyx_module_name_matches(file_name, target->pattern))
 			continue;
+		if (*next_range_id >= NYX_MAX_IP_FILTER_RANGES) {
+			nyx_hprintf("nyx module range skipped target=%s name=%s reason=no_filter_slot\n",
+				    target->pattern, file_name);
+			continue;
+		}
 		uint64_t base = (uint64_t)modules->Modules[i].ImageBase;
 		uint64_t end = base + modules->Modules[i].ImageSize;
+		int range_id = (*next_range_id)++;
 		range_submit[0] = base;
 		range_submit[1] = end;
-		range_submit[2] = 0;
-		nyx_hypercall(HYPERCALL_KAFL_RANGE_SUBMIT, (uint64_t)(uintptr_t)&range_submit[0]);
-		submitted = true;
-		break;
+		range_submit[2] = range_id;
+		nyx_hypercall(HYPERCALL_KAFL_RANGE_SUBMIT,
+			      (uint64_t)(uintptr_t)&range_submit[0]);
+		nyx_hprintf("nyx module range submitted slot=%d target=%s name=%s base=0x%llx end=0x%llx size=0x%llx\n",
+			    range_id, target->pattern, file_name,
+			    (unsigned long long)base, (unsigned long long)end,
+			    (unsigned long long)modules->Modules[i].ImageSize);
+		submitted++;
+	}
+	return submitted;
+}
+
+static bool nyx_submit_module_ranges(const kAFL_payload* config_payload)
+{
+	nyx_module_target_t configured[NYX_MAX_MODULE_RANGE_TARGETS] = {};
+	const nyx_module_target_t* targets = nullptr;
+	size_t target_count = 0;
+	const char* source = nullptr;
+	int config_status = nyx_module_targets_from_payload(config_payload, configured,
+							    NYX_MAX_MODULE_RANGE_TARGETS,
+							    &targets, &target_count);
+	if (config_status < 0)
+		return false;
+	if (config_status > 0) {
+		source = "payload";
+	} else {
+		config_status = nyx_module_targets_from_sharedir(configured,
+								 NYX_MAX_MODULE_RANGE_TARGETS,
+								 &targets, &target_count);
+		if (config_status < 0)
+			return false;
+		if (config_status > 0)
+			source = "sharedir";
+	}
+	if (config_status > 0) {
+		nyx_hprintf("nyx module range config source=%s count=%llu\n",
+			    source, (unsigned long long)target_count);
+	} else {
+		targets = nyx_default_module_targets(&target_count);
+		nyx_hprintf("nyx module range config source=default count=%llu\n",
+			    (unsigned long long)target_count);
+	}
+	auto* modules = nyx_query_loaded_modules();
+	if (!modules) {
+		nyx_hprintf("nyx module range query failed\n");
+		return false;
+	}
+	bool required_ok = true;
+	int total = 0;
+	int next_range_id = 0;
+	for (size_t i = 0; i < target_count; i++) {
+		int count = nyx_submit_module_range_matches(modules, &targets[i],
+							    &next_range_id);
+		total += count;
+		if (count == 0) {
+			nyx_hprintf("nyx module range missing target=%s required=%d\n",
+				    targets[i].pattern, targets[i].required ? 1 : 0);
+			if (targets[i].required)
+				required_ok = false;
+		}
 	}
 	VirtualFree(modules, 0, MEM_RELEASE);
-	return submitted;
+	nyx_hprintf("nyx module range summary submitted=%d slots=%d required_ok=%d\n",
+		    total, next_range_id, required_ok ? 1 : 0);
+	return required_ok;
 }

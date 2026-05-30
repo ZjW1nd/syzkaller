@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"flag"
@@ -61,9 +62,20 @@ const (
 	nyxHandshakeAck = "syz_nyx_handshake.ok"
 	nyxExecResult   = "syz_nyx_result.bin"
 	nyxPageSize     = 0x1000
+
+	nyxModuleRangeConfigMagic   = 0x4d52594e
+	nyxModuleRangeConfigVersion = 1
+	nyxModuleRangePatternSize   = 64
+	nyxMaxModuleRangeTargets    = 16
+	nyxModuleRangeConfigFile    = "syz_nyx_module_ranges.bin"
 )
 
 type multiFlag []string
+
+type moduleRangeSpec struct {
+	Pattern  string
+	Required bool
+}
 
 func (m *multiFlag) String() string {
 	return strings.Join(*m, " ")
@@ -83,11 +95,13 @@ func reorderArgsForFlags(args []string) []string {
 		"-bitmap-size":                    true,
 		"-memory":                         true,
 		"-hard-timeout":                   true,
+		"-windows-minidump-timeout":       true,
 		"-standalone-syscall":             true,
 		"-standalone-seed":                true,
 		"-standalone-rounds":              true,
 		"-standalone-syscall-timeout-ms":  true,
 		"-standalone-program-timeout-ms":  true,
+		"-module-ranges":                  true,
 		"-vv":                             true,
 		"-qemu-arg":                       true,
 		"--qemu-path":                     true,
@@ -97,11 +111,13 @@ func reorderArgsForFlags(args []string) []string {
 		"--bitmap-size":                   true,
 		"--memory":                        true,
 		"--hard-timeout":                  true,
+		"--windows-minidump-timeout":      true,
 		"--standalone-syscall":            true,
 		"--standalone-seed":               true,
 		"--standalone-rounds":             true,
 		"--standalone-syscall-timeout-ms": true,
 		"--standalone-program-timeout-ms": true,
+		"--module-ranges":                 true,
 		"--vv":                            true,
 		"--qemu-arg":                      true,
 	}
@@ -123,6 +139,72 @@ func reorderArgsForFlags(args []string) []string {
 		pos = append(pos, arg)
 	}
 	return append(flags, pos...)
+}
+
+func defaultModuleRangeList() string {
+	return "ntoskrnl.exe:required,ntfs.sys,afd.sys,win32k*.sys"
+}
+
+func parseModuleRanges(raw string) ([]moduleRangeSpec, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, fmt.Errorf("module range list is empty")
+	}
+	parts := strings.Split(raw, ",")
+	ranges := make([]moduleRangeSpec, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("empty module range entry in %q", raw)
+		}
+		required := false
+		if strings.HasSuffix(part, ":required") {
+			required = true
+			part = strings.TrimSuffix(part, ":required")
+		}
+		if part == "" {
+			return nil, fmt.Errorf("empty required module range entry in %q", raw)
+		}
+		if strings.Contains(part, "\x00") {
+			return nil, fmt.Errorf("module range %q contains NUL", part)
+		}
+		if len(part) >= nyxModuleRangePatternSize {
+			return nil, fmt.Errorf("module range %q exceeds %d bytes", part, nyxModuleRangePatternSize-1)
+		}
+		ranges = append(ranges, moduleRangeSpec{Pattern: part, Required: required})
+	}
+	if len(ranges) > nyxMaxModuleRangeTargets {
+		return nil, fmt.Errorf("module range list has %d entries, max %d", len(ranges), nyxMaxModuleRangeTargets)
+	}
+	return ranges, nil
+}
+
+func formatModuleRanges(ranges []moduleRangeSpec) string {
+	parts := make([]string, 0, len(ranges))
+	for _, r := range ranges {
+		part := r.Pattern
+		if r.Required {
+			part += ":required"
+		}
+		parts = append(parts, part)
+	}
+	return strings.Join(parts, ",")
+}
+
+func packModuleRangeConfig(ranges []moduleRangeSpec) []byte {
+	const headerSize = 8
+	const entrySize = 1 + nyxModuleRangePatternSize
+	payload := make([]byte, headerSize+entrySize*len(ranges))
+	binary.LittleEndian.PutUint32(payload[0:4], nyxModuleRangeConfigMagic)
+	binary.LittleEndian.PutUint16(payload[4:6], nyxModuleRangeConfigVersion)
+	binary.LittleEndian.PutUint16(payload[6:8], uint16(len(ranges)))
+	for i, r := range ranges {
+		off := headerSize + i*entrySize
+		if r.Required {
+			payload[off] = 1
+		}
+		copy(payload[off+1:off+1+nyxModuleRangePatternSize], r.Pattern)
+	}
+	return payload
 }
 
 func bootstrapWSA() string {
@@ -379,6 +461,7 @@ type nyxVM struct {
 	dumpDir     string
 	controlPath string
 	auxPath     string
+	sharedDir   string
 	bitmapPath  string
 	payloadPath string
 	ijonPath    string
@@ -388,12 +471,15 @@ type nyxVM struct {
 	payloadSize int
 	bitmapSize  int
 
-	qemuPath    string
-	qemuArgs    []string
-	image       string
-	memoryMB    int
-	debug       bool
-	hardTimeout time.Duration
+	qemuPath               string
+	qemuArgs               []string
+	image                  string
+	memoryMB               int
+	debug                  bool
+	hardTimeout            time.Duration
+	moduleRanges           []moduleRangeSpec
+	windowsMinidump        bool
+	windowsMinidumpTimeout int
 
 	ctx         context.Context
 	payloadFile *os.File
@@ -405,27 +491,31 @@ type nyxVM struct {
 	process     *exec.Cmd
 }
 
-func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image string, memoryMB int, payloadSize, bitmapSize int, debug bool, hardTimeout time.Duration) *nyxVM {
+func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image string, memoryMB int, payloadSize, bitmapSize int, debug bool, hardTimeout time.Duration, moduleRanges []moduleRangeSpec, windowsMinidump bool, windowsMinidumpTimeout int) *nyxVM {
 	payloadSize = alignUp(payloadSize, nyxPageSize)
 	return &nyxVM{
-		index:       index,
-		workdir:     workdir,
-		dumpDir:     filepath.Join(workdir, "dump"),
-		controlPath: filepath.Join(workdir, fmt.Sprintf("interface_%d", index)),
-		auxPath:     filepath.Join(workdir, fmt.Sprintf("aux_buffer_%d", index)),
-		bitmapPath:  filepath.Join(workdir, fmt.Sprintf("bitmap_%d", index)),
-		payloadPath: filepath.Join(workdir, fmt.Sprintf("payload_%d", index)),
-		ijonPath:    filepath.Join(workdir, fmt.Sprintf("ijon_%d", index)),
-		coverPath:   filepath.Join(workdir, fmt.Sprintf("syz_cov_%d.bin", index)),
-		snapshotDir: filepath.Join(workdir, "snapshot"),
-		payloadSize: payloadSize,
-		bitmapSize:  bitmapSize,
-		qemuPath:    qemuPath,
-		qemuArgs:    qemuArgs,
-		image:       image,
-		memoryMB:    memoryMB,
-		debug:       debug,
-		hardTimeout: hardTimeout,
+		index:                  index,
+		workdir:                workdir,
+		dumpDir:                filepath.Join(workdir, "dump"),
+		controlPath:            filepath.Join(workdir, fmt.Sprintf("interface_%d", index)),
+		auxPath:                filepath.Join(workdir, fmt.Sprintf("aux_buffer_%d", index)),
+		sharedDir:              filepath.Join(workdir, "sharedir"),
+		bitmapPath:             filepath.Join(workdir, fmt.Sprintf("bitmap_%d", index)),
+		payloadPath:            filepath.Join(workdir, fmt.Sprintf("payload_%d", index)),
+		ijonPath:               filepath.Join(workdir, fmt.Sprintf("ijon_%d", index)),
+		coverPath:              filepath.Join(workdir, fmt.Sprintf("syz_cov_%d.bin", index)),
+		snapshotDir:            filepath.Join(workdir, "snapshot"),
+		payloadSize:            payloadSize,
+		bitmapSize:             bitmapSize,
+		qemuPath:               qemuPath,
+		qemuArgs:               qemuArgs,
+		image:                  image,
+		memoryMB:               memoryMB,
+		debug:                  debug,
+		hardTimeout:            hardTimeout,
+		moduleRanges:           append([]moduleRangeSpec(nil), moduleRanges...),
+		windowsMinidump:        windowsMinidump,
+		windowsMinidumpTimeout: windowsMinidumpTimeout,
 	}
 }
 
@@ -446,6 +536,9 @@ func (vm *nyxVM) start(ctx context.Context) error {
 		return err
 	}
 	if err := os.MkdirAll(vm.dumpDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(vm.sharedDir, 0o755); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(filepath.Join(vm.workdir, fmt.Sprintf("redqueen_workdir_%d", vm.index)), 0o755); err != nil {
@@ -501,6 +594,13 @@ func (vm *nyxVM) start(ctx context.Context) error {
 		return err
 	}
 	vm.payloadMM = payloadMM
+	if len(vm.moduleRanges) != 0 {
+		log.Logf(0, "runner module range config: %s", formatModuleRanges(vm.moduleRanges))
+		path := filepath.Join(vm.sharedDir, nyxModuleRangeConfigFile)
+		if err := os.WriteFile(path, packModuleRangeConfig(vm.moduleRanges), 0o644); err != nil {
+			return fmt.Errorf("write module range config %s: %w", path, err)
+		}
+	}
 
 	args := append([]string{}, vm.qemuArgs...)
 	if vm.image != "" {
@@ -509,10 +609,17 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	if vm.memoryMB > 0 {
 		args = append(args, "-m", fmt.Sprint(vm.memoryMB))
 	}
+	nyxDevice := fmt.Sprintf("nyx,chardev=nyx_socket,workdir=%s,sharedir=%s,worker_id=%d,bitmap_size=%d,input_buffer_size=%d",
+		vm.workdir, vm.sharedDir, vm.index, vm.bitmapSize, vm.payloadSize)
+	if vm.windowsMinidump {
+		nyxDevice += ",windows_minidump"
+		if vm.windowsMinidumpTimeout > 0 {
+			nyxDevice += fmt.Sprintf(",windows_minidump_timeout=%d", vm.windowsMinidumpTimeout)
+		}
+	}
 	args = append(args,
 		"-chardev", fmt.Sprintf("socket,server,id=nyx_socket,path=%s", vm.controlPath),
-		"-device", fmt.Sprintf("nyx,chardev=nyx_socket,workdir=%s,worker_id=%d,bitmap_size=%d,input_buffer_size=%d",
-			vm.workdir, vm.index, vm.bitmapSize, vm.payloadSize),
+		"-device", nyxDevice,
 		"-fast_vm_reload", fmt.Sprintf("path=%s,load=off", vm.snapshotDir),
 	)
 	vm.process = exec.CommandContext(ctx, vm.qemuPath, args...)
@@ -669,6 +776,16 @@ func (vm *nyxVM) restart() error {
 }
 
 func (vm *nyxVM) runQemu() error {
+	return vm.runQemuWithTimeout(0)
+}
+
+func (vm *nyxVM) runQemuWithTimeout(timeout time.Duration) error {
+	if timeout > 0 {
+		if err := vm.control.SetDeadline(time.Now().Add(timeout)); err != nil {
+			return err
+		}
+		defer vm.control.SetDeadline(time.Time{})
+	}
 	if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
 		return err
 	}
@@ -738,10 +855,19 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			log.Logf(0, "runner exec wait deadline expired after %d steps; synthesizing hanged result", steps)
 			return synthesizeHangedResult(req), nil
 		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			log.Logf(0, "runner exec wait deadline expired before step=%d; synthesizing hanged result", steps)
+			return synthesizeHangedResult(req), nil
+		}
 		log.Logf(0, "runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
-		if err := vm.runQemu(); err != nil {
+		if err := vm.runQemuWithTimeout(remaining); err != nil {
+			if isTimeoutError(err) {
+				log.Logf(0, "runner exec qemu step timeout at step=%d; synthesizing hanged result", steps)
+				return synthesizeHangedResult(req), nil
+			}
 			return nil, err
 		}
 		steps++
@@ -753,6 +879,8 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			continue
 		}
 		switch vm.aux.execCode() {
+		case nyxRCCrash, nyxRCSanitizer:
+			return nil, vm.makeCrashError(vm.aux.execCode(), req)
 		case nyxRCHprintf:
 			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
 			continue
@@ -777,6 +905,11 @@ func (vm *nyxVM) execWaitTimeout() time.Duration {
 		timeout = 30 * time.Second
 	}
 	return timeout + 5*time.Second
+}
+
+func isTimeoutError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func parseExecResult(data []byte) (*flatrpc.ExecutorMessage, error) {
@@ -808,6 +941,144 @@ func synthesizeHangedResult(req *flatrpc.ExecRequest) *flatrpc.ExecutorMessage {
 			},
 		},
 	}
+}
+
+type nyxCrashError struct {
+	title  string
+	report []byte
+}
+
+func (err *nyxCrashError) Error() string {
+	return "nyx crash: " + err.title
+}
+
+func (vm *nyxVM) makeCrashError(code byte, req *flatrpc.ExecRequest) *nyxCrashError {
+	title := nyxCrashTitle(code, string(vm.aux.misc()))
+	dump := vm.preserveWindowsDump(title)
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "SYZ-NYX-WINDOWS-CRASH: %s\n", title)
+	fmt.Fprintf(&buf, "nyx exit reason: %s\n", nyxExitReason(code))
+	if misc := strings.TrimSpace(string(vm.aux.misc())); misc != "" {
+		fmt.Fprintf(&buf, "nyx misc: %s\n", misc)
+	}
+	if dump.storedPath != "" {
+		fmt.Fprintf(&buf, "dump file: %s\n", dump.storedPath)
+		fmt.Fprintf(&buf, "dump source: %s\n", dump.sourcePath)
+		fmt.Fprintf(&buf, "dump size: %d\n", dump.size)
+		fmt.Fprintf(&buf, "dump sha256: %s\n", dump.sha256)
+	} else if dump.err != "" {
+		fmt.Fprintf(&buf, "dump error: %s\n", dump.err)
+	}
+	if req != nil {
+		fmt.Fprintf(&buf, "last executing request: id=%d\n", req.Id)
+		fmt.Fprintf(&buf, "last executing program:\n%s\n", formatLastExecutingProgram(req.Data))
+	}
+	fmt.Fprintf(&buf, "END SYZ-NYX-WINDOWS-CRASH\n")
+	return &nyxCrashError{title: title, report: buf.Bytes()}
+}
+
+func nyxCrashTitle(code byte, misc string) string {
+	misc = strings.TrimSpace(misc)
+	switch {
+	case strings.Contains(misc, "WINDOWS BUGCHECK DIRECT DUMP IO"):
+		return "WINDOWS BUGCHECK DIRECT DUMP IO"
+	case strings.Contains(misc, "WINDOWS BUGCHECK"):
+		return "WINDOWS BUGCHECK"
+	case code == nyxRCSanitizer:
+		return "NYX SANITIZER"
+	default:
+		return "NYX CRASH"
+	}
+}
+
+func nyxExitReason(code byte) string {
+	switch code {
+	case nyxRCCrash:
+		return "crash"
+	case nyxRCSanitizer:
+		return "sanitizer"
+	default:
+		return fmt.Sprintf("code_%d", code)
+	}
+}
+
+type preservedDump struct {
+	sourcePath string
+	storedPath string
+	size       int64
+	sha256     string
+	err        string
+}
+
+func (vm *nyxVM) preserveWindowsDump(title string) preservedDump {
+	src := filepath.Join(vm.dumpDir, fmt.Sprintf("worker_%d_pending.dmp", vm.index))
+	info, err := os.Stat(src)
+	if err != nil {
+		return preservedDump{sourcePath: src, err: err.Error()}
+	}
+	if info.IsDir() {
+		return preservedDump{sourcePath: src, err: "pending dump path is a directory"}
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return preservedDump{sourcePath: src, err: err.Error()}
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Join(vm.workdir, "dumps"), 0o755); err != nil {
+		return preservedDump{sourcePath: src, err: err.Error()}
+	}
+	sum := sha256.New()
+	if _, err := io.Copy(sum, in); err != nil {
+		return preservedDump{sourcePath: src, err: err.Error()}
+	}
+	hash := fmt.Sprintf("%x", sum.Sum(nil))
+	dst := filepath.Join(vm.workdir, "dumps", fmt.Sprintf("%s_%06d_%s.dmp",
+		sanitizeDumpName(title), time.Now().UnixNano()%1000000, hash[:12]))
+	if _, err := in.Seek(0, io.SeekStart); err != nil {
+		return preservedDump{sourcePath: src, err: err.Error()}
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
+	if err != nil {
+		return preservedDump{sourcePath: src, err: err.Error()}
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		return preservedDump{sourcePath: src, err: copyErr.Error()}
+	}
+	if closeErr != nil {
+		return preservedDump{sourcePath: src, err: closeErr.Error()}
+	}
+	return preservedDump{
+		sourcePath: src,
+		storedPath: dst,
+		size:       info.Size(),
+		sha256:     hash,
+	}
+}
+
+func sanitizeDumpName(title string) string {
+	title = strings.ToLower(title)
+	var sb strings.Builder
+	lastUnderscore := false
+	for _, ch := range title {
+		if ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' {
+			sb.WriteRune(ch)
+			lastUnderscore = false
+		} else if sb.Len() != 0 && !lastUnderscore {
+			sb.WriteByte('_')
+			lastUnderscore = true
+		}
+	}
+	ret := strings.Trim(sb.String(), "_")
+	if ret == "" {
+		return "crash"
+	}
+	return ret
+}
+
+func formatLastExecutingProgram(data []byte) string {
+	return describeExecProgram(data)
 }
 
 func packFlatbuffer(msg interface {
@@ -1129,6 +1400,10 @@ func (r *runner) resetForReconnect() {
 }
 
 func (r *runner) connect() error {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return err
+	}
 	conn, err := net.Dial("tcp", net.JoinHostPort(r.addr, r.port))
 	if err != nil {
 		return err
@@ -1140,9 +1415,11 @@ func (r *runner) connect() error {
 		return err
 	}
 	req := &flatrpc.ConnectRequest{
-		Cookie: authHash(hello.Cookie),
-		Id:     int64(r.id),
-		Arch:   "windows/amd64",
+		Cookie:      authHash(hello.Cookie),
+		Id:          int64(r.id),
+		Arch:        "amd64",
+		GitRevision: prog.GitRevision,
+		SyzRevision: target.Revision,
 	}
 	if err := flatrpc.Send(r.conn, req); err != nil {
 		return err
@@ -1424,6 +1701,11 @@ func (r *runner) loop() error {
 			}
 			execMsg, err := r.runRequest(req)
 			if err != nil {
+				var crashErr *nyxCrashError
+				if errors.As(err, &crashErr) {
+					_, _ = os.Stderr.Write(crashErr.report)
+					return err
+				}
 				execMsg = &flatrpc.ExecutorMessage{
 					Msg: &flatrpc.ExecutorMessages{
 						Type: flatrpc.ExecutorMessagesRawExecResult,
@@ -1610,7 +1892,7 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 				"NtQueryTimerResolution(&(0x7f0000002000)=0x0, &(0x7f0000002004)=0x0, &(0x7f0000002008)=0x0)\n" +
 				"NtQuerySystemTime(&(0x7f0000002010)=0x0)\n" +
 				"NtQueryPerformanceCounter(&(0x7f0000002020)=0x0, &(0x7f0000002030)=0x0)\n" +
-				"NtDelayExecution(0x0, &(0x7f0000002040)=0xfffffffffff85ee0) (async)\n" +
+				"NtDelayExecution(0x0, &(0x7f0000002040)=@QuadPart=0xfffffffffff85ee0) (async)\n" +
 				"CloseHandle(0xffffffffffffffff) (async)\n" +
 				"NtYieldExecution() (async)\n" +
 				"NtFlushWriteBuffer() (async)\n")
@@ -1679,6 +1961,12 @@ func standaloneEnabledCalls(target *prog.Target, meta *prog.Syscall) map[*prog.S
 		"NtFlushWriteBuffer",
 		"NtQueryDefaultLocale",
 		"NtQueryDefaultUILanguage",
+		"NtDeviceIoControlFile",
+		"NtFsControlFile$ntfs_get_compression",
+		"NtFsControlFile$ntfs_set_compression",
+		"NtFsControlFile$ntfs_set_sparse",
+		"NtFsControlFile$ntfs_set_zero_data",
+		"NtFsControlFile$ntfs_query_allocated_ranges",
 	} {
 		if s, ok := target.SyscallMap[name]; ok {
 			enabled[s] = true
@@ -1705,7 +1993,12 @@ func standaloneNeedsFileHandleProgram(meta *prog.Syscall) bool {
 		return false
 	}
 	switch meta.Name {
-	case "NtFsControlFile", "NtReadFile", "NtWriteFile", "TransmitFile$inet_accept":
+	case "NtDeviceIoControlFile", "NtFsControlFile", "NtFsControlFile$ntfs_get_compression",
+		"NtFsControlFile$ntfs_set_compression", "NtFsControlFile$ntfs_set_sparse",
+		"NtFsControlFile$ntfs_set_zero_data", "NtFsControlFile$ntfs_query_allocated_ranges",
+		"NtQueryInformationFile$basic", "NtQueryInformationFile$standard",
+		"NtQueryInformationFile$network_open", "NtReadFile", "NtSetInformationFile$basic",
+		"NtWriteFile", "TransmitFile$inet_accept":
 		return true
 	}
 	return false
@@ -1716,17 +2009,69 @@ func standaloneFileHandleProgram(name string) ([]byte, error) {
 	case "NtFsControlFile":
 		return []byte(
 			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
-				"NtFsControlFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, 0x9c040, &(0x7f0000000200)='\\x00'/512, 0x200)\n" +
+				"NtFsControlFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x9003c, 0x0, 0x0, &(0x7f0000000200)='\\x00'/2, 0x2)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtFsControlFile$ntfs_get_compression":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl-get-compression\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtFsControlFile$ntfs_get_compression(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x9003c, 0x0, 0x0, &(0x7f0000000200), 0x2)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtFsControlFile$ntfs_set_compression":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl-set-compression\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtFsControlFile$ntfs_set_compression(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x9c040, &(0x7f0000000200)={0x0}, 0x2, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtFsControlFile$ntfs_set_sparse":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl-set-sparse\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtFsControlFile$ntfs_set_sparse(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x900c4, &(0x7f0000000200)={0x1}, 0x1, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtFsControlFile$ntfs_set_zero_data":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl-set-zero\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"WriteFile(r0, &(0x7f0000000100)='abcd', 0x4, &(0x7f0000000140)=0x0, 0x0)\n" +
+				"NtFsControlFile$ntfs_set_zero_data(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000200)={@Status=0x0, 0x0}, 0x980c8, &(0x7f0000000300)={@QuadPart=0x0, @QuadPart=0x4}, 0x10, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtFsControlFile$ntfs_query_allocated_ranges":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl-query-ranges\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"WriteFile(r0, &(0x7f0000000100)='abcd', 0x4, &(0x7f0000000140)=0x0, 0x0)\n" +
+				"NtFsControlFile$ntfs_query_allocated_ranges(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000200)={@Status=0x0, 0x0}, 0x940cf, &(0x7f0000000300)={@QuadPart=0x0, @QuadPart=0x1000}, 0x10, &(0x7f0000000400)=[{{@QuadPart=0x0, @QuadPart=0x0}}, {{@QuadPart=0x0, @QuadPart=0x0}}], 0x20)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtDeviceIoControlFile":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-device-ioctl\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtDeviceIoControlFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x70000, 0x0, 0x0, &(0x7f0000000200)='\\x00'/256, 0x100)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtQueryInformationFile$basic":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-qinfo-basic\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtQueryInformationFile$basic(r0, &(0x7f0000000100)={@Status=0x0, 0x0}, &(0x7f0000000200), 0x28, 0x4)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtQueryInformationFile$standard":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-qinfo-standard\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtQueryInformationFile$standard(r0, &(0x7f0000000100)={@Status=0x0, 0x0}, &(0x7f0000000200), 0x18, 0x5)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtQueryInformationFile$network_open":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-qinfo-netopen\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtQueryInformationFile$network_open(r0, &(0x7f0000000100)={@Status=0x0, 0x0}, &(0x7f0000000200), 0x38, 0x22)\n" +
 				"CloseHandle(r0)\n"), nil
 	case "NtReadFile":
 		return []byte(
 			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-read\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
-				"NtReadFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)='\\x00'/256, 0x100, 0x0, 0x0)\n" +
+				"NtReadFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, &(0x7f0000000200)='\\x00'/256, 0x100, 0x0, 0x0)\n" +
+				"CloseHandle(r0)\n"), nil
+	case "NtSetInformationFile$basic":
+		return []byte(
+			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-setinfo-basic\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
+				"NtSetInformationFile$basic(r0, &(0x7f0000000100)={@Status=0x0, 0x0}, &(0x7f0000000200)={@QuadPart=0x0, @QuadPart=0x0, @QuadPart=0x0, @QuadPart=0x0, 0x80}, 0x28, 0x4)\n" +
 				"CloseHandle(r0)\n"), nil
 	case "NtWriteFile":
 		return []byte(
 			"r0 = CreateFileA(&(0x7f0000000000)='./nyx-write\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n" +
-				"NtWriteFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)='\\x00'/128, &(0x7f0000000200)=\"abcd\", 0x4, 0x0, 0x0)\n" +
+				"NtWriteFile(r0, 0xffffffffffffffff, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, &(0x7f0000000200)=\"abcd\", 0x4, 0x0, 0x0)\n" +
 				"CloseHandle(r0)\n"), nil
 	case "TransmitFile$inet_accept":
 		return []byte(
@@ -1762,6 +2107,8 @@ func main() {
 		payloadSize                = flag.Int("payload-size", int(flatrpc.ConstMaxInputSize)+4, "nyx payload buffer size")
 		bitmapSize                 = flag.Int("bitmap-size", 0x10000, "nyx bitmap size")
 		memoryMB                   = flag.Int("memory", 2048, "guest memory size in MB")
+		windowsMinidump            = flag.Bool("windows-minidump", false, "preserve Windows minidumps through qemu-nyx")
+		windowsMinidumpTimeout     = flag.Int("windows-minidump-timeout", 120, "Windows minidump completion timeout in seconds")
 		debug                      = flag.Bool("debug", false, "inherit qemu stdout/stderr")
 		standalone                 = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
 		standaloneSyscall          = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
@@ -1770,6 +2117,7 @@ func main() {
 		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
 		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
 		standaloneThreaded         = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
+		moduleRangesRaw            = flag.String("module-ranges", defaultModuleRangeList(), "comma-separated kernel module PT range targets; suffix :required for mandatory matches")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
 	flag.Parse()
@@ -1791,7 +2139,11 @@ func main() {
 	if *standaloneSyscallTimeoutMs <= 0 || *standaloneProgramTimeoutMs <= *standaloneSyscallTimeoutMs {
 		log.Fatalf("bad standalone timeouts: syscall=%d program=%d", *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs)
 	}
-	vm := newNyxVM(index, *workdir, *qemuPath, qemuArgs, *image, *memoryMB, *payloadSize, *bitmapSize, *debug, *hardTimeout)
+	moduleRanges, err := parseModuleRanges(*moduleRangesRaw)
+	if err != nil {
+		log.Fatalf("bad module range config: %v", err)
+	}
+	vm := newNyxVM(index, *workdir, *qemuPath, qemuArgs, *image, *memoryMB, *payloadSize, *bitmapSize, *debug, *hardTimeout, moduleRanges, *windowsMinidump, *windowsMinidumpTimeout)
 	defer vm.close()
 	ctx := context.Background()
 	if err := vm.start(ctx); err != nil {
