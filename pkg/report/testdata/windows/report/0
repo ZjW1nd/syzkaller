@@ -1,0 +1,12 @@
+TITLE: WINDOWS BUGCHECK
+PANICKED: Y
+
+runner exec request: id=42
+SYZ-NYX-WINDOWS-CRASH: WINDOWS BUGCHECK
+nyx exit reason: crash
+dump file: /tmp/syz-nyx/dumps/crash_000001_deadbeef.dmp
+dump size: 4096
+dump sha256: deadbeef
+last executing program:
+NtQuerySystemInformation(0x0, &(0x7f0000000000)=""/4096, 0x1000, &(0x7f0000001000)=0x0)
+END SYZ-NYX-WINDOWS-CRASH
