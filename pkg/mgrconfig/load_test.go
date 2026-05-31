@@ -160,7 +160,7 @@ func TestParseEnabledSyscallsExpandsWindowsAcceptAndUDPScaffold(t *testing.T) {
 		"socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp",
 		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp",
 		"send$inet_tcp",
-		"socket$inet_udp", "connect$inet_udp",
+		"socket$connected_udp", "connect$inet_udp",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -236,4 +236,53 @@ func TestExperimentalForceGenerateEveryNIsPreserved(t *testing.T) {
 	err := SetTargets(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, 3, cfg.Experimental.ForceGenerateEveryN)
+}
+
+func TestLoadDataAppliesWindowsAFDTargetProfile(t *testing.T) {
+	data := []byte(`{
+		"name": "windows-afd-profile",
+		"target": "windows/amd64",
+		"http": "127.0.0.1:0",
+		"workdir": "` + t.TempDir() + `",
+		"syzkaller": ".",
+		"type": "none",
+		"reproduce": false,
+		"execprog_bin_on_target": "C:\\syzkaller\\syz-execprog.exe",
+		"executor_bin_on_target": "C:\\syzkaller\\syz-executor.exe",
+		"experimental": {
+			"windows_target_profile": "afd"
+		}
+	}`)
+	cfg, err := LoadData(data)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Target)
+	assert.Equal(t, 4, cfg.Target.MinimumTriageCallRelevance)
+	assert.Equal(t, 5, cfg.Target.MinimumCollideCallRelevance)
+	require.NotNil(t, cfg.Target.RuntimePolicy.ShouldScheduleImmediateCollide)
+
+	global, err := prog.GetTarget("windows", "amd64")
+	require.NoError(t, err)
+	require.NotSame(t, global, cfg.Target)
+	assert.Equal(t, 0, global.MinimumTriageCallRelevance)
+	assert.Equal(t, 0, global.MinimumCollideCallRelevance)
+}
+
+func TestLoadDataRejectsUnknownWindowsTargetProfile(t *testing.T) {
+	data := []byte(`{
+		"name": "windows-bad-profile",
+		"target": "windows/amd64",
+		"http": "127.0.0.1:0",
+		"workdir": "` + t.TempDir() + `",
+		"syzkaller": ".",
+		"type": "none",
+		"reproduce": false,
+		"execprog_bin_on_target": "C:\\syzkaller\\syz-execprog.exe",
+		"executor_bin_on_target": "C:\\syzkaller\\syz-executor.exe",
+		"experimental": {
+			"windows_target_profile": "missing"
+		}
+	}`)
+	_, err := LoadData(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown windows target profile")
 }

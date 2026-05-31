@@ -6,7 +6,11 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 cd "$ROOT_DIR"
 
-CXX="${CXX:-x86_64-w64-mingw32-g++}"
+case "${CXX:-}" in
+	""|g++|c++)
+		CXX="x86_64-w64-mingw32-g++"
+		;;
+esac
 command -v "$CXX" >/dev/null 2>&1 || {
 	echo "[ERR] mingw compiler not found: $CXX" >&2
 	exit 1

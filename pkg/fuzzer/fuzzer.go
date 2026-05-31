@@ -299,6 +299,10 @@ func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.
 	}
 	prio := signalPrio(p, info, call)
 	newMaxSignal := fuzzer.Cover.addRawMaxSignal(info.Signal, prio)
+	if fuzzer.target != nil && fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram != nil &&
+		fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram(origin, p) {
+		return
+	}
 	if !fuzzer.Config.NewInputFilter(p.CallName(call)) {
 		return
 	}

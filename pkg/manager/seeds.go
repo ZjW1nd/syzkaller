@@ -119,19 +119,40 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 		return nil
 	}
 	var progs []*prog.Prog
+	skippedNoGenerate := 0
 	for _, seed := range seeds {
 		p, err := ParseSeed(cfg.Target, seed.Data)
 		if err != nil {
 			log.Logf(0, "failed to parse borrowing seed %s: %v", seed.Path, err)
 			continue
 		}
+		if progContainsNoGenerate(p) {
+			skippedNoGenerate++
+			log.Logf(1, "borrowing seed %s is skipped: contains no_generate calls", seed.Path)
+			continue
+		}
 		progs = append(progs, p)
+	}
+	if skippedNoGenerate != 0 {
+		log.Logf(0, "skipped %d borrowing-only seeds containing no_generate calls", skippedNoGenerate)
 	}
 	if len(progs) != 0 {
 		log.Logf(0, "loaded %d borrowing-only seeds with prefix %q", len(progs),
 			cfg.Experimental.BorrowingSeedPrefix)
 	}
 	return progs
+}
+
+func progContainsNoGenerate(p *prog.Prog) bool {
+	if p == nil {
+		return false
+	}
+	for _, call := range p.Calls {
+		if call != nil && call.Meta != nil && call.Meta.Attrs.NoGenerate {
+			return true
+		}
+	}
+	return false
 }
 
 type input struct {
@@ -347,14 +368,15 @@ func FilterCandidates(candidates []fuzzer.Candidate, syscalls map[*prog.Syscall]
 	dropMinimize bool) FilteredCandidates {
 	var ret FilteredCandidates
 	for _, item := range candidates {
-		if !item.Prog.OnlyContains(syscalls) {
+		allowNoGenerate := item.Flags&fuzzer.ProgFromCorpus == 0
+		if !candidateOnlyContains(item.Prog, syscalls, allowNoGenerate) {
 			ret.ModifiedHashes = append(ret.ModifiedHashes, hash.String(item.Prog.Serialize()))
 			// We cut out the disabled syscalls and retriage/minimize what remains from the prog.
 			// The original prog will be deleted from the corpus.
 			if dropMinimize {
 				item.Flags &= ^fuzzer.ProgMinimized
 			}
-			item.Prog.FilterInplace(syscalls)
+			filterCandidateInplace(item.Prog, syscalls, allowNoGenerate)
 			if len(item.Prog.Calls) == 0 {
 				continue
 			}
@@ -365,6 +387,30 @@ func FilterCandidates(candidates []fuzzer.Candidate, syscalls map[*prog.Syscall]
 		ret.Candidates = append(ret.Candidates, item)
 	}
 	return ret
+}
+
+func candidateOnlyContains(p *prog.Prog, syscalls map[*prog.Syscall]bool, allowNoGenerate bool) bool {
+	for _, c := range p.Calls {
+		if !candidateCallAllowed(c.Meta, syscalls, allowNoGenerate) {
+			return false
+		}
+	}
+	return true
+}
+
+func filterCandidateInplace(p *prog.Prog, allowed map[*prog.Syscall]bool, allowNoGenerate bool) {
+	for i := 0; i < len(p.Calls); {
+		c := p.Calls[i]
+		if !candidateCallAllowed(c.Meta, allowed, allowNoGenerate) {
+			p.RemoveCall(i)
+			continue
+		}
+		i++
+	}
+}
+
+func candidateCallAllowed(call *prog.Syscall, allowed map[*prog.Syscall]bool, allowNoGenerate bool) bool {
+	return allowed[call] || allowNoGenerate && call.Attrs.NoGenerate
 }
 
 // Programs that do more than 15 system calls are to be treated with suspicion and re-minimized.

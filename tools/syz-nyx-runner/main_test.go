@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -162,6 +163,112 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 	}
 }
 
+func TestSummarizeModuleCoverageBySlot(t *testing.T) {
+	records := []nyxCovDumpRecord{
+		{CallIndex: 0, SlotID: 2, PCs: []uint64{0xfffff80000001000, 0x7ff600001000}},
+		{CallIndex: 1, SlotID: 1, PCs: []uint64{0xfffff80000002000}},
+		{CallIndex: 2, SlotID: 2, PCs: []uint64{0xfffff80000003000, 0xfffff80000004000}},
+		{CallIndex: 3, SlotID: 3, PCs: []uint64{0}},
+	}
+	got := summarizeModuleCoverageBySlot(records, true, nil)
+	want := []moduleCoverageSlotSummary{
+		{SlotID: 1, Records: 1, PCs: 1},
+		{SlotID: 2, Records: 2, PCs: 3},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d mismatch: got %+v want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSummarizeModuleCoverageByRuntimeRanges(t *testing.T) {
+	ranges := []moduleRuntimeRange{
+		{SlotID: 0, Target: "ntoskrnl.exe", Name: "ntoskrnl.exe", Base: 0xfffff80000000000, End: 0xfffff80000002000},
+		{SlotID: 2, Target: "afd.sys", Name: "afd.sys", Base: 0xfffff80600000000, End: 0xfffff80600002000},
+	}
+	records := []nyxCovDumpRecord{
+		{CallIndex: 0, SlotID: 0, PCs: []uint64{0xfffff80000001000, 0xfffff80600001000, 0x7ff600001000}},
+		{CallIndex: 1, SlotID: 0, PCs: []uint64{0xfffff80600001100, 0xfffff80600001200}},
+	}
+	got := summarizeModuleCoverageBySlot(records, true, ranges)
+	want := []moduleCoverageSlotSummary{
+		{SlotID: 0, Records: 1, PCs: 1},
+		{SlotID: 2, Records: 2, PCs: 3},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d mismatch: got %+v want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSummarizeModuleCoverageByCall(t *testing.T) {
+	ranges := []moduleRuntimeRange{
+		{SlotID: 0, Target: "ntoskrnl.exe", Name: "ntoskrnl.exe", Base: 0xfffff80000000000, End: 0xfffff80000002000},
+		{SlotID: 2, Target: "afd.sys", Name: "afd.sys", Base: 0xfffff80600000000, End: 0xfffff80600002000},
+	}
+	records := []nyxCovDumpRecord{
+		{CallIndex: 0, SlotID: 0, PCs: []uint64{0xfffff80000001000, 0xfffff80600001000}},
+		{CallIndex: 1, SlotID: 0, PCs: []uint64{0xfffff80600001100, 0xfffff80600001200}},
+	}
+	got := summarizeModuleCoverageByCall(records, true, ranges, []string{"accept$inet_tcp", "WSARecv$accept"})
+	want := []moduleCoverageCallSummary{
+		{CallIndex: 0, SlotID: 0, CallName: "accept$inet_tcp", Records: 1, PCs: 1},
+		{CallIndex: 0, SlotID: 2, CallName: "accept$inet_tcp", Records: 1, PCs: 1},
+		{CallIndex: 1, SlotID: 2, CallName: "WSARecv$accept", Records: 1, PCs: 2},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d mismatch: got %+v want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestSummarizeCallFeedback(t *testing.T) {
+	calls := []*flatrpc.CallInfo{
+		{Signal: []uint64{1, 2}, Cover: []uint64{3, 4, 5}, Error: 0},
+		nil,
+		{Comps: []*flatrpc.Comparison{{Pc: 1}}, Error: 22},
+	}
+	got := summarizeCallFeedback(calls, []string{"accept$inet_tcp", "recv$inet_accept", "WSARecv$accept"})
+	want := []callFeedbackSummary{
+		{CallIndex: 0, CallName: "accept$inet_tcp", Signal: 2, Cover: 3},
+		{CallIndex: 2, CallName: "WSARecv$accept", Comps: 1, Error: 22},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d rows, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d mismatch: got %+v want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestParseModuleRangesFromAux(t *testing.T) {
+	got := parseModuleRangesFromAux(strings.Join([]string{
+		"nyx module range submitted slot=0 target=ntoskrnl.exe name=ntoskrnl.exe base=0xfffff80000000000 end=0xfffff80000002000 size=0x2000",
+		"nyx module range submitted slot=2 target=afd.sys name=afd.sys base=0xfffff80600000000 end=0xfffff80600001000 size=0x1000",
+	}, "\n"))
+	if len(got) != 2 {
+		t.Fatalf("got %d ranges, want 2: %+v", len(got), got)
+	}
+	if got[1].SlotID != 2 || got[1].Target != "afd.sys" ||
+		got[1].Base != 0xfffff80600000000 || got[1].End != 0xfffff80600001000 {
+		t.Fatalf("unexpected afd range: %+v", got[1])
+	}
+}
+
 func TestNormalizeWindowsNyxEnvFlags(t *testing.T) {
 	raw := flatrpc.ExecEnvSandboxAndroid |
 		flatrpc.ExecEnvEnableNetReset |
@@ -224,6 +331,55 @@ func TestRequestNeedsCoveragePriming(t *testing.T) {
 				t.Fatalf("requestNeedsCoveragePriming()=%v want %v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestPrimeResultNeedsReplay(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  *flatrpc.ExecutorMessage
+		want bool
+	}{
+		{
+			name: "coverage",
+			msg: execResultMessage(&flatrpc.ExecResult{
+				Info: &flatrpc.ProgInfo{
+					Calls: []*flatrpc.CallInfo{
+						{Cover: []uint64{0x10}},
+					},
+				},
+			}),
+			want: false,
+		},
+		{
+			name: "hanged",
+			msg: execResultMessage(&flatrpc.ExecResult{
+				Hanged: true,
+				Info:   flatrpc.EmptyProgInfo(1),
+			}),
+			want: false,
+		},
+		{
+			name: "no coverage",
+			msg: execResultMessage(&flatrpc.ExecResult{
+				Info: flatrpc.EmptyProgInfo(1),
+			}),
+			want: true,
+		},
+	}
+	for _, test := range tests {
+		if got := primeResultNeedsReplay(test.msg); got != test.want {
+			t.Fatalf("%s: got %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
+func execResultMessage(res *flatrpc.ExecResult) *flatrpc.ExecutorMessage {
+	return &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type:  flatrpc.ExecutorMessagesRawExecResult,
+			Value: res,
+		},
 	}
 }
 

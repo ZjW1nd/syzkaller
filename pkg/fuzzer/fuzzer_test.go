@@ -288,6 +288,35 @@ func TestWindowsSkipsCorpusForAutomaticHelpers(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDSkipsCorpusForSeedOnlyPrograms(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	seedOnly := profiled.SyscallMap["WSAEventSelect$tcp"]
+	if seedOnly == nil || !seedOnly.Attrs.NoGenerate {
+		t.Fatal("WSAEventSelect$tcp should be seed-only in the windows target")
+	}
+	creator := profiled.SyscallMap["ConnectEx$inet_tcp"]
+	if creator == nil || creator.Attrs.NoGenerate {
+		t.Fatal("ConnectEx$inet_tcp should remain generatable")
+	}
+	fuzzer := &Fuzzer{Config: &Config{}, target: profiled}
+	job := &triageJob{fuzzer: fuzzer, origin: "candidate"}
+	seedOnlyProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: seedOnly}}}
+	if job.shouldPersistCall(seedOnlyProg, 0) {
+		t.Fatal("seed-only AFD programs should not be persisted as corpus entries")
+	}
+	creatorProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: creator}}}
+	if !job.shouldPersistCall(creatorProg, 0) {
+		t.Fatal("regular public AFD calls should still be persisted")
+	}
+}
+
 func TestWindowsSkipsTriageForAutomaticHelpers(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -328,6 +357,105 @@ func TestWindowsSkipsTriageForAutomaticHelpers(t *testing.T) {
 	if len(triage) != 1 {
 		t.Fatalf("non-helper call should still produce triage entry, got %d", len(triage))
 	}
+}
+
+func TestWindowsAFDSkipsTriageForSeedOnlyPrograms(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	seedOnly := profiled.SyscallMap["WSAEventSelect$tcp"]
+	if seedOnly == nil || !seedOnly.Attrs.NoGenerate {
+		t.Fatal("WSAEventSelect$tcp should be seed-only in the windows target")
+	}
+	creator := profiled.SyscallMap["ConnectEx$inet_tcp"]
+	if creator == nil || creator.Attrs.NoGenerate {
+		t.Fatal("ConnectEx$inet_tcp should remain generatable")
+	}
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	seedOnlyProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: seedOnly}}}
+	var triage map[int]*triageCall
+	fuzzer.triageProgCall("candidate", seedOnlyProg, &flatrpc.CallInfo{
+		Signal: []uint64{1, 2, 3},
+		Cover:  []uint64{1, 2, 3},
+	}, 0, &triage)
+	if len(triage) != 0 {
+		t.Fatal("seed-only AFD program should update max signal without entering triage")
+	}
+	creatorProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: creator}}}
+	fuzzer.triageProgCall("candidate", creatorProg, &flatrpc.CallInfo{
+		Signal: []uint64{4, 5, 6},
+		Cover:  []uint64{4, 5, 6},
+	}, 0, &triage)
+	if len(triage) != 1 {
+		t.Fatalf("pure async state creator should still produce triage, got %d", len(triage))
+	}
+}
+
+func TestWindowsAFDTriageKeepsDeepOwnerOverScaffold(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	listenCall := windowsFuzzerTestCallIndex(t, p, "listen$inet_tcp")
+	deepCall := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	var triage map[int]*triageCall
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{1},
+		Cover:  []uint64{1},
+	}, listenCall, &triage)
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{2},
+		Cover:  []uint64{2},
+	}, deepCall, &triage)
+	if len(triage) != 1 {
+		t.Fatalf("triage owners=%v, want only deep AFD call", triage)
+	}
+	if _, ok := triage[deepCall]; !ok {
+		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(deepCall))
+	}
+}
+
+func windowsFuzzerTestCallIndex(t *testing.T, p *prog.Prog, name string) int {
+	t.Helper()
+	for i, call := range p.Calls {
+		if call.Meta != nil && call.Meta.Name == name {
+			return i
+		}
+	}
+	t.Fatalf("program is missing %s", name)
+	return -1
 }
 
 func BenchmarkFuzzer(b *testing.B) {

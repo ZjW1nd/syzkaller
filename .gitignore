@@ -3,6 +3,7 @@
 *.cfg
 !tools/syz-nyx-runner/windows-nyx-test.cfg
 !tools/syz-nyx-runner/windows-nyx.cfg
+!tools/syz-nyx-runner/windows-nyx-afd-*.cfg
 *.tmp
 *.img
 workdir*

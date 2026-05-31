@@ -6,8 +6,10 @@ package fuzzer
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"testing"
 
+	"github.com/google/syzkaller/pkg/corpus"
 	"github.com/google/syzkaller/pkg/cover"
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer/queue"
@@ -163,4 +165,96 @@ func TestTriageExecuteSignalsReadyAfterSubmit(t *testing.T) {
 		t.Fatal("triage request was not submitted before ready was signaled")
 	}
 	<-done
+}
+
+func TestWindowsAFDPersistsStableCollideOwner(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	corp := corpus.NewCorpus(context.Background())
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			Corpus:         corp,
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	job := &triageJob{
+		p:      p,
+		flags:  ProgMinimized | ProgSmashed,
+		origin: "collide:triage",
+		fuzzer: fuzzer,
+	}
+	job.handleCall(call, &triageCall{
+		stableSignal: signal.FromRaw([]uint64{1}, 0),
+		cover:        cover.FromRaw([]uint64{1}),
+	})
+	items := corp.Items()
+	if len(items) != 1 {
+		t.Fatalf("corpus items=%d, want one deep collide owner", len(items))
+	}
+	if got := items[0].StringCall(); got != "WSARecv$accept" {
+		t.Fatalf("corpus owner=%q, want WSARecv$accept", got)
+	}
+}
+
+func TestWindowsAFDSchedulesImmediateCollideForDeepOwner(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	fuzzer := NewFuzzer(context.Background(), &Config{
+		Collide:      true,
+		Corpus:       corpus.NewCorpus(context.Background()),
+		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
+	}, rand.New(rand.NewSource(0)), profiled)
+	job := &triageJob{fuzzer: fuzzer}
+	job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "listen$inet_tcp"))
+	if got := fuzzer.immediateCollideQueue.Len(); got != 0 {
+		t.Fatalf("shallow scaffold scheduled %d immediate collide requests", got)
+	}
+	job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "WSARecv$accept"))
+	req := fuzzer.immediateCollideQueue.Next()
+	if req == nil {
+		t.Fatal("deep AFD owner did not schedule immediate collide")
+	}
+	if req.Origin != "collide:triage" || req.Stat != fuzzer.statExecCollide || !req.Important {
+		t.Fatalf("bad collide request: origin=%q stat=%v important=%v", req.Origin, req.Stat, req.Important)
+	}
+	if string(req.Prog.Serialize()) == string(p.Serialize()) {
+		t.Fatalf("immediate collide request did not transform program:\n%s", req.Prog.Serialize())
+	}
+	if got := fuzzer.immediateCollideQueue.Len(); got != 0 {
+		t.Fatalf("unexpected extra immediate collide requests: %d", got)
+	}
 }

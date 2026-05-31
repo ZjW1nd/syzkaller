@@ -266,6 +266,13 @@ type Experimental struct {
 	// 0 means use the built-in syzkaller defaults.
 	MaxCallsPerProg int `json:"max_calls_per_prog,omitempty"`
 
+	// TargetProfile applies target-specific policy knobs for a focused fuzzing
+	// mode. Currently used by Windows/Nyx focused profiles.
+	TargetProfile string `json:"target_profile,omitempty"`
+
+	// WindowsTargetProfile is a Windows-specific alias for TargetProfile.
+	WindowsTargetProfile string `json:"windows_target_profile,omitempty"`
+
 	// ForceGenerateEveryN injects one fresh generation opportunity after every
 	// N-1 high-priority queue picks in the main fuzzing source. 0 disables it.
 	ForceGenerateEveryN int `json:"force_generate_every_n,omitempty"`

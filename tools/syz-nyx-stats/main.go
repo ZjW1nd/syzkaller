@@ -179,27 +179,41 @@ type plotChart struct {
 }
 
 var (
-	reManagerStats            = regexp.MustCompile(`candidates=(\d+)\s+corpus=(\d+)\s+coverage=(\d+)\s+exec total=(\d+)\s+\((\d+)/min\)`)
-	reWinTemplateGen          = regexp.MustCompile(`win_tmpl_gen=(\d+)`)
-	reWinTemplateCorpus       = regexp.MustCompile(`win_tmpl_corpus=(\d+)`)
-	reWinTemplateCollide      = regexp.MustCompile(`win_tmpl_collide=(\d+)`)
-	reWinRCTry                = regexp.MustCompile(`win_rc_try=(\d+)`)
-	reWinRCHit                = regexp.MustCompile(`win_rc_hit=(\d+)`)
-	reWinRCNoCandidates       = regexp.MustCompile(`win_rc_no_candidates=(\d+)`)
-	reWinRCZeroScore          = regexp.MustCompile(`win_rc_zero_score=(\d+)`)
-	reExecGen                 = regexp.MustCompile(`exec gen=(\d+)`)
-	reExecFuzz                = regexp.MustCompile(`exec fuzz=(\d+)`)
-	reExecCandidate           = regexp.MustCompile(`exec candidate=(\d+)`)
-	reExecTriage              = regexp.MustCompile(`exec triage=(\d+)`)
-	reExecCollide             = regexp.MustCompile(`exec collide=(\d+)`)
-	reRPCResult               = regexp.MustCompile(`rpcserver exec result: id=(\d+) calls=(\d+) raw_nonempty=(\d+) raw_signal=(\d+) raw_cover=(\d+) post_nonempty=(\d+) post_signal=(\d+) post_cover=(\d+) hanged=(\w+)`)
-	reRunnerExec              = regexp.MustCompile(`runner exec complete: id=(\d+) calls=(\d+) cover_records=(\d+)`)
-	reSubmitCR3               = regexp.MustCompile(`submit_cr3=0x([0-9a-fA-F]+)`)
-	rePTDecode                = regexp.MustCompile(`PT_DECODE\] bytes=(\d+) decode_bytes=(\d+) trimmed=(\d+) terminator_before=0x[0-9a-fA-F]+ result=(\d+) bb_before=\d+ bb_after=(\d+) trace_size=(\d+)`)
-	reSYZCovDump              = regexp.MustCompile(`SYZ_COV_DUMP\] active=\d+ records=(\d+) last_call=(\d+) last_slot=\d+ last_pcs=(\d+) ip_callbacks=(\d+) ip_recorded=(\d+)`)
-	reWindowsCollideResult    = regexp.MustCompile(`windows collide result: origin=([^ ]+)(?: trace=([^ ]+))? active=\[(.*)\]`)
-	reWindowsTriageQueued     = regexp.MustCompile(`windows triage job queued: origin=([^ ]+)(?: trace=([^ ]+))? calls=\[(.*)\]`)
-	reWindowsCorpusSaveOrigin = regexp.MustCompile(`windows corpus save: origin=([^ ]+)(?: trace=([^ ]+))? call=(\d+) name=([^ ]+) stable_signal=(\d+) new_stable=(\d+) cover=(\d+) raw_cover=(\d+)`)
+	reManagerStats             = regexp.MustCompile(`candidates=(\d+).*corpus=(\d+).*coverage=(\d+).*exec total=(\d+)\s+\((\d+)/(min|hour)\)`)
+	reWinTemplateGen           = regexp.MustCompile(`(?:win_)?tmpl_gen=(\d+)`)
+	reWinTemplateCorpus        = regexp.MustCompile(`(?:win_)?tmpl_corpus=(\d+)`)
+	reWinTemplateCollide       = regexp.MustCompile(`(?:win_)?tmpl_collide=(\d+)`)
+	reWinRCTry                 = regexp.MustCompile(`(?:win_)?rc_try=(\d+)`)
+	reWinRCHit                 = regexp.MustCompile(`(?:win_)?rc_hit=(\d+)`)
+	reWinRCNoCandidates        = regexp.MustCompile(`(?:win_)?rc_no_candidates=(\d+)`)
+	reWinRCZeroScore           = regexp.MustCompile(`(?:win_)?rc_zero_score=(\d+)`)
+	reExecGen                  = regexp.MustCompile(`exec gen=(\d+)`)
+	reExecFuzz                 = regexp.MustCompile(`exec fuzz=(\d+)`)
+	reExecCandidate            = regexp.MustCompile(`exec candidate=(\d+)`)
+	reExecTriage               = regexp.MustCompile(`exec triage=(\d+)`)
+	reExecCollide              = regexp.MustCompile(`exec collide=(\d+)`)
+	reRPCResult                = regexp.MustCompile(`rpcserver exec result: id=(\d+) calls=(\d+) raw_nonempty=(\d+) raw_signal=(\d+) raw_cover=(\d+) post_nonempty=(\d+) post_signal=(\d+) post_cover=(\d+) hanged=(\w+)`)
+	reRunnerExec               = regexp.MustCompile(`runner (?:exec|prime) complete: id=(\d+) calls=(\d+) cover_records=(\d+)`)
+	reSubmitCR3                = regexp.MustCompile(`submit_cr3=0x([0-9a-fA-F]+)`)
+	rePTDecode                 = regexp.MustCompile(`PT_DECODE\] bytes=(\d+) decode_bytes=(\d+) trimmed=(\d+) terminator_before=0x[0-9a-fA-F]+ result=(\d+) bb_before=\d+ bb_after=(\d+) trace_size=(\d+)`)
+	reSYZCovDump               = regexp.MustCompile(`SYZ_COV_DUMP\] active=\d+ records=(\d+) last_call=(\d+) last_slot=\d+ last_pcs=(\d+) ip_callbacks=(\d+) ip_recorded=(\d+)`)
+	reWindowsCollideResult     = regexp.MustCompile(`windows collide result: origin=([^ ]+)(?: trace=([^ ]+))? active=\[(.*)\]`)
+	reWindowsTriage            = regexp.MustCompile(`windows triage: call=(\d+) name=([^ ]+) signal=(\d+) cover=(\d+) prio=\d+ new=(\d+)`)
+	reWindowsTriageQueued      = regexp.MustCompile(`windows triage job queued: origin=([^ ]+)(?: trace=([^ ]+))? calls=\[(.*)\]`)
+	reWindowsCorpusSaveOrigin  = regexp.MustCompile(`windows corpus save:(?: origin=([^ ]+)(?: trace=([^ ]+))?)? call=(\d+) name=([^ ]+) stable_signal=(\d+) new_stable=(\d+) cover=(\d+) raw_cover=(\d+)`)
+	reWindowsCollideActive     = regexp.MustCompile(`(?:^|\s)\d+:([^(\s]+)\(sig=(\d+) cover=(\d+)`)
+	reNyxModuleRangeSubmitted  = regexp.MustCompile(`nyx module range submitted slot=(\d+) target=([^ ]+) name=([^ ]+)`)
+	reRunnerModuleCoverage     = regexp.MustCompile(`runner module coverage: id=(\d+) slot=(\d+) records=(\d+) pcs=(\d+)`)
+	reRunnerCallModuleCoverage = regexp.MustCompile(`runner call module coverage: id=(\d+) call=(\d+) name=([^ ]+) slot=(\d+) records=(\d+) pcs=(\d+)`)
+	reRunnerCallFeedback       = regexp.MustCompile(`runner call feedback: id=(\d+) call=(\d+) name=([^ ]+) signal=(\d+) cover=(\d+) comps=(\d+) errno=(-?\d+)`)
+	reRunnerProgram            = regexp.MustCompile(`runner (?:exec|prime) program: id=(\d+) sha1=([0-9a-fA-F]+) calls=(\d+) call0=([^ ]+)(?: deep0=([^ ]+))?`)
+	reRunnerRestartReason      = regexp.MustCompile(`runner (scheduling VM restart|restarting VM):\s*(.*)`)
+	reRunnerRestartFailed      = regexp.MustCompile(`runner scheduling VM restart: request (\d+) failed: (.*)`)
+	reRunnerRestartHanged      = regexp.MustCompile(`runner scheduling VM restart: request (\d+) hanged`)
+	reWindowsCrash             = regexp.MustCompile(`SYZ-NYX-WINDOWS-CRASH:\s*(.*)`)
+	reRunnerFatal              = regexp.MustCompile(`\[FATAL\]\s*(.*)`)
+	reLastExecutingRequest     = regexp.MustCompile(`last executing request: id=(\d+)`)
+	reProgramSummary           = regexp.MustCompile(`sha1=([0-9a-fA-F]+) calls=(\d+) call0=([^ ]+)(?: deep0=([^ ]+))?`)
 )
 
 type collideSummaryEntry struct {
@@ -209,11 +223,19 @@ type collideSummaryEntry struct {
 }
 
 type collideQualityEntry struct {
-	Origin      string   `json:"origin"`
-	ActiveCalls string   `json:"active_calls"`
-	Count       int      `json:"count"`
-	TriageCalls []string `json:"triage_calls,omitempty"`
-	CorpusSaves []string `json:"corpus_saves,omitempty"`
+	Origin           string   `json:"origin"`
+	ActiveCalls      string   `json:"active_calls"`
+	Count            int      `json:"count"`
+	ActiveCallNames  []string `json:"active_call_names,omitempty"`
+	ActiveCategories []string `json:"active_categories,omitempty"`
+	HasDeepActive    bool     `json:"has_deep_active,omitempty"`
+	HasSetupActive   bool     `json:"has_setup_active,omitempty"`
+	TriageCalls      []string `json:"triage_calls,omitempty"`
+	CorpusSaves      []string `json:"corpus_saves,omitempty"`
+	DeepTriageCalls  []string `json:"deep_triage_calls,omitempty"`
+	DeepCorpusSaves  []string `json:"deep_corpus_saves,omitempty"`
+	SetupTriageCalls []string `json:"setup_triage_calls,omitempty"`
+	SetupCorpusSaves []string `json:"setup_corpus_saves,omitempty"`
 }
 
 type collideQualityEvent struct {
@@ -234,6 +256,206 @@ type collideOwnerEntry struct {
 	Origin string `json:"origin"`
 	Owner  string `json:"owner"`
 	Count  int    `json:"count"`
+}
+
+type afdSummary struct {
+	ManagerLog              string                      `json:"manager_log,omitempty"`
+	RunnerLog               string                      `json:"runner_log,omitempty"`
+	Manager                 afdManagerSummary           `json:"manager"`
+	CallStats               []afdCallSummary            `json:"call_stats"`
+	CategoryStats           []afdCategorySummary        `json:"category_stats"`
+	OwnerStats              []afdOwnerSummary           `json:"owner_stats,omitempty"`
+	DeepTriageJobs          int                         `json:"deep_triage_jobs"`
+	SetupTriageJobs         int                         `json:"setup_triage_jobs"`
+	DeepTriageEvents        int                         `json:"deep_triage_events"`
+	SetupTriageEvents       int                         `json:"setup_triage_events"`
+	DeepCorpusSaves         int                         `json:"deep_corpus_saves"`
+	SetupCorpusSaves        int                         `json:"setup_corpus_saves"`
+	DeepCollideActiveCalls  int                         `json:"deep_collide_active_calls"`
+	SetupCollideActiveCalls int                         `json:"setup_collide_active_calls"`
+	Runner                  afdRunnerSummary            `json:"runner"`
+	ModuleRanges            []afdModuleRangeSummary     `json:"module_ranges,omitempty"`
+	ModuleHits              []afdModuleHitSummary       `json:"module_hits,omitempty"`
+	ModuleCoverClasses      []afdModuleCoverSummary     `json:"module_cover_classes,omitempty"`
+	AFDModuleHitRatio       float64                     `json:"afd_module_hit_ratio,omitempty"`
+	HangedRequestIDs        []int                       `json:"hanged_request_ids,omitempty"`
+	RestartReasons          []afdRestartReason          `json:"restart_reasons,omitempty"`
+	CollideQuality          []collideQualityEntry       `json:"collide_quality,omitempty"`
+	FailureEvents           []afdFailureEvent           `json:"failure_events,omitempty"`
+	FailureCategoryStats    []afdFailureCategorySummary `json:"failure_category_stats,omitempty"`
+}
+
+type afdCallSummary struct {
+	Name               string `json:"name"`
+	Category           string `json:"category"`
+	TriageJobs         int    `json:"triage_jobs,omitempty"`
+	TriageEvents       int    `json:"triage_events,omitempty"`
+	TriageSignal       int    `json:"triage_signal,omitempty"`
+	TriageCover        int    `json:"triage_cover,omitempty"`
+	TriageNewSignal    int    `json:"triage_new_signal,omitempty"`
+	CorpusSaves        int    `json:"corpus_saves,omitempty"`
+	CorpusStableSignal int    `json:"corpus_stable_signal,omitempty"`
+	CorpusNewStable    int    `json:"corpus_new_stable,omitempty"`
+	CorpusCover        int    `json:"corpus_cover,omitempty"`
+	CorpusRawCover     int    `json:"corpus_raw_cover,omitempty"`
+	CollideActive      int    `json:"collide_active,omitempty"`
+	CollideSignal      int    `json:"collide_signal,omitempty"`
+	CollideCover       int    `json:"collide_cover,omitempty"`
+	ExecResults        int    `json:"exec_results,omitempty"`
+	ExecRawSignal      int    `json:"exec_raw_signal,omitempty"`
+	ExecRawCover       int    `json:"exec_raw_cover,omitempty"`
+	ExecComps          int    `json:"exec_comps,omitempty"`
+	AFDModuleRecords   int    `json:"afd_module_records,omitempty"`
+	AFDModulePCs       int    `json:"afd_module_pcs,omitempty"`
+	NtosModuleRecords  int    `json:"ntos_module_records,omitempty"`
+	NtosModulePCs      int    `json:"ntos_module_pcs,omitempty"`
+	ModuleRecords      int    `json:"module_records,omitempty"`
+	ModulePCs          int    `json:"module_pcs,omitempty"`
+}
+
+type afdCategorySummary struct {
+	Category           string `json:"category"`
+	TriageJobs         int    `json:"triage_jobs,omitempty"`
+	TriageEvents       int    `json:"triage_events,omitempty"`
+	TriageSignal       int    `json:"triage_signal,omitempty"`
+	TriageCover        int    `json:"triage_cover,omitempty"`
+	TriageNewSignal    int    `json:"triage_new_signal,omitempty"`
+	CorpusSaves        int    `json:"corpus_saves,omitempty"`
+	CorpusStableSignal int    `json:"corpus_stable_signal,omitempty"`
+	CorpusNewStable    int    `json:"corpus_new_stable,omitempty"`
+	CorpusCover        int    `json:"corpus_cover,omitempty"`
+	CorpusRawCover     int    `json:"corpus_raw_cover,omitempty"`
+	CollideActive      int    `json:"collide_active,omitempty"`
+	CollideSignal      int    `json:"collide_signal,omitempty"`
+	CollideCover       int    `json:"collide_cover,omitempty"`
+	ExecResults        int    `json:"exec_results,omitempty"`
+	ExecRawSignal      int    `json:"exec_raw_signal,omitempty"`
+	ExecRawCover       int    `json:"exec_raw_cover,omitempty"`
+	ExecComps          int    `json:"exec_comps,omitempty"`
+	AFDModuleRecords   int    `json:"afd_module_records,omitempty"`
+	AFDModulePCs       int    `json:"afd_module_pcs,omitempty"`
+	NtosModuleRecords  int    `json:"ntos_module_records,omitempty"`
+	NtosModulePCs      int    `json:"ntos_module_pcs,omitempty"`
+	ModuleRecords      int    `json:"module_records,omitempty"`
+	ModulePCs          int    `json:"module_pcs,omitempty"`
+}
+
+type afdManagerSummary struct {
+	Candidates                     int `json:"candidates,omitempty"`
+	Corpus                         int `json:"corpus,omitempty"`
+	Coverage                       int `json:"coverage,omitempty"`
+	ExecTotal                      int `json:"exec_total,omitempty"`
+	ExecPerMin                     int `json:"exec_per_min,omitempty"`
+	ExecGen                        int `json:"exec_gen,omitempty"`
+	ExecFuzz                       int `json:"exec_fuzz,omitempty"`
+	ExecCandidate                  int `json:"exec_candidate,omitempty"`
+	ExecTriage                     int `json:"exec_triage,omitempty"`
+	ExecCollide                    int `json:"exec_collide,omitempty"`
+	RPCResults                     int `json:"rpc_results,omitempty"`
+	NonZeroExecResults             int `json:"nonzero_exec_results,omitempty"`
+	HangedResults                  int `json:"hanged_results,omitempty"`
+	RawSignal                      int `json:"raw_signal,omitempty"`
+	RawCover                       int `json:"raw_cover,omitempty"`
+	PostSignal                     int `json:"post_signal,omitempty"`
+	PostCover                      int `json:"post_cover,omitempty"`
+	CorpusSaves                    int `json:"corpus_saves,omitempty"`
+	TriageEvents                   int `json:"triage_events,omitempty"`
+	WinTemplateGen                 int `json:"win_template_gen,omitempty"`
+	WinTemplateCorpus              int `json:"win_template_corpus,omitempty"`
+	WinTemplateCollide             int `json:"win_template_collide,omitempty"`
+	WinResourceCentricTry          int `json:"win_resource_centric_try,omitempty"`
+	WinResourceCentricHit          int `json:"win_resource_centric_hit,omitempty"`
+	WinResourceCentricNoCandidates int `json:"win_resource_centric_no_candidates,omitempty"`
+	WinResourceCentricZeroScore    int `json:"win_resource_centric_zero_score,omitempty"`
+}
+
+type afdRunnerSummary struct {
+	ExecResults      int `json:"exec_results"`
+	NonZeroCover     int `json:"nonzero_cover"`
+	LastExecID       int `json:"last_exec_id,omitempty"`
+	LastExecCalls    int `json:"last_exec_calls,omitempty"`
+	LastCoverRecords int `json:"last_cover_records,omitempty"`
+	HangedResults    int `json:"hanged_results,omitempty"`
+	RestartScheduled int `json:"restart_scheduled,omitempty"`
+	RestartCompleted int `json:"restart_completed,omitempty"`
+}
+
+type afdModuleRangeSummary struct {
+	Target string `json:"target"`
+	Name   string `json:"name"`
+	Count  int    `json:"count"`
+}
+
+type afdModuleHitSummary struct {
+	SlotID     int     `json:"slot_id"`
+	Target     string  `json:"target,omitempty"`
+	Name       string  `json:"name,omitempty"`
+	Records    int     `json:"records"`
+	PCs        int     `json:"pcs"`
+	RequestIDs []int   `json:"request_ids,omitempty"`
+	Ratio      float64 `json:"ratio,omitempty"`
+}
+
+type afdModuleCoverSummary struct {
+	Class             string  `json:"class"`
+	Requests          int     `json:"requests"`
+	RequestRatio      float64 `json:"request_ratio,omitempty"`
+	CoverRecords      int     `json:"cover_records,omitempty"`
+	ModuleRecords     int     `json:"module_records,omitempty"`
+	ModuleRecordRatio float64 `json:"module_record_ratio,omitempty"`
+	PCs               int     `json:"pcs,omitempty"`
+	PCRatio           float64 `json:"pc_ratio,omitempty"`
+	RequestIDs        []int   `json:"request_ids,omitempty"`
+}
+
+type afdRestartReason struct {
+	Reason    string `json:"reason"`
+	Scheduled int    `json:"scheduled,omitempty"`
+	Completed int    `json:"completed,omitempty"`
+}
+
+type afdFailureEvent struct {
+	Kind       string              `json:"kind"`
+	Reason     string              `json:"reason"`
+	Count      int                 `json:"count"`
+	RequestIDs []int               `json:"request_ids,omitempty"`
+	Programs   []afdFailureProgram `json:"programs,omitempty"`
+}
+
+type afdFailureProgram struct {
+	SHA1       string `json:"sha1,omitempty"`
+	Calls      int    `json:"calls,omitempty"`
+	Call0      string `json:"call0,omitempty"`
+	Deep0      string `json:"deep0,omitempty"`
+	Category   string `json:"category,omitempty"`
+	Count      int    `json:"count"`
+	RequestIDs []int  `json:"request_ids,omitempty"`
+}
+
+type afdProgramSummary struct {
+	sha1     string
+	calls    int
+	call0    string
+	deep0    string
+	category string
+}
+
+type afdFailureOccurrence struct {
+	event      *afdFailureEvent
+	requestID  int
+	program    afdProgramSummary
+	hasProgram bool
+}
+
+type afdRequestCoverage struct {
+	requestID    int
+	coverRecords int
+	slots        map[int]afdRequestModuleCoverage
+}
+
+type afdRequestModuleCoverage struct {
+	records int
+	pcs     int
 }
 
 func main() {
@@ -272,6 +494,16 @@ func main() {
 			fmt.Fprintf(os.Stderr, "syz-nyx-stats collide-owners: %v\n", err)
 			os.Exit(1)
 		}
+	case "afd-summary":
+		if err := runAFDSummary(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "syz-nyx-stats afd-summary: %v\n", err)
+			os.Exit(1)
+		}
+	case "afd-compare":
+		if err := runAFDCompare(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "syz-nyx-stats afd-compare: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -279,7 +511,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: syz-nyx-stats <collect|plot|compare|collide-summary|collide-quality|collide-owners> ...\n")
+	fmt.Fprintf(os.Stderr, "usage: syz-nyx-stats <collect|plot|compare|collide-summary|collide-quality|collide-owners|afd-summary|afd-compare> ...\n")
 }
 
 func runCollect(args []string) error {
@@ -426,6 +658,9 @@ func (c *collector) handleManagerLine(line string) {
 		c.state.coverage = mustAtoi(m[3])
 		c.state.execTotal = mustAtoi(m[4])
 		c.state.execPerMin = mustAtoi(m[5])
+		if m[6] == "hour" {
+			c.state.execPerMin = (c.state.execPerMin + 59) / 60
+		}
 	}
 	if m := reWinTemplateGen.FindStringSubmatch(line); m != nil {
 		c.state.winTemplateGen = mustAtoi(m[1])
@@ -816,6 +1051,122 @@ type aggregateSummary struct {
 	Finals              []csvRow           `json:"finals"`
 }
 
+type afdAggregateSummary struct {
+	Title                  string                        `json:"title"`
+	RunCount               int                           `json:"run_count"`
+	Inputs                 []string                      `json:"inputs"`
+	AFDModuleHitRatio      metricSummaryRow              `json:"afd_module_hit_ratio"`
+	DeepTriageEvents       metricSummaryRow              `json:"deep_triage_events"`
+	DeepCorpusSaves        metricSummaryRow              `json:"deep_corpus_saves"`
+	DeepCollideActiveCalls metricSummaryRow              `json:"deep_collide_active_calls"`
+	SetupTriageEvents      metricSummaryRow              `json:"setup_triage_events"`
+	SetupCorpusSaves       metricSummaryRow              `json:"setup_corpus_saves"`
+	HangedResults          metricSummaryRow              `json:"hanged_results"`
+	RestartScheduled       metricSummaryRow              `json:"restart_scheduled"`
+	RestartCompleted       metricSummaryRow              `json:"restart_completed"`
+	ModuleCoverClasses     []afdAggregateClassSummary    `json:"module_cover_classes"`
+	TopCalls               []afdAggregateCallSummary     `json:"top_calls"`
+	TopCategories          []afdAggregateCategorySummary `json:"top_categories"`
+	OwnerStats             []afdOwnerSummary             `json:"owner_stats,omitempty"`
+	CollideQualitySummary  []afdCollideQualitySummary    `json:"collide_quality_summary,omitempty"`
+	RestartReasons         []afdRestartReason            `json:"restart_reasons,omitempty"`
+	FailureEvents          []afdFailureEvent             `json:"failure_events,omitempty"`
+	FailureCategoryStats   []afdFailureCategorySummary   `json:"failure_category_stats,omitempty"`
+	Runs                   []afdSummary                  `json:"runs"`
+}
+
+type afdAggregateClassSummary struct {
+	Class                 string  `json:"class"`
+	Runs                  int     `json:"runs"`
+	RequestsMean          float64 `json:"requests_mean"`
+	RequestsMin           int     `json:"requests_min"`
+	RequestsMax           int     `json:"requests_max"`
+	RequestsSum           int     `json:"requests_sum"`
+	RequestRatioMean      float64 `json:"request_ratio_mean,omitempty"`
+	ModuleRecordRatioMean float64 `json:"module_record_ratio_mean,omitempty"`
+	PCRatioMean           float64 `json:"pc_ratio_mean,omitempty"`
+	PCsSum                int     `json:"pcs_sum,omitempty"`
+}
+
+type afdAggregateCallSummary struct {
+	Name             string `json:"name"`
+	Category         string `json:"category"`
+	TriageEvents     int    `json:"triage_events,omitempty"`
+	CorpusSaves      int    `json:"corpus_saves,omitempty"`
+	CollideActive    int    `json:"collide_active,omitempty"`
+	ExecResults      int    `json:"exec_results,omitempty"`
+	ExecRawSignal    int    `json:"exec_raw_signal,omitempty"`
+	ExecRawCover     int    `json:"exec_raw_cover,omitempty"`
+	ExecComps        int    `json:"exec_comps,omitempty"`
+	AFDModuleRecords int    `json:"afd_module_records,omitempty"`
+	AFDModulePCs     int    `json:"afd_module_pcs,omitempty"`
+	ModuleRecords    int    `json:"module_records,omitempty"`
+	ModulePCs        int    `json:"module_pcs,omitempty"`
+}
+
+type afdAggregateCategorySummary struct {
+	Category         string `json:"category"`
+	TriageEvents     int    `json:"triage_events,omitempty"`
+	CorpusSaves      int    `json:"corpus_saves,omitempty"`
+	CollideActive    int    `json:"collide_active,omitempty"`
+	ExecResults      int    `json:"exec_results,omitempty"`
+	ExecRawSignal    int    `json:"exec_raw_signal,omitempty"`
+	ExecRawCover     int    `json:"exec_raw_cover,omitempty"`
+	ExecComps        int    `json:"exec_comps,omitempty"`
+	AFDModuleRecords int    `json:"afd_module_records,omitempty"`
+	AFDModulePCs     int    `json:"afd_module_pcs,omitempty"`
+	ModuleRecords    int    `json:"module_records,omitempty"`
+	ModulePCs        int    `json:"module_pcs,omitempty"`
+}
+
+type afdOwnerSummary struct {
+	Owner             string   `json:"owner"`
+	Categories        []string `json:"categories,omitempty"`
+	TriageJobs        int      `json:"triage_jobs,omitempty"`
+	TriageEvents      int      `json:"triage_events,omitempty"`
+	CorpusSaves       int      `json:"corpus_saves,omitempty"`
+	CollideActive     int      `json:"collide_active,omitempty"`
+	ExecResults       int      `json:"exec_results,omitempty"`
+	ExecRawSignal     int      `json:"exec_raw_signal,omitempty"`
+	ExecRawCover      int      `json:"exec_raw_cover,omitempty"`
+	ExecComps         int      `json:"exec_comps,omitempty"`
+	AFDModuleRecords  int      `json:"afd_module_records,omitempty"`
+	AFDModulePCs      int      `json:"afd_module_pcs,omitempty"`
+	NtosModuleRecords int      `json:"ntos_module_records,omitempty"`
+	NtosModulePCs     int      `json:"ntos_module_pcs,omitempty"`
+	ModuleRecords     int      `json:"module_records,omitempty"`
+	ModulePCs         int      `json:"module_pcs,omitempty"`
+}
+
+type afdCollideQualitySummary struct {
+	Origin           string   `json:"origin"`
+	ActiveCalls      string   `json:"active_calls"`
+	RunCount         int      `json:"run_count"`
+	Count            int      `json:"count"`
+	ActiveCallNames  []string `json:"active_call_names,omitempty"`
+	ActiveCategories []string `json:"active_categories,omitempty"`
+	HasDeepActive    bool     `json:"has_deep_active,omitempty"`
+	HasSetupActive   bool     `json:"has_setup_active,omitempty"`
+	TriageCalls      []string `json:"triage_calls,omitempty"`
+	CorpusSaves      []string `json:"corpus_saves,omitempty"`
+	DeepTriageCalls  []string `json:"deep_triage_calls,omitempty"`
+	DeepCorpusSaves  []string `json:"deep_corpus_saves,omitempty"`
+	SetupTriageCalls []string `json:"setup_triage_calls,omitempty"`
+	SetupCorpusSaves []string `json:"setup_corpus_saves,omitempty"`
+}
+
+type afdFailureCategorySummary struct {
+	Category        string `json:"category"`
+	Count           int    `json:"count"`
+	RequestCount    int    `json:"request_count,omitempty"`
+	Hangs           int    `json:"hangs,omitempty"`
+	RequestFailures int    `json:"request_failures,omitempty"`
+	WindowsCrashes  int    `json:"windows_crashes,omitempty"`
+	Fatals          int    `json:"fatals,omitempty"`
+	Deep            bool   `json:"deep,omitempty"`
+	SetupOrHelper   bool   `json:"setup_or_helper,omitempty"`
+}
+
 type metricSummaryRow struct {
 	Name   string  `json:"name"`
 	Mean   float64 `json:"mean"`
@@ -1004,6 +1355,41 @@ func runCompare(args []string) error {
 	return os.WriteFile(filepath.Join(*outdir, "index.html"), []byte(index), 0o644)
 }
 
+func runAFDCompare(args []string) error {
+	fs := flag.NewFlagSet("afd-compare", flag.ContinueOnError)
+	inputsArg := fs.String("inputs", "", "comma-separated afd_summary.json paths")
+	output := fs.String("output", "", "JSON output path")
+	title := fs.String("title", "AFD Focused Aggregate", "summary title")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *inputsArg == "" || *output == "" {
+		return errors.New("need --inputs and --output")
+	}
+	inputs := splitInputs(*inputsArg)
+	if len(inputs) == 0 {
+		return errors.New("no input summary paths after parsing --inputs")
+	}
+	runs := make([]afdSummary, 0, len(inputs))
+	for _, input := range inputs {
+		data, err := os.ReadFile(input)
+		if err != nil {
+			return err
+		}
+		var summary afdSummary
+		if err := json.Unmarshal(data, &summary); err != nil {
+			return fmt.Errorf("parse %s: %w", input, err)
+		}
+		runs = append(runs, summary)
+	}
+	summary := buildAFDAggregateSummary(*title, inputs, runs)
+	data, err := json.MarshalIndent(summary, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*output, data, 0o644)
+}
+
 func runCollideSummary(args []string) error {
 	fs := flag.NewFlagSet("collide-summary", flag.ContinueOnError)
 	managerLog := fs.String("manager-log", "", "path to syz-manager log")
@@ -1069,13 +1455,21 @@ func runCollideQuality(args []string) error {
 	if err != nil {
 		return err
 	}
+	rows := parseCollideQualityRows(string(data))
+	out, err := json.MarshalIndent(rows, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*output, out, 0o644)
+}
+
+func parseCollideQualityRows(data string) []collideQualityEntry {
 	aggs := make(map[string]*collideQualityAggregate)
 	eventsByOrigin := make(map[string][]*collideQualityEvent)
 	eventsByTrace := make(map[string]*collideQualityEvent)
 	pendingTriageByOrigin := make(map[string]map[string]bool)
 	pendingTriageByTrace := make(map[string]map[string]bool)
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	for _, line := range strings.Split(data, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -1170,10 +1564,9 @@ func runCollideQuality(args []string) error {
 			addStringToCollideQualityAggregate(event.agg, callName, false)
 		}
 	}
-	var rows []collideQualityEntry
+	rows := make([]collideQualityEntry, 0, len(aggs))
 	for _, a := range aggs {
-		slices.Sort(a.entry.TriageCalls)
-		slices.Sort(a.entry.CorpusSaves)
+		finalizeCollideQualityEntry(&a.entry)
 		rows = append(rows, a.entry)
 	}
 	slices.SortFunc(rows, func(a, b collideQualityEntry) int {
@@ -1185,11 +1578,7 @@ func runCollideQuality(args []string) error {
 		}
 		return cmp.Compare(a.ActiveCalls, b.ActiveCalls)
 	})
-	out, err := json.MarshalIndent(rows, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(*output, out, 0o644)
+	return rows
 }
 
 func runCollideOwners(args []string) error {
@@ -1246,6 +1635,1294 @@ func runCollideOwners(args []string) error {
 	return os.WriteFile(*output, out, 0o644)
 }
 
+func runAFDSummary(args []string) error {
+	fs := flag.NewFlagSet("afd-summary", flag.ContinueOnError)
+	managerLog := fs.String("manager-log", "", "path to syz-manager log")
+	runnerLog := fs.String("runner-log", "", "path to syz-nyx-runner log")
+	output := fs.String("output", "", "JSON output path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *managerLog == "" && *runnerLog == "" {
+		return errors.New("need at least one of --manager-log or --runner-log")
+	}
+	if *output == "" {
+		return errors.New("missing --output")
+	}
+	s := afdSummary{
+		ManagerLog: *managerLog,
+		RunnerLog:  *runnerLog,
+	}
+	callStats := make(map[string]*afdCallSummary)
+	if *managerLog != "" {
+		data, err := os.ReadFile(*managerLog)
+		if err != nil {
+			return err
+		}
+		s.CollideQuality = parseCollideQualityRows(string(data))
+		managerCollector := &collector{}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			managerCollector.handleManagerLine(line)
+			if m := reWindowsTriage.FindStringSubmatch(line); m != nil {
+				st := afdCallStat(callStats, m[2])
+				st.TriageEvents++
+				st.TriageSignal += mustAtoi(m[3])
+				st.TriageCover += mustAtoi(m[4])
+				st.TriageNewSignal += mustAtoi(m[5])
+				continue
+			}
+			if m := reWindowsTriageQueued.FindStringSubmatch(line); m != nil {
+				for _, call := range splitCallList(m[3]) {
+					afdCallStat(callStats, call).TriageJobs++
+				}
+				continue
+			}
+			if m := reWindowsCorpusSaveOrigin.FindStringSubmatch(line); m != nil {
+				st := afdCallStat(callStats, m[4])
+				st.CorpusSaves++
+				st.CorpusStableSignal += mustAtoi(m[5])
+				st.CorpusNewStable += mustAtoi(m[6])
+				st.CorpusCover += mustAtoi(m[7])
+				st.CorpusRawCover += mustAtoi(m[8])
+				continue
+			}
+			if m := reWindowsCollideResult.FindStringSubmatch(line); m != nil {
+				for _, active := range reWindowsCollideActive.FindAllStringSubmatch(m[3], -1) {
+					st := afdCallStat(callStats, active[1])
+					st.CollideActive++
+					st.CollideSignal += mustAtoi(active[2])
+					st.CollideCover += mustAtoi(active[3])
+				}
+				continue
+			}
+			if m := reRPCResult.FindStringSubmatch(line); m != nil {
+				if strings.EqualFold(m[9], "true") {
+					s.Runner.HangedResults++
+					s.HangedRequestIDs = appendUniqueInt(s.HangedRequestIDs, mustAtoi(m[1]))
+				}
+			}
+		}
+		s.Manager = afdManagerSummaryFromState(managerCollector.state)
+	}
+	if *runnerLog != "" {
+		data, err := os.ReadFile(*runnerLog)
+		if err != nil {
+			return err
+		}
+		moduleRanges := make(map[string]*afdModuleRangeSummary)
+		moduleSlots := make(map[int]*afdModuleRangeSummary)
+		moduleHits := make(map[int]*afdModuleHitSummary)
+		requestCoverage := make(map[int]*afdRequestCoverage)
+		requestPrograms := make(map[int]afdProgramSummary)
+		restartReasons := make(map[string]*afdRestartReason)
+		failureEvents := make(map[string]*afdFailureEvent)
+		var failureOccurrences []afdFailureOccurrence
+		pendingLastRequestID := 0
+		totalModuleHitPCs := 0
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			if m := reRunnerProgram.FindStringSubmatch(line); m != nil {
+				requestPrograms[mustAtoi(m[1])] = afdProgramSummaryFromMatch(m[2], m[3], m[4], m[5])
+				continue
+			}
+			if m := reLastExecutingRequest.FindStringSubmatch(line); m != nil {
+				pendingLastRequestID = mustAtoi(m[1])
+				continue
+			}
+			if pendingLastRequestID != 0 && strings.HasPrefix(line, "sha1=") {
+				if m := reProgramSummary.FindStringSubmatch(line); m != nil {
+					program := afdProgramSummaryFromMatch(m[1], m[2], m[3], m[4])
+					requestPrograms[pendingLastRequestID] = program
+					updateLatestFailureOccurrenceProgram(failureOccurrences, pendingLastRequestID, program)
+					pendingLastRequestID = 0
+					continue
+				}
+			}
+			if m := reRunnerExec.FindStringSubmatch(line); m != nil {
+				requestID := mustAtoi(m[1])
+				coverRecords := mustAtoi(m[3])
+				s.Runner.ExecResults++
+				s.Runner.LastExecID = requestID
+				s.Runner.LastExecCalls = mustAtoi(m[2])
+				s.Runner.LastCoverRecords = coverRecords
+				if s.Runner.LastCoverRecords > 0 {
+					s.Runner.NonZeroCover++
+				}
+				requestCoverageFor(requestCoverage, requestID).coverRecords = coverRecords
+				continue
+			}
+			if strings.Contains(line, "runner scheduling VM restart:") {
+				s.Runner.RestartScheduled++
+				restartReason(restartReasons, line).Scheduled++
+				if m := reRunnerRestartHanged.FindStringSubmatch(line); m != nil {
+					recordFailureEvent(failureEvents, &failureOccurrences, requestPrograms, "hang", "request hanged", mustAtoi(m[1])).Count++
+				}
+				if m := reRunnerRestartFailed.FindStringSubmatch(line); m != nil {
+					recordFailureEvent(failureEvents, &failureOccurrences, requestPrograms, "request_failed", m[2], mustAtoi(m[1])).Count++
+				}
+				continue
+			}
+			if strings.Contains(line, "runner restarting VM:") {
+				s.Runner.RestartCompleted++
+				restartReason(restartReasons, line).Completed++
+				continue
+			}
+			if m := reWindowsCrash.FindStringSubmatch(line); m != nil {
+				recordFailureEvent(failureEvents, &failureOccurrences, requestPrograms, "windows_crash", m[1], 0).Count++
+				continue
+			}
+			if m := reRunnerFatal.FindStringSubmatch(line); m != nil {
+				recordFailureEvent(failureEvents, &failureOccurrences, requestPrograms, "fatal", m[1], 0).Count++
+				continue
+			}
+			if m := reNyxModuleRangeSubmitted.FindStringSubmatch(line); m != nil {
+				slotID := mustAtoi(m[1])
+				key := strings.ToLower(m[2]) + "\x00" + strings.ToLower(m[3])
+				row := moduleRanges[key]
+				if row == nil {
+					row = &afdModuleRangeSummary{
+						Target: m[2],
+						Name:   m[3],
+					}
+					moduleRanges[key] = row
+				}
+				row.Count++
+				moduleSlots[slotID] = row
+				continue
+			}
+			if m := reRunnerModuleCoverage.FindStringSubmatch(line); m != nil {
+				requestID := mustAtoi(m[1])
+				slotID := mustAtoi(m[2])
+				records := mustAtoi(m[3])
+				pcs := mustAtoi(m[4])
+				row := moduleHits[slotID]
+				if row == nil {
+					row = &afdModuleHitSummary{SlotID: slotID}
+					moduleHits[slotID] = row
+				}
+				row.Records += records
+				row.PCs += pcs
+				row.RequestIDs = appendUniqueInt(row.RequestIDs, requestID)
+				totalModuleHitPCs += pcs
+				reqCov := requestCoverageFor(requestCoverage, requestID)
+				reqCov.slots[slotID] = afdRequestModuleCoverage{
+					records: reqCov.slots[slotID].records + records,
+					pcs:     reqCov.slots[slotID].pcs + pcs,
+				}
+				continue
+			}
+			if m := reRunnerCallModuleCoverage.FindStringSubmatch(line); m != nil {
+				slotID := mustAtoi(m[4])
+				records := mustAtoi(m[5])
+				pcs := mustAtoi(m[6])
+				st := afdCallStat(callStats, m[3])
+				st.ModuleRecords += records
+				st.ModulePCs += pcs
+				moduleRange := moduleSlots[slotID]
+				if moduleRange != nil && afdModuleHitMatches(moduleRange.Target, moduleRange.Name) {
+					st.AFDModuleRecords += records
+					st.AFDModulePCs += pcs
+				}
+				if moduleRange != nil && ntosModuleHitMatches(moduleRange.Target, moduleRange.Name) {
+					st.NtosModuleRecords += records
+					st.NtosModulePCs += pcs
+				}
+				continue
+			}
+			if m := reRunnerCallFeedback.FindStringSubmatch(line); m != nil {
+				st := afdCallStat(callStats, m[3])
+				st.ExecResults++
+				st.ExecRawSignal += mustAtoi(m[4])
+				st.ExecRawCover += mustAtoi(m[5])
+				st.ExecComps += mustAtoi(m[6])
+			}
+		}
+		annotateAFDFailurePrograms(failureOccurrences, requestPrograms)
+		for _, row := range moduleRanges {
+			s.ModuleRanges = append(s.ModuleRanges, *row)
+		}
+		slices.SortFunc(s.ModuleRanges, func(a, b afdModuleRangeSummary) int {
+			if a.Target != b.Target {
+				return cmp.Compare(a.Target, b.Target)
+			}
+			return cmp.Compare(a.Name, b.Name)
+		})
+		for slotID, row := range moduleHits {
+			if moduleRange := moduleSlots[slotID]; moduleRange != nil {
+				row.Target = moduleRange.Target
+				row.Name = moduleRange.Name
+			}
+			if totalModuleHitPCs != 0 {
+				row.Ratio = float64(row.PCs) / float64(totalModuleHitPCs)
+			}
+			s.ModuleHits = append(s.ModuleHits, *row)
+			if afdModuleHitMatches(row.Target, row.Name) {
+				s.AFDModuleHitRatio += row.Ratio
+			}
+		}
+		slices.SortFunc(s.ModuleHits, func(a, b afdModuleHitSummary) int {
+			if a.PCs != b.PCs {
+				return cmp.Compare(b.PCs, a.PCs)
+			}
+			return cmp.Compare(a.SlotID, b.SlotID)
+		})
+		s.ModuleCoverClasses = summarizeAFDModuleCoverClasses(requestCoverage, moduleSlots)
+		s.RestartReasons = summarizeAFDRestartReasons(restartReasons)
+		s.FailureEvents = summarizeAFDFailureEvents(failureEvents)
+		s.FailureCategoryStats = aggregateAFDFailureCategories(s.FailureEvents)
+	}
+	finalizeAFDSummary(&s, callStats)
+	out, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(*output, out, 0o644)
+}
+
+func buildAFDAggregateSummary(title string, inputs []string, runs []afdSummary) afdAggregateSummary {
+	summary := afdAggregateSummary{
+		Title:    title,
+		RunCount: len(runs),
+		Inputs:   append([]string(nil), inputs...),
+		Runs:     runs,
+	}
+	summary.AFDModuleHitRatio = metricSummary("afd_module_hit_ratio", runs, func(run afdSummary) float64 {
+		return run.AFDModuleHitRatio
+	})
+	summary.DeepTriageEvents = metricSummary("deep_triage_events", runs, func(run afdSummary) float64 {
+		return float64(run.DeepTriageEvents)
+	})
+	summary.DeepCorpusSaves = metricSummary("deep_corpus_saves", runs, func(run afdSummary) float64 {
+		return float64(run.DeepCorpusSaves)
+	})
+	summary.DeepCollideActiveCalls = metricSummary("deep_collide_active_calls", runs, func(run afdSummary) float64 {
+		return float64(run.DeepCollideActiveCalls)
+	})
+	summary.SetupTriageEvents = metricSummary("setup_triage_events", runs, func(run afdSummary) float64 {
+		return float64(run.SetupTriageEvents)
+	})
+	summary.SetupCorpusSaves = metricSummary("setup_corpus_saves", runs, func(run afdSummary) float64 {
+		return float64(run.SetupCorpusSaves)
+	})
+	summary.HangedResults = metricSummary("hanged_results", runs, func(run afdSummary) float64 {
+		return float64(run.Runner.HangedResults)
+	})
+	summary.RestartScheduled = metricSummary("restart_scheduled", runs, func(run afdSummary) float64 {
+		return float64(run.Runner.RestartScheduled)
+	})
+	summary.RestartCompleted = metricSummary("restart_completed", runs, func(run afdSummary) float64 {
+		return float64(run.Runner.RestartCompleted)
+	})
+	summary.ModuleCoverClasses = aggregateAFDModuleCoverClasses(runs)
+	summary.TopCalls = aggregateAFDCalls(runs)
+	summary.TopCategories = aggregateAFDCategories(runs)
+	summary.OwnerStats = aggregateAFDOwnerStats(runs)
+	summary.CollideQualitySummary = aggregateAFDCollideQuality(runs)
+	summary.RestartReasons = aggregateAFDRestartReasons(runs)
+	summary.FailureEvents = aggregateAFDFailureEvents(runs)
+	summary.FailureCategoryStats = aggregateAFDFailureCategories(summary.FailureEvents)
+	return summary
+}
+
+func metricSummary(name string, runs []afdSummary, value func(afdSummary) float64) metricSummaryRow {
+	vals := make([]float64, 0, len(runs))
+	for _, run := range runs {
+		vals = append(vals, value(run))
+	}
+	return metricSummaryRow{
+		Name:   name,
+		Mean:   meanReducer(vals),
+		Min:    minReducer(vals),
+		Max:    maxReducer(vals),
+		Stddev: stddevReducer(vals),
+	}
+}
+
+func aggregateAFDModuleCoverClasses(runs []afdSummary) []afdAggregateClassSummary {
+	classes := map[string][]afdModuleCoverSummary{}
+	for _, run := range runs {
+		seen := make(map[string]bool)
+		for _, row := range run.ModuleCoverClasses {
+			classes[row.Class] = append(classes[row.Class], row)
+			seen[row.Class] = true
+		}
+		for _, class := range []string{"afd", "ntos_only", "other_module", "unknown_or_user", "no_cover"} {
+			if !seen[class] {
+				classes[class] = append(classes[class], afdModuleCoverSummary{Class: class})
+			}
+		}
+	}
+	rows := make([]afdAggregateClassSummary, 0, len(classes))
+	for class, values := range classes {
+		reqVals := make([]float64, 0, len(values))
+		reqRatioVals := make([]float64, 0, len(values))
+		moduleRecordRatioVals := make([]float64, 0, len(values))
+		pcRatioVals := make([]float64, 0, len(values))
+		row := afdAggregateClassSummary{Class: class, Runs: len(values)}
+		for _, value := range values {
+			reqVals = append(reqVals, float64(value.Requests))
+			reqRatioVals = append(reqRatioVals, value.RequestRatio)
+			moduleRecordRatioVals = append(moduleRecordRatioVals, value.ModuleRecordRatio)
+			pcRatioVals = append(pcRatioVals, value.PCRatio)
+			row.RequestsSum += value.Requests
+			row.PCsSum += value.PCs
+		}
+		row.RequestsMean = meanReducer(reqVals)
+		row.RequestsMin = int(minReducer(reqVals))
+		row.RequestsMax = int(maxReducer(reqVals))
+		row.RequestRatioMean = meanReducer(reqRatioVals)
+		row.ModuleRecordRatioMean = meanReducer(moduleRecordRatioVals)
+		row.PCRatioMean = meanReducer(pcRatioVals)
+		rows = append(rows, row)
+	}
+	order := map[string]int{
+		"afd":             0,
+		"ntos_only":       1,
+		"other_module":    2,
+		"unknown_or_user": 3,
+		"no_cover":        4,
+	}
+	slices.SortFunc(rows, func(a, b afdAggregateClassSummary) int {
+		if order[a.Class] != order[b.Class] {
+			return cmp.Compare(order[a.Class], order[b.Class])
+		}
+		return cmp.Compare(a.Class, b.Class)
+	})
+	return rows
+}
+
+func aggregateAFDCalls(runs []afdSummary) []afdAggregateCallSummary {
+	byName := make(map[string]*afdAggregateCallSummary)
+	for _, run := range runs {
+		for _, call := range run.CallStats {
+			row := byName[call.Name]
+			if row == nil {
+				row = &afdAggregateCallSummary{
+					Name:     call.Name,
+					Category: call.Category,
+				}
+				byName[call.Name] = row
+			}
+			row.TriageEvents += call.TriageEvents
+			row.CorpusSaves += call.CorpusSaves
+			row.CollideActive += call.CollideActive
+			row.ExecResults += call.ExecResults
+			row.ExecRawSignal += call.ExecRawSignal
+			row.ExecRawCover += call.ExecRawCover
+			row.ExecComps += call.ExecComps
+			row.AFDModuleRecords += call.AFDModuleRecords
+			row.AFDModulePCs += call.AFDModulePCs
+			row.ModuleRecords += call.ModuleRecords
+			row.ModulePCs += call.ModulePCs
+		}
+	}
+	rows := make([]afdAggregateCallSummary, 0, len(byName))
+	for _, row := range byName {
+		rows = append(rows, *row)
+	}
+	slices.SortFunc(rows, func(a, b afdAggregateCallSummary) int {
+		if a.CorpusSaves != b.CorpusSaves {
+			return cmp.Compare(b.CorpusSaves, a.CorpusSaves)
+		}
+		if a.TriageEvents != b.TriageEvents {
+			return cmp.Compare(b.TriageEvents, a.TriageEvents)
+		}
+		if a.CollideActive != b.CollideActive {
+			return cmp.Compare(b.CollideActive, a.CollideActive)
+		}
+		if a.AFDModulePCs != b.AFDModulePCs {
+			return cmp.Compare(b.AFDModulePCs, a.AFDModulePCs)
+		}
+		if a.ModulePCs != b.ModulePCs {
+			return cmp.Compare(b.ModulePCs, a.ModulePCs)
+		}
+		return cmp.Compare(a.Name, b.Name)
+	})
+	return rows
+}
+
+func aggregateAFDCategories(runs []afdSummary) []afdAggregateCategorySummary {
+	byName := make(map[string]*afdAggregateCategorySummary)
+	for _, run := range runs {
+		for _, cat := range run.CategoryStats {
+			row := byName[cat.Category]
+			if row == nil {
+				row = &afdAggregateCategorySummary{Category: cat.Category}
+				byName[cat.Category] = row
+			}
+			row.TriageEvents += cat.TriageEvents
+			row.CorpusSaves += cat.CorpusSaves
+			row.CollideActive += cat.CollideActive
+			row.ExecResults += cat.ExecResults
+			row.ExecRawSignal += cat.ExecRawSignal
+			row.ExecRawCover += cat.ExecRawCover
+			row.ExecComps += cat.ExecComps
+			row.AFDModuleRecords += cat.AFDModuleRecords
+			row.AFDModulePCs += cat.AFDModulePCs
+			row.ModuleRecords += cat.ModuleRecords
+			row.ModulePCs += cat.ModulePCs
+		}
+	}
+	rows := make([]afdAggregateCategorySummary, 0, len(byName))
+	for _, row := range byName {
+		rows = append(rows, *row)
+	}
+	slices.SortFunc(rows, func(a, b afdAggregateCategorySummary) int {
+		if a.CorpusSaves != b.CorpusSaves {
+			return cmp.Compare(b.CorpusSaves, a.CorpusSaves)
+		}
+		if a.TriageEvents != b.TriageEvents {
+			return cmp.Compare(b.TriageEvents, a.TriageEvents)
+		}
+		if a.CollideActive != b.CollideActive {
+			return cmp.Compare(b.CollideActive, a.CollideActive)
+		}
+		if a.AFDModulePCs != b.AFDModulePCs {
+			return cmp.Compare(b.AFDModulePCs, a.AFDModulePCs)
+		}
+		if a.ModulePCs != b.ModulePCs {
+			return cmp.Compare(b.ModulePCs, a.ModulePCs)
+		}
+		return cmp.Compare(a.Category, b.Category)
+	})
+	return rows
+}
+
+func aggregateAFDOwnerStats(runs []afdSummary) []afdOwnerSummary {
+	byOwner := make(map[string]*afdOwnerSummary)
+	for _, run := range runs {
+		for _, cat := range run.CategoryStats {
+			addAFDOwnerCategory(byOwner, cat)
+		}
+	}
+	return summarizeAFDOwnerStats(byOwner)
+}
+
+func aggregateAFDCollideQuality(runs []afdSummary) []afdCollideQualitySummary {
+	type key struct {
+		origin string
+		active string
+	}
+	byShape := make(map[key]*afdCollideQualitySummary)
+	for _, run := range runs {
+		seenInRun := make(map[key]bool)
+		for _, row := range run.CollideQuality {
+			k := key{origin: row.Origin, active: row.ActiveCalls}
+			out := byShape[k]
+			if out == nil {
+				out = &afdCollideQualitySummary{
+					Origin:      row.Origin,
+					ActiveCalls: row.ActiveCalls,
+				}
+				byShape[k] = out
+			}
+			out.Count += row.Count
+			if !seenInRun[k] {
+				out.RunCount++
+				seenInRun[k] = true
+			}
+			out.HasDeepActive = out.HasDeepActive || row.HasDeepActive
+			out.HasSetupActive = out.HasSetupActive || row.HasSetupActive
+			for _, value := range row.ActiveCallNames {
+				out.ActiveCallNames = appendUniqueString(out.ActiveCallNames, value)
+			}
+			for _, value := range row.ActiveCategories {
+				out.ActiveCategories = appendUniqueString(out.ActiveCategories, value)
+			}
+			for _, value := range row.TriageCalls {
+				out.TriageCalls = appendUniqueString(out.TriageCalls, value)
+			}
+			for _, value := range row.CorpusSaves {
+				out.CorpusSaves = appendUniqueString(out.CorpusSaves, value)
+			}
+			for _, value := range row.DeepTriageCalls {
+				out.DeepTriageCalls = appendUniqueString(out.DeepTriageCalls, value)
+			}
+			for _, value := range row.DeepCorpusSaves {
+				out.DeepCorpusSaves = appendUniqueString(out.DeepCorpusSaves, value)
+			}
+			for _, value := range row.SetupTriageCalls {
+				out.SetupTriageCalls = appendUniqueString(out.SetupTriageCalls, value)
+			}
+			for _, value := range row.SetupCorpusSaves {
+				out.SetupCorpusSaves = appendUniqueString(out.SetupCorpusSaves, value)
+			}
+		}
+	}
+	rows := make([]afdCollideQualitySummary, 0, len(byShape))
+	for _, row := range byShape {
+		slices.Sort(row.ActiveCallNames)
+		slices.Sort(row.ActiveCategories)
+		slices.Sort(row.TriageCalls)
+		slices.Sort(row.CorpusSaves)
+		slices.Sort(row.DeepTriageCalls)
+		slices.Sort(row.DeepCorpusSaves)
+		slices.Sort(row.SetupTriageCalls)
+		slices.Sort(row.SetupCorpusSaves)
+		rows = append(rows, *row)
+	}
+	slices.SortFunc(rows, func(a, b afdCollideQualitySummary) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		if a.RunCount != b.RunCount {
+			return cmp.Compare(b.RunCount, a.RunCount)
+		}
+		if a.Origin != b.Origin {
+			return cmp.Compare(a.Origin, b.Origin)
+		}
+		return cmp.Compare(a.ActiveCalls, b.ActiveCalls)
+	})
+	return rows
+}
+
+func aggregateAFDRestartReasons(runs []afdSummary) []afdRestartReason {
+	byReason := make(map[string]*afdRestartReason)
+	for _, run := range runs {
+		for _, reason := range run.RestartReasons {
+			row := byReason[reason.Reason]
+			if row == nil {
+				row = &afdRestartReason{Reason: reason.Reason}
+				byReason[reason.Reason] = row
+			}
+			row.Scheduled += reason.Scheduled
+			row.Completed += reason.Completed
+		}
+	}
+	return summarizeAFDRestartReasons(byReason)
+}
+
+func aggregateAFDFailureEvents(runs []afdSummary) []afdFailureEvent {
+	byEvent := make(map[string]*afdFailureEvent)
+	for _, run := range runs {
+		for _, event := range run.FailureEvents {
+			row := failureEvent(byEvent, event.Kind, event.Reason, 0)
+			row.Count += event.Count
+			for _, requestID := range event.RequestIDs {
+				row.RequestIDs = appendUniqueInt(row.RequestIDs, requestID)
+			}
+			for _, program := range event.Programs {
+				addAFDFailureProgram(row, program)
+			}
+		}
+	}
+	return summarizeAFDFailureEvents(byEvent)
+}
+
+func aggregateAFDFailureCategories(events []afdFailureEvent) []afdFailureCategorySummary {
+	byCategory := make(map[string]*afdFailureCategorySummary)
+	requestIDs := make(map[string][]int)
+	for _, event := range events {
+		for _, program := range event.Programs {
+			category := program.Category
+			if category == "" {
+				category = afdCallCategory(program.Call0)
+			}
+			if category == "" {
+				category = "unknown"
+			}
+			row := byCategory[category]
+			if row == nil {
+				row = &afdFailureCategorySummary{
+					Category:      category,
+					Deep:          afdCallCategoryIsDeep(category),
+					SetupOrHelper: category == "setup" || category == "helper",
+				}
+				byCategory[category] = row
+			}
+			count := program.Count
+			if count == 0 {
+				count = 1
+			}
+			row.Count += count
+			switch event.Kind {
+			case "hang":
+				row.Hangs += count
+			case "request_failed":
+				row.RequestFailures += count
+			case "windows_crash":
+				row.WindowsCrashes += count
+			case "fatal":
+				row.Fatals += count
+			}
+			for _, requestID := range program.RequestIDs {
+				requestIDs[category] = appendUniqueInt(requestIDs[category], requestID)
+			}
+		}
+	}
+	rows := make([]afdFailureCategorySummary, 0, len(byCategory))
+	for category, row := range byCategory {
+		row.RequestCount = len(requestIDs[category])
+		rows = append(rows, *row)
+	}
+	slices.SortFunc(rows, func(a, b afdFailureCategorySummary) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		if a.Hangs != b.Hangs {
+			return cmp.Compare(b.Hangs, a.Hangs)
+		}
+		if a.RequestFailures != b.RequestFailures {
+			return cmp.Compare(b.RequestFailures, a.RequestFailures)
+		}
+		return cmp.Compare(a.Category, b.Category)
+	})
+	return rows
+}
+
+func afdManagerSummaryFromState(st statsState) afdManagerSummary {
+	return afdManagerSummary{
+		Candidates:                     st.candidates,
+		Corpus:                         st.corpus,
+		Coverage:                       st.coverage,
+		ExecTotal:                      st.execTotal,
+		ExecPerMin:                     st.execPerMin,
+		ExecGen:                        st.execGen,
+		ExecFuzz:                       st.execFuzz,
+		ExecCandidate:                  st.execCandidate,
+		ExecTriage:                     st.execTriage,
+		ExecCollide:                    st.execCollide,
+		RPCResults:                     st.rpcResults,
+		NonZeroExecResults:             st.nonZeroExec,
+		HangedResults:                  st.hangedCount,
+		RawSignal:                      st.rawSignal,
+		RawCover:                       st.rawCover,
+		PostSignal:                     st.postSignal,
+		PostCover:                      st.postCover,
+		CorpusSaves:                    st.corpusSaves,
+		TriageEvents:                   st.triageEvents,
+		WinTemplateGen:                 st.winTemplateGen,
+		WinTemplateCorpus:              st.winTemplateCorpus,
+		WinTemplateCollide:             st.winTemplateCollide,
+		WinResourceCentricTry:          st.winResourceCentricTry,
+		WinResourceCentricHit:          st.winResourceCentricHit,
+		WinResourceCentricNoCandidates: st.winResourceCentricNoCandidates,
+		WinResourceCentricZeroScore:    st.winResourceCentricZeroScore,
+	}
+}
+
+func appendUniqueInt(values []int, value int) []int {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func requestCoverageFor(requests map[int]*afdRequestCoverage, requestID int) *afdRequestCoverage {
+	req := requests[requestID]
+	if req == nil {
+		req = &afdRequestCoverage{
+			requestID: requestID,
+			slots:     make(map[int]afdRequestModuleCoverage),
+		}
+		requests[requestID] = req
+	}
+	return req
+}
+
+func restartReason(reasons map[string]*afdRestartReason, line string) *afdRestartReason {
+	reason := "unknown"
+	if m := reRunnerRestartReason.FindStringSubmatch(line); m != nil {
+		reason = strings.TrimSpace(m[2])
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	row := reasons[reason]
+	if row == nil {
+		row = &afdRestartReason{Reason: reason}
+		reasons[reason] = row
+	}
+	return row
+}
+
+func recordFailureEvent(events map[string]*afdFailureEvent, occurrences *[]afdFailureOccurrence, programs map[int]afdProgramSummary, kind, reason string, requestID int) *afdFailureEvent {
+	event := failureEvent(events, kind, reason, requestID)
+	occ := afdFailureOccurrence{
+		event:     event,
+		requestID: requestID,
+	}
+	if requestID != 0 {
+		if program, ok := programs[requestID]; ok {
+			occ.program = program
+			occ.hasProgram = true
+		}
+	}
+	*occurrences = append(*occurrences, occ)
+	return event
+}
+
+func failureEvent(events map[string]*afdFailureEvent, kind, reason string, requestID int) *afdFailureEvent {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "unknown"
+	}
+	key := kind + "\x00" + reason
+	row := events[key]
+	if row == nil {
+		row = &afdFailureEvent{Kind: kind, Reason: reason}
+		events[key] = row
+	}
+	if requestID != 0 {
+		row.RequestIDs = appendUniqueInt(row.RequestIDs, requestID)
+	}
+	return row
+}
+
+func afdProgramSummaryFromMatch(sha1, calls, call0, deep0 string) afdProgramSummary {
+	owner := call0
+	if afdCallCategoryIsDeep(afdCallCategory(deep0)) {
+		owner = deep0
+	}
+	return afdProgramSummary{
+		sha1:     sha1,
+		calls:    mustAtoi(calls),
+		call0:    call0,
+		deep0:    deep0,
+		category: afdCallCategory(owner),
+	}
+}
+
+func annotateAFDFailurePrograms(occurrences []afdFailureOccurrence, programs map[int]afdProgramSummary) {
+	for _, occ := range occurrences {
+		if occ.event == nil {
+			continue
+		}
+		program := occ.program
+		if !occ.hasProgram && occ.requestID != 0 {
+			var ok bool
+			program, ok = programs[occ.requestID]
+			if !ok {
+				continue
+			}
+		}
+		addAFDFailureProgram(occ.event, afdFailureProgram{
+			SHA1:       program.sha1,
+			Calls:      program.calls,
+			Call0:      program.call0,
+			Deep0:      program.deep0,
+			Category:   program.category,
+			Count:      1,
+			RequestIDs: requestIDsForFailureProgram(occ.requestID),
+		})
+	}
+}
+
+func updateLatestFailureOccurrenceProgram(occurrences []afdFailureOccurrence, requestID int, program afdProgramSummary) {
+	for i := len(occurrences) - 1; i >= 0; i-- {
+		if occurrences[i].requestID != requestID {
+			continue
+		}
+		occurrences[i].program = program
+		occurrences[i].hasProgram = true
+		return
+	}
+}
+
+func requestIDsForFailureProgram(requestID int) []int {
+	if requestID == 0 {
+		return nil
+	}
+	return []int{requestID}
+}
+
+func addAFDFailureProgram(event *afdFailureEvent, program afdFailureProgram) {
+	if event == nil || program.Call0 == "" {
+		return
+	}
+	if program.Category == "" {
+		program.Category = afdCallCategory(program.Call0)
+	}
+	if program.Count == 0 {
+		program.Count = 1
+	}
+	key := afdFailureProgramKey(program)
+	for i := range event.Programs {
+		if afdFailureProgramKey(event.Programs[i]) != key {
+			continue
+		}
+		event.Programs[i].Count += program.Count
+		for _, requestID := range program.RequestIDs {
+			event.Programs[i].RequestIDs = appendUniqueInt(event.Programs[i].RequestIDs, requestID)
+		}
+		return
+	}
+	event.Programs = append(event.Programs, program)
+}
+
+func afdFailureProgramKey(program afdFailureProgram) string {
+	return program.SHA1 + "\x00" + strconv.Itoa(program.Calls) + "\x00" + program.Call0 + "\x00" + program.Deep0 + "\x00" + program.Category
+}
+
+func summarizeAFDFailurePrograms(programs []afdFailureProgram) []afdFailureProgram {
+	rows := append([]afdFailureProgram(nil), programs...)
+	slices.SortFunc(rows, func(a, b afdFailureProgram) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		if a.Category != b.Category {
+			return cmp.Compare(a.Category, b.Category)
+		}
+		if a.Call0 != b.Call0 {
+			return cmp.Compare(a.Call0, b.Call0)
+		}
+		if a.SHA1 != b.SHA1 {
+			return cmp.Compare(a.SHA1, b.SHA1)
+		}
+		return cmp.Compare(a.Calls, b.Calls)
+	})
+	return rows
+}
+
+func summarizeAFDRestartReasons(reasons map[string]*afdRestartReason) []afdRestartReason {
+	rows := make([]afdRestartReason, 0, len(reasons))
+	for _, row := range reasons {
+		rows = append(rows, *row)
+	}
+	slices.SortFunc(rows, func(a, b afdRestartReason) int {
+		aTotal := a.Scheduled + a.Completed
+		bTotal := b.Scheduled + b.Completed
+		if aTotal != bTotal {
+			return cmp.Compare(bTotal, aTotal)
+		}
+		return cmp.Compare(a.Reason, b.Reason)
+	})
+	return rows
+}
+
+func summarizeAFDFailureEvents(events map[string]*afdFailureEvent) []afdFailureEvent {
+	rows := make([]afdFailureEvent, 0, len(events))
+	for _, row := range events {
+		row.Programs = summarizeAFDFailurePrograms(row.Programs)
+		rows = append(rows, *row)
+	}
+	slices.SortFunc(rows, func(a, b afdFailureEvent) int {
+		if a.Count != b.Count {
+			return cmp.Compare(b.Count, a.Count)
+		}
+		if a.Kind != b.Kind {
+			return cmp.Compare(a.Kind, b.Kind)
+		}
+		return cmp.Compare(a.Reason, b.Reason)
+	})
+	return rows
+}
+
+func summarizeAFDModuleCoverClasses(requests map[int]*afdRequestCoverage, slots map[int]*afdModuleRangeSummary) []afdModuleCoverSummary {
+	byClass := make(map[string]*afdModuleCoverSummary)
+	for _, req := range requests {
+		class := afdRequestCoverClass(req, slots)
+		row := byClass[class]
+		if row == nil {
+			row = &afdModuleCoverSummary{Class: class}
+			byClass[class] = row
+		}
+		row.Requests++
+		row.CoverRecords += req.coverRecords
+		row.RequestIDs = appendUniqueInt(row.RequestIDs, req.requestID)
+		for _, hit := range req.slots {
+			row.ModuleRecords += hit.records
+			row.PCs += hit.pcs
+		}
+	}
+	rows := make([]afdModuleCoverSummary, 0, len(byClass))
+	for _, row := range byClass {
+		slices.Sort(row.RequestIDs)
+		rows = append(rows, *row)
+	}
+	fillAFDModuleCoverRatios(rows)
+	order := map[string]int{
+		"afd":             0,
+		"ntos_only":       1,
+		"other_module":    2,
+		"unknown_or_user": 3,
+		"no_cover":        4,
+	}
+	slices.SortFunc(rows, func(a, b afdModuleCoverSummary) int {
+		if order[a.Class] != order[b.Class] {
+			return cmp.Compare(order[a.Class], order[b.Class])
+		}
+		return cmp.Compare(a.Class, b.Class)
+	})
+	return rows
+}
+
+func fillAFDModuleCoverRatios(rows []afdModuleCoverSummary) {
+	totalRequests := 0
+	totalModuleRecords := 0
+	totalPCs := 0
+	for _, row := range rows {
+		totalRequests += row.Requests
+		totalModuleRecords += row.ModuleRecords
+		totalPCs += row.PCs
+	}
+	for i := range rows {
+		if totalRequests != 0 {
+			rows[i].RequestRatio = float64(rows[i].Requests) / float64(totalRequests)
+		}
+		if totalModuleRecords != 0 {
+			rows[i].ModuleRecordRatio = float64(rows[i].ModuleRecords) / float64(totalModuleRecords)
+		}
+		if totalPCs != 0 {
+			rows[i].PCRatio = float64(rows[i].PCs) / float64(totalPCs)
+		}
+	}
+}
+
+func afdRequestCoverClass(req *afdRequestCoverage, slots map[int]*afdModuleRangeSummary) string {
+	if req == nil {
+		return "unknown_or_user"
+	}
+	if len(req.slots) == 0 {
+		if req.coverRecords > 0 {
+			return "unknown_or_user"
+		}
+		return "no_cover"
+	}
+	hasAFD := false
+	hasNTOS := false
+	hasOther := false
+	for slotID := range req.slots {
+		slot := slots[slotID]
+		switch {
+		case slot == nil:
+			hasOther = true
+		case afdModuleHitMatches(slot.Target, slot.Name):
+			hasAFD = true
+		case ntosModuleHitMatches(slot.Target, slot.Name):
+			hasNTOS = true
+		default:
+			hasOther = true
+		}
+	}
+	if hasAFD {
+		return "afd"
+	}
+	if hasNTOS && !hasOther {
+		return "ntos_only"
+	}
+	return "other_module"
+}
+
+func afdModuleHitMatches(target, name string) bool {
+	return strings.EqualFold(target, "afd.sys") || strings.EqualFold(name, "afd.sys")
+}
+
+func ntosModuleHitMatches(target, name string) bool {
+	return strings.EqualFold(target, "ntoskrnl.exe") || strings.EqualFold(name, "ntoskrnl.exe")
+}
+
+func afdCallStat(stats map[string]*afdCallSummary, name string) *afdCallSummary {
+	if name == "" {
+		name = "<unknown>"
+	}
+	st := stats[name]
+	if st == nil {
+		st = &afdCallSummary{
+			Name:     name,
+			Category: afdCallCategory(name),
+		}
+		stats[name] = st
+	}
+	return st
+}
+
+func finalizeAFDSummary(s *afdSummary, stats map[string]*afdCallSummary) {
+	categories := make(map[string]*afdCategorySummary)
+	for _, st := range stats {
+		if !afdCallIsInteresting(st) {
+			continue
+		}
+		s.CallStats = append(s.CallStats, *st)
+		cat := categories[st.Category]
+		if cat == nil {
+			cat = &afdCategorySummary{Category: st.Category}
+			categories[st.Category] = cat
+		}
+		cat.TriageJobs += st.TriageJobs
+		cat.TriageEvents += st.TriageEvents
+		cat.TriageSignal += st.TriageSignal
+		cat.TriageCover += st.TriageCover
+		cat.TriageNewSignal += st.TriageNewSignal
+		cat.CorpusSaves += st.CorpusSaves
+		cat.CorpusStableSignal += st.CorpusStableSignal
+		cat.CorpusNewStable += st.CorpusNewStable
+		cat.CorpusCover += st.CorpusCover
+		cat.CorpusRawCover += st.CorpusRawCover
+		cat.CollideActive += st.CollideActive
+		cat.CollideSignal += st.CollideSignal
+		cat.CollideCover += st.CollideCover
+		cat.ExecResults += st.ExecResults
+		cat.ExecRawSignal += st.ExecRawSignal
+		cat.ExecRawCover += st.ExecRawCover
+		cat.ExecComps += st.ExecComps
+		cat.AFDModuleRecords += st.AFDModuleRecords
+		cat.AFDModulePCs += st.AFDModulePCs
+		cat.NtosModuleRecords += st.NtosModuleRecords
+		cat.NtosModulePCs += st.NtosModulePCs
+		cat.ModuleRecords += st.ModuleRecords
+		cat.ModulePCs += st.ModulePCs
+		if afdCallCategoryIsDeep(st.Category) {
+			s.DeepTriageJobs += st.TriageJobs
+			s.DeepTriageEvents += st.TriageEvents
+			s.DeepCorpusSaves += st.CorpusSaves
+			s.DeepCollideActiveCalls += st.CollideActive
+		}
+		if st.Category == "setup" || st.Category == "helper" {
+			s.SetupTriageJobs += st.TriageJobs
+			s.SetupTriageEvents += st.TriageEvents
+			s.SetupCorpusSaves += st.CorpusSaves
+			s.SetupCollideActiveCalls += st.CollideActive
+		}
+	}
+	for _, cat := range categories {
+		s.CategoryStats = append(s.CategoryStats, *cat)
+	}
+	s.OwnerStats = summarizeAFDOwnerStatsFromCategories(s.CategoryStats)
+	if s.CallStats == nil {
+		s.CallStats = []afdCallSummary{}
+	}
+	if s.CategoryStats == nil {
+		s.CategoryStats = []afdCategorySummary{}
+	}
+	slices.SortFunc(s.CallStats, func(a, b afdCallSummary) int {
+		if a.CorpusSaves != b.CorpusSaves {
+			return cmp.Compare(b.CorpusSaves, a.CorpusSaves)
+		}
+		if a.TriageEvents != b.TriageEvents {
+			return cmp.Compare(b.TriageEvents, a.TriageEvents)
+		}
+		if a.TriageJobs != b.TriageJobs {
+			return cmp.Compare(b.TriageJobs, a.TriageJobs)
+		}
+		if a.CollideActive != b.CollideActive {
+			return cmp.Compare(b.CollideActive, a.CollideActive)
+		}
+		if a.AFDModulePCs != b.AFDModulePCs {
+			return cmp.Compare(b.AFDModulePCs, a.AFDModulePCs)
+		}
+		if a.ModulePCs != b.ModulePCs {
+			return cmp.Compare(b.ModulePCs, a.ModulePCs)
+		}
+		if a.Category != b.Category {
+			return cmp.Compare(a.Category, b.Category)
+		}
+		return cmp.Compare(a.Name, b.Name)
+	})
+	slices.SortFunc(s.CategoryStats, func(a, b afdCategorySummary) int {
+		if a.CorpusSaves != b.CorpusSaves {
+			return cmp.Compare(b.CorpusSaves, a.CorpusSaves)
+		}
+		if a.TriageEvents != b.TriageEvents {
+			return cmp.Compare(b.TriageEvents, a.TriageEvents)
+		}
+		if a.TriageJobs != b.TriageJobs {
+			return cmp.Compare(b.TriageJobs, a.TriageJobs)
+		}
+		if a.CollideActive != b.CollideActive {
+			return cmp.Compare(b.CollideActive, a.CollideActive)
+		}
+		if a.AFDModulePCs != b.AFDModulePCs {
+			return cmp.Compare(b.AFDModulePCs, a.AFDModulePCs)
+		}
+		if a.ModulePCs != b.ModulePCs {
+			return cmp.Compare(b.ModulePCs, a.ModulePCs)
+		}
+		return cmp.Compare(a.Category, b.Category)
+	})
+}
+
+func summarizeAFDOwnerStatsFromCategories(categories []afdCategorySummary) []afdOwnerSummary {
+	byOwner := make(map[string]*afdOwnerSummary)
+	for _, cat := range categories {
+		addAFDOwnerCategory(byOwner, cat)
+	}
+	return summarizeAFDOwnerStats(byOwner)
+}
+
+func addAFDOwnerCategory(byOwner map[string]*afdOwnerSummary, cat afdCategorySummary) {
+	owner := afdCategoryOwner(cat.Category)
+	row := byOwner[owner]
+	if row == nil {
+		row = &afdOwnerSummary{Owner: owner}
+		byOwner[owner] = row
+	}
+	row.Categories = appendUniqueString(row.Categories, cat.Category)
+	row.TriageJobs += cat.TriageJobs
+	row.TriageEvents += cat.TriageEvents
+	row.CorpusSaves += cat.CorpusSaves
+	row.CollideActive += cat.CollideActive
+	row.ExecResults += cat.ExecResults
+	row.ExecRawSignal += cat.ExecRawSignal
+	row.ExecRawCover += cat.ExecRawCover
+	row.ExecComps += cat.ExecComps
+	row.AFDModuleRecords += cat.AFDModuleRecords
+	row.AFDModulePCs += cat.AFDModulePCs
+	row.NtosModuleRecords += cat.NtosModuleRecords
+	row.NtosModulePCs += cat.NtosModulePCs
+	row.ModuleRecords += cat.ModuleRecords
+	row.ModulePCs += cat.ModulePCs
+}
+
+func summarizeAFDOwnerStats(byOwner map[string]*afdOwnerSummary) []afdOwnerSummary {
+	rows := make([]afdOwnerSummary, 0, len(byOwner))
+	for _, row := range byOwner {
+		slices.Sort(row.Categories)
+		rows = append(rows, *row)
+	}
+	order := map[string]int{
+		"deep":            0,
+		"setup_or_helper": 1,
+		"other":           2,
+	}
+	slices.SortFunc(rows, func(a, b afdOwnerSummary) int {
+		if order[a.Owner] != order[b.Owner] {
+			return cmp.Compare(order[a.Owner], order[b.Owner])
+		}
+		return cmp.Compare(a.Owner, b.Owner)
+	})
+	return rows
+}
+
+func afdCategoryOwner(category string) string {
+	switch {
+	case afdCallCategoryIsDeep(category):
+		return "deep"
+	case category == "setup" || category == "helper":
+		return "setup_or_helper"
+	default:
+		return "other"
+	}
+}
+
+func afdCallIsInteresting(st *afdCallSummary) bool {
+	if st == nil {
+		return false
+	}
+	return st.TriageJobs != 0 ||
+		st.TriageEvents != 0 ||
+		st.CorpusSaves != 0 ||
+		st.CollideActive != 0 ||
+		st.ExecResults != 0 ||
+		st.ModuleRecords != 0
+}
+
+func afdCallCategoryIsDeep(category string) bool {
+	switch category {
+	case "accepted_data", "async_completion", "transmit", "wsaioctl", "connected_data", "udp_data", "lifecycle":
+		return true
+	default:
+		return false
+	}
+}
+
+func afdCallCategory(name string) string {
+	switch name {
+	case "WSAGetOverlappedResult$socket", "CancelIoEx$socket", "CancelIo$socket",
+		"CreateIoCompletionPort$socket", "GetQueuedCompletionStatus$socket",
+		"AcceptEx$inet_tcp_pending",
+		"ConnectEx$inet_tcp_pending",
+		"WSARecv$accept_pending", "WSASend$accept_pending",
+		"WSAGetOverlappedResult$accept_pending", "CancelIoEx$accept_pending", "CancelIo$accept_pending",
+		"CreateIoCompletionPort$accept_pending", "closesocket$accept_pending",
+		"WSAGetOverlappedResult$accept_recv_pending", "CancelIoEx$accept_recv_pending", "CancelIo$accept_recv_pending",
+		"CreateIoCompletionPort$accept_recv_pending", "closesocket$accept_recv_pending",
+		"WSAGetOverlappedResult$accept_send_pending", "CancelIoEx$accept_send_pending", "CancelIo$accept_send_pending",
+		"CreateIoCompletionPort$accept_send_pending", "closesocket$accept_send_pending",
+		"WSARecv$tcp_pending", "WSASend$tcp_pending",
+		"WSAGetOverlappedResult$tcp_recv_pending", "CancelIoEx$tcp_recv_pending", "CancelIo$tcp_recv_pending",
+		"CreateIoCompletionPort$tcp_recv_pending", "closesocket$tcp_recv_pending",
+		"WSAGetOverlappedResult$tcp_send_pending", "CancelIoEx$tcp_send_pending", "CancelIo$tcp_send_pending",
+		"CreateIoCompletionPort$tcp_send_pending", "closesocket$tcp_send_pending",
+		"WSAGetOverlappedResult$connect_pending", "CancelIoEx$connect_pending", "CancelIo$connect_pending",
+		"CreateIoCompletionPort$connect_pending", "closesocket$connect_pending",
+		"WSAEventSelect$tcp", "WSAEventSelect$accept",
+		"WSAEnumNetworkEvents$tcp", "WSAEnumNetworkEvents$accept":
+		return "async_completion"
+	case "recv$inet_accept", "WSARecv$accept", "WSARecvEx$inet_accept",
+		"send$inet_accept", "WSASend$accept",
+		"recv$inet_accept_updated", "send$inet_accept_updated",
+		"getsockopt$int_accept", "setsockopt$int_accept",
+		"getsockopt$int_accept_updated", "setsockopt$int_accept_updated",
+		"ioctlsocket$fionbio_accept",
+		"getsockname$accept", "getpeername$accept", "shutdown$accept",
+		"select$afd_basic":
+		return "accepted_data"
+	case "TransmitFile$inet_accept", "TransmitPackets$inet_accept":
+		return "transmit"
+	case "WSAIoctl$sio_address_list_query", "WSAIoctl$sio_routing_interface_query",
+		"WSAIoctl$sio_keepalive_vals", "WSAIoctl$sio_get_extension_function_pointer":
+		return "wsaioctl"
+	case "send$inet_tcp", "recv$inet_tcp", "WSASend$tcp", "WSARecv$tcp",
+		"getsockopt$int_tcp", "setsockopt$int_tcp", "ioctlsocket$fionbio_tcp",
+		"getsockname$tcp", "getpeername$tcp":
+		return "connected_data"
+	case "send$inet_udp", "recv$inet_udp", "sendto$udp_bound", "sendto$udp_connected",
+		"recvfrom$udp_bound", "recvfrom$udp_connected", "WSASendTo$udp", "WSARecvFrom$udp",
+		"WSARecvMsg$udp", "getsockopt$int_udp", "setsockopt$int_udp", "ioctlsocket$fionbio_udp",
+		"getsockname$udp", "getpeername$udp":
+		return "udp_data"
+	case "ConnectEx$inet_tcp", "ConnectEx$inet_tcp_reuse",
+		"DisconnectEx$inet_tcp", "DisconnectEx$inet_tcp_reuse",
+		"GetAcceptExSockaddrs$inet_tcp",
+		"AcceptEx$inet_tcp", "setsockopt$update_accept_context", "shutdown$tcp",
+		"shutdown$tcp_rd", "shutdown$tcp_wr", "shutdown$accept_rd", "shutdown$accept_wr":
+		return "lifecycle"
+	case "socket$inet_tcp", "socket$inet_udp", "socket$bound_udp", "socket$connected_udp",
+		"socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp",
+		"bind$inet_tcp", "bind$inet_udp", "bind$connectex_tcp",
+		"connect$inet_tcp", "connect$inet_udp", "listen$inet_tcp", "accept$inet_tcp":
+		return "setup"
+	case "WSAStartup", "WSACleanup", "closesocket$any",
+		"WSACreateEvent", "WSACloseEvent", "WSAResetEvent", "WSASetEvent",
+		"CloseHandle", "CreateFileA", "CreateFile2", "WriteFile":
+		return "helper"
+	default:
+		if strings.HasPrefix(name, "WSAIoctl$") {
+			return "wsaioctl"
+		}
+		if strings.Contains(name, "$inet_accept") || strings.HasSuffix(name, "$accept") {
+			return "accepted_data"
+		}
+		if strings.Contains(name, "$inet_udp") || strings.Contains(name, "$udp") {
+			return "udp_data"
+		}
+		if strings.Contains(name, "$inet_tcp") || strings.HasSuffix(name, "$tcp") {
+			return "connected_data"
+		}
+		return "other"
+	}
+}
+
+func splitCallList(raw string) []string {
+	var calls []string
+	for _, call := range strings.Fields(strings.ReplaceAll(raw, ",", " ")) {
+		call = strings.Trim(call, "[]")
+		if call != "" {
+			calls = append(calls, call)
+		}
+	}
+	return calls
+}
+
 func addStringToCollideQualityAggregate(a *collideQualityAggregate, value string, triage bool) {
 	if a == nil || value == "" {
 		return
@@ -1263,6 +2940,53 @@ func addStringToCollideQualityAggregate(a *collideQualityAggregate, value string
 	}
 	a.corpusSet[value] = true
 	a.entry.CorpusSaves = append(a.entry.CorpusSaves, value)
+}
+
+func finalizeCollideQualityEntry(entry *collideQualityEntry) {
+	if entry == nil {
+		return
+	}
+	entry.ActiveCallNames = activeCallNames(entry.ActiveCalls)
+	for _, call := range entry.ActiveCallNames {
+		category := afdCallCategory(call)
+		entry.ActiveCategories = appendUniqueString(entry.ActiveCategories, category)
+		if afdCallCategoryIsDeep(category) {
+			entry.HasDeepActive = true
+		}
+		if category == "setup" || category == "helper" {
+			entry.HasSetupActive = true
+		}
+	}
+	for _, call := range entry.TriageCalls {
+		if afdCallCategoryIsDeep(afdCallCategory(call)) {
+			entry.DeepTriageCalls = appendUniqueString(entry.DeepTriageCalls, call)
+		} else if afdCallCategory(call) == "setup" || afdCallCategory(call) == "helper" {
+			entry.SetupTriageCalls = appendUniqueString(entry.SetupTriageCalls, call)
+		}
+	}
+	for _, call := range entry.CorpusSaves {
+		if afdCallCategoryIsDeep(afdCallCategory(call)) {
+			entry.DeepCorpusSaves = appendUniqueString(entry.DeepCorpusSaves, call)
+		} else if afdCallCategory(call) == "setup" || afdCallCategory(call) == "helper" {
+			entry.SetupCorpusSaves = appendUniqueString(entry.SetupCorpusSaves, call)
+		}
+	}
+	slices.Sort(entry.ActiveCallNames)
+	slices.Sort(entry.ActiveCategories)
+	slices.Sort(entry.TriageCalls)
+	slices.Sort(entry.CorpusSaves)
+	slices.Sort(entry.DeepTriageCalls)
+	slices.Sort(entry.DeepCorpusSaves)
+	slices.Sort(entry.SetupTriageCalls)
+	slices.Sort(entry.SetupCorpusSaves)
+}
+
+func activeCallNames(active string) []string {
+	names := make([]string, 0)
+	for _, match := range reWindowsCollideActive.FindAllStringSubmatch(active, -1) {
+		names = appendUniqueString(names, match[1])
+	}
+	return names
 }
 
 func selectCollideQualityEvent(events []*collideQualityEvent, callName string) *collideQualityEvent {

@@ -270,6 +270,10 @@ func (job *triageJob) shouldPersistCall(p *prog.Prog, call int) bool {
 	if call < 0 {
 		return true
 	}
+	if job.fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram != nil &&
+		job.fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram(job.origin, p) {
+		return false
+	}
 	if job.fuzzer.target.Helpers.SkipCorpusForAutomaticHelpers && job.fuzzer.target.CallIsAutomaticHelper(p.Calls[call].Meta) {
 		return false
 	}

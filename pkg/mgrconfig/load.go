@@ -162,6 +162,9 @@ func Complete(cfg *Config) error {
 	if err := cfg.completeBinaries(); err != nil {
 		return err
 	}
+	if err := cfg.applyTargetProfile(); err != nil {
+		return err
+	}
 	if cfg.Procs < 1 || cfg.Procs > prog.MaxPids {
 		return fmt.Errorf("bad config param procs: '%v', want [1, %v]", cfg.Procs, prog.MaxPids)
 	}
@@ -242,6 +245,33 @@ func (cfg *Config) completeServices() error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (cfg *Config) applyTargetProfile() error {
+	profile := cfg.Experimental.TargetProfile
+	if profile == "" {
+		profile = cfg.Experimental.WindowsTargetProfile
+	} else if cfg.Experimental.WindowsTargetProfile != "" && cfg.Experimental.WindowsTargetProfile != profile {
+		return fmt.Errorf("experimental.target_profile=%q conflicts with experimental.windows_target_profile=%q",
+			profile, cfg.Experimental.WindowsTargetProfile)
+	}
+	if profile == "" {
+		return nil
+	}
+	if cfg.Target == nil || cfg.Target.ApplyTargetProfile == nil {
+		return fmt.Errorf("target %s/%s does not support experimental.target_profile %q",
+			cfg.TargetOS, cfg.TargetArch, profile)
+	}
+	target, err := cfg.Target.ApplyTargetProfile(cfg.Target, profile)
+	if err != nil {
+		return err
+	}
+	if target == nil {
+		return fmt.Errorf("target %s/%s returned nil for experimental.target_profile %q",
+			cfg.TargetOS, cfg.TargetArch, profile)
+	}
+	cfg.Target = target
 	return nil
 }
 

@@ -45,6 +45,7 @@ func (target *Target) calcResourceCtors(res *ResourceDesc, preciseOnly bool) []R
 func (target *Target) populateResourceCtors() {
 	// Find resources that are created by each call.
 	callsResources := make([][]*ResourceDesc, len(target.Syscalls))
+	seedCallsResources := make([][]*ResourceDesc, len(target.Syscalls))
 	for _, meta := range target.Syscalls {
 		dedup := make(map[*ResourceDesc]bool)
 		ForeachCallType(meta, func(typ Type, ctx *TypeCtx) {
@@ -61,7 +62,10 @@ func (target *Target) populateResourceCtors() {
 				}
 				dedup[typ1.Desc] = true
 				meta.usesResources = append(meta.usesResources, typ1.Desc)
-				if !meta.Attrs.NoGenerate {
+				if meta.Attrs.NoGenerate {
+					seedCallsResources[meta.ID] = append(seedCallsResources[meta.ID], typ1.Desc)
+					meta.seedCreatesResources = append(meta.seedCreatesResources, typ1.Desc)
+				} else {
 					callsResources[meta.ID] = append(callsResources[meta.ID], typ1.Desc)
 					meta.createsResources = append(meta.createsResources, typ1.Desc)
 				}
@@ -101,6 +105,27 @@ func (target *Target) populateResourceCtors() {
 			}
 			if impreciseOk {
 				res.Ctors = append(res.Ctors, ResourceCtor{target.Syscalls[call], false})
+			}
+		}
+		for call, callResources := range seedCallsResources {
+			preciseOk := false
+			impreciseOk := false
+			for _, callRes := range callResources {
+				if preciseOk && impreciseOk {
+					break
+				}
+				if isCompatibleResourceImpl(res.Kind, callRes.Kind, true) {
+					preciseOk = true
+				}
+				if isCompatibleResourceImpl(res.Kind, callRes.Kind, false) {
+					impreciseOk = true
+				}
+			}
+			if preciseOk {
+				res.seedCtors = append(res.seedCtors, ResourceCtor{target.Syscalls[call], true})
+			}
+			if impreciseOk {
+				res.seedCtors = append(res.seedCtors, ResourceCtor{target.Syscalls[call], false})
 			}
 		}
 	}
@@ -188,6 +213,11 @@ func (target *Target) transitivelyEnabled(enabled map[*Syscall]bool) (map[*Sysca
 			}
 			supported[c] = true
 			for _, res := range c.createsResources {
+				for _, kind := range res.Kind {
+					canCreate[kind] = true
+				}
+			}
+			for _, res := range c.seedCreatesResources {
 				for _, kind := range res.Kind {
 					canCreate[kind] = true
 				}

@@ -18,6 +18,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -30,6 +32,8 @@ import (
 	_ "github.com/google/syzkaller/sys"
 	"golang.org/x/sys/unix"
 )
+
+var reNyxModuleRangeSubmitted = regexp.MustCompile(`nyx module range submitted slot=(\d+) target=([^ ]+) name=([^ ]+) base=0x([0-9a-fA-F]+) end=0x([0-9a-fA-F]+)`)
 
 const (
 	nyxInterfacePing        = byte('x')
@@ -279,6 +283,18 @@ func bootstrapTCPAcceptExSessionWithClient(listenerAddrRef, clientAddrRef string
 		bootstrapAcceptSocket()
 }
 
+func bootstrapTCPAcceptExPendingSessionWithClient(listenerAddrRef, clientAddrRef string) string {
+	return bootstrapTCPServer(listenerAddrRef) +
+		bootstrapAcceptSocket() +
+		"r3 = AcceptEx$inet_tcp_pending(r0, r2, &(0x7f0000000200)='\\x00'/96, 0x0, 0x20, 0x20, &(0x7f0000000280), &(0x7f0000000300)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+		bootstrapTCPClient(clientAddrRef)
+}
+
+func bootstrapTCPAcceptExUpdatedSessionWithClient(listenerAddrRef, clientAddrRef string) string {
+	return bootstrapTCPAcceptExPendingSessionWithClient(listenerAddrRef, clientAddrRef) +
+		"r4 = setsockopt$update_accept_context(r3, 0xffff, 0x700b, &(0x7f0000000380)=r0, 0x8)\n"
+}
+
 func bootstrapTCPAcceptedSessionWithClientConnectedPeerSend(listenerAddrRef, clientAddrRef string) string {
 	return bootstrapTCPAcceptedSessionWithClient(listenerAddrRef, clientAddrRef) +
 		bootstrapConnectedPeerSend()
@@ -332,6 +348,37 @@ type nyxCovDumpRecord struct {
 	SlotID    uint32
 	Flags     uint64
 	PCs       []uint64
+}
+
+type moduleCoverageSlotSummary struct {
+	SlotID  uint32
+	Records int
+	PCs     int
+}
+
+type moduleCoverageCallSummary struct {
+	CallIndex uint32
+	SlotID    uint32
+	CallName  string
+	Records   int
+	PCs       int
+}
+
+type callFeedbackSummary struct {
+	CallIndex uint32
+	CallName  string
+	Signal    int
+	Cover     int
+	Comps     int
+	Error     int32
+}
+
+type moduleRuntimeRange struct {
+	SlotID uint32
+	Target string
+	Name   string
+	Base   uint64
+	End    uint64
 }
 
 type nyxCompEntry struct {
@@ -480,6 +527,7 @@ type nyxVM struct {
 	moduleRanges           []moduleRangeSpec
 	windowsMinidump        bool
 	windowsMinidumpTimeout int
+	runtimeModuleRanges    []moduleRuntimeRange
 
 	ctx         context.Context
 	payloadFile *os.File
@@ -725,11 +773,58 @@ func (vm *nyxVM) stepUntilReady() error {
 	}
 	switch vm.aux.execCode() {
 	case nyxRCHprintf:
+		vm.recordModuleRangesFromAux()
 		log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
 	case nyxRCAbort:
 		return fmt.Errorf("guest abort during init: %s", string(vm.aux.misc()))
 	}
 	return nil
+}
+
+func (vm *nyxVM) recordModuleRangesFromAux() {
+	for _, row := range parseModuleRangesFromAux(string(vm.aux.misc())) {
+		replaced := false
+		for i := range vm.runtimeModuleRanges {
+			if vm.runtimeModuleRanges[i].SlotID == row.SlotID {
+				vm.runtimeModuleRanges[i] = row
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			vm.runtimeModuleRanges = append(vm.runtimeModuleRanges, row)
+		}
+	}
+}
+
+func parseModuleRangesFromAux(text string) []moduleRuntimeRange {
+	var ranges []moduleRuntimeRange
+	for _, line := range strings.Split(text, "\n") {
+		match := reNyxModuleRangeSubmitted.FindStringSubmatch(line)
+		if match == nil {
+			continue
+		}
+		slotID, err := strconv.ParseUint(match[1], 10, 32)
+		if err != nil {
+			continue
+		}
+		base, err := strconv.ParseUint(match[4], 16, 64)
+		if err != nil {
+			continue
+		}
+		end, err := strconv.ParseUint(match[5], 16, 64)
+		if err != nil || end <= base {
+			continue
+		}
+		ranges = append(ranges, moduleRuntimeRange{
+			SlotID: uint32(slotID),
+			Target: match[2],
+			Name:   match[3],
+			Base:   base,
+			End:    end,
+		})
+	}
+	return ranges
 }
 
 func (vm *nyxVM) close() {
@@ -828,6 +923,7 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 			strings.TrimSpace(string(vm.aux.misc())))
 		switch vm.aux.execCode() {
 		case nyxRCHprintf:
+			vm.recordModuleRangesFromAux()
 			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
 		case nyxRCAbort:
 			return fmt.Errorf("guest abort during handshake: %s", string(vm.aux.misc()))
@@ -882,6 +978,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		case nyxRCCrash, nyxRCSanitizer:
 			return nil, vm.makeCrashError(vm.aux.execCode(), req)
 		case nyxRCHprintf:
+			vm.recordModuleRangesFromAux()
 			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
 			continue
 		case nyxRCTimeout:
@@ -1353,6 +1450,9 @@ func describeExecProgram(data []byte) string {
 		fmt.Sprintf("calls=%d", len(decoded.Calls)),
 		fmt.Sprintf("call0=%s", call.Meta.Name),
 	}
+	if deep := firstDeepAFDCallName(decoded.Calls); deep != "" {
+		parts = append(parts, fmt.Sprintf("deep0=%s", deep))
+	}
 	for i, arg := range call.Args {
 		if i >= 4 {
 			break
@@ -1367,6 +1467,74 @@ func describeExecProgram(data []byte) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+func firstDeepAFDCallName(calls []prog.ExecCall) string {
+	for _, call := range calls {
+		if call.Meta != nil && isDeepAFDCallName(call.Meta.Name) {
+			return call.Meta.Name
+		}
+	}
+	return ""
+}
+
+func isDeepAFDCallName(name string) bool {
+	switch {
+	case name == "WSAGetOverlappedResult$socket" ||
+		name == "CancelIoEx$socket" ||
+		name == "CancelIo$socket" ||
+		name == "CreateIoCompletionPort$socket" ||
+		name == "GetQueuedCompletionStatus$socket" ||
+		name == "AcceptEx$inet_tcp_pending" ||
+		name == "ConnectEx$inet_tcp_pending" ||
+		strings.Contains(name, "_pending") ||
+		strings.HasPrefix(name, "WSAEventSelect$") ||
+		strings.HasPrefix(name, "WSAEnumNetworkEvents$") ||
+		strings.HasPrefix(name, "WSAIoctl$") ||
+		strings.HasPrefix(name, "WSARecv") ||
+		strings.HasPrefix(name, "WSASend") ||
+		strings.HasPrefix(name, "send$inet_") ||
+		strings.HasPrefix(name, "recv$inet_") ||
+		strings.HasPrefix(name, "sendto$") ||
+		strings.HasPrefix(name, "recvfrom$") ||
+		strings.HasPrefix(name, "ConnectEx$") ||
+		strings.HasPrefix(name, "DisconnectEx$") ||
+		strings.HasPrefix(name, "TransmitFile$") ||
+		strings.HasPrefix(name, "TransmitPackets$") ||
+		strings.HasPrefix(name, "WSARecvMsg$") ||
+		strings.HasPrefix(name, "GetAcceptExSockaddrs$") ||
+		strings.HasPrefix(name, "setsockopt$update_accept_context") ||
+		strings.HasPrefix(name, "setsockopt$int_") ||
+		strings.HasPrefix(name, "getsockopt$int_") ||
+		strings.HasPrefix(name, "ioctlsocket$fionbio_") ||
+		strings.HasPrefix(name, "shutdown$") ||
+		strings.HasPrefix(name, "getsockname$") ||
+		strings.HasPrefix(name, "getpeername$") ||
+		strings.HasPrefix(name, "select$afd_"):
+		return true
+	default:
+		return false
+	}
+}
+
+func execCallNames(data []byte) []string {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return nil
+	}
+	decoded, err := target.DeserializeExec(data, nil)
+	if err != nil {
+		return nil
+	}
+	names := make([]string, 0, len(decoded.Calls))
+	for _, call := range decoded.Calls {
+		if call.Meta == nil {
+			names = append(names, "<nil>")
+			continue
+		}
+		names = append(names, call.Meta.Name)
+	}
+	return names
 }
 
 type runner struct {
@@ -1562,6 +1730,9 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	if covErr == nil {
 		covErr = injectCoverage(req, execMsg, r.connectReply.CoverEdges,
 			r.connectReply.Kernel64Bit, covRecords, compRecords)
+		if covErr == nil {
+			logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit, r.vm.runtimeModuleRanges)
+		}
 	}
 	if covErr != nil {
 		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
@@ -1575,10 +1746,150 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		r.markForRestart(fmt.Sprintf("request %d hanged", req.Id))
 	}
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
+		logCallFeedback(req.Id, req.Data, res.Info.Calls)
 		log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d",
 			requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
 	}
 	return execMsg, nil
+}
+
+func logCallFeedback(requestID int64, execData []byte, calls []*flatrpc.CallInfo) {
+	for _, row := range summarizeCallFeedback(calls, execCallNames(execData)) {
+		log.Logf(0, "runner call feedback: id=%d call=%d name=%s signal=%d cover=%d comps=%d errno=%d",
+			requestID, row.CallIndex, row.CallName, row.Signal, row.Cover, row.Comps, row.Error)
+	}
+}
+
+func summarizeCallFeedback(calls []*flatrpc.CallInfo, callNames []string) []callFeedbackSummary {
+	rows := make([]callFeedbackSummary, 0, len(calls))
+	for index, call := range calls {
+		if call == nil || (len(call.Signal) == 0 && len(call.Cover) == 0 && len(call.Comps) == 0) {
+			continue
+		}
+		rows = append(rows, callFeedbackSummary{
+			CallIndex: uint32(index),
+			CallName:  callNameForIndex(callNames, uint32(index)),
+			Signal:    len(call.Signal),
+			Cover:     len(call.Cover),
+			Comps:     len(call.Comps),
+			Error:     call.Error,
+		})
+	}
+	return rows
+}
+
+func logModuleCoverage(requestID int64, execData []byte, covRecords []nyxCovDumpRecord, kernel64Bit bool, ranges []moduleRuntimeRange) {
+	for _, row := range summarizeModuleCoverageBySlot(covRecords, kernel64Bit, ranges) {
+		log.Logf(0, "runner module coverage: id=%d slot=%d records=%d pcs=%d",
+			requestID, row.SlotID, row.Records, row.PCs)
+	}
+	for _, row := range summarizeModuleCoverageByCall(covRecords, kernel64Bit, ranges, execCallNames(execData)) {
+		log.Logf(0, "runner call module coverage: id=%d call=%d name=%s slot=%d records=%d pcs=%d",
+			requestID, row.CallIndex, row.CallName, row.SlotID, row.Records, row.PCs)
+	}
+}
+
+func summarizeModuleCoverageBySlot(covRecords []nyxCovDumpRecord, kernel64Bit bool, ranges []moduleRuntimeRange) []moduleCoverageSlotSummary {
+	bySlot := make(map[uint32]*moduleCoverageSlotSummary)
+	for _, rec := range covRecords {
+		pcs := filterCoveragePCs(rec.PCs, kernel64Bit)
+		if len(pcs) == 0 {
+			continue
+		}
+		if len(ranges) == 0 {
+			row := moduleCoverageRow(bySlot, rec.SlotID)
+			row.Records++
+			row.PCs += len(pcs)
+			continue
+		}
+		recordSlots := map[uint32]bool{}
+		for _, pc := range pcs {
+			for _, rng := range ranges {
+				if pc >= rng.Base && pc < rng.End {
+					recordSlots[rng.SlotID] = true
+					row := moduleCoverageRow(bySlot, rng.SlotID)
+					row.PCs++
+				}
+			}
+		}
+		for slotID := range recordSlots {
+			moduleCoverageRow(bySlot, slotID).Records++
+		}
+	}
+	rows := make([]moduleCoverageSlotSummary, 0, len(bySlot))
+	for _, row := range bySlot {
+		rows = append(rows, *row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].SlotID < rows[j].SlotID
+	})
+	return rows
+}
+
+func summarizeModuleCoverageByCall(covRecords []nyxCovDumpRecord, kernel64Bit bool, ranges []moduleRuntimeRange, callNames []string) []moduleCoverageCallSummary {
+	byKey := make(map[uint64]*moduleCoverageCallSummary)
+	for _, rec := range covRecords {
+		pcs := filterCoveragePCs(rec.PCs, kernel64Bit)
+		if len(pcs) == 0 {
+			continue
+		}
+		if len(ranges) == 0 {
+			row := moduleCoverageCallRow(byKey, rec.CallIndex, rec.SlotID, callNameForIndex(callNames, rec.CallIndex))
+			row.Records++
+			row.PCs += len(pcs)
+			continue
+		}
+		recordSlots := map[uint32]bool{}
+		for _, pc := range pcs {
+			for _, rng := range ranges {
+				if pc >= rng.Base && pc < rng.End {
+					recordSlots[rng.SlotID] = true
+					row := moduleCoverageCallRow(byKey, rec.CallIndex, rng.SlotID, callNameForIndex(callNames, rec.CallIndex))
+					row.PCs++
+				}
+			}
+		}
+		for slotID := range recordSlots {
+			moduleCoverageCallRow(byKey, rec.CallIndex, slotID, callNameForIndex(callNames, rec.CallIndex)).Records++
+		}
+	}
+	rows := make([]moduleCoverageCallSummary, 0, len(byKey))
+	for _, row := range byKey {
+		rows = append(rows, *row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].CallIndex != rows[j].CallIndex {
+			return rows[i].CallIndex < rows[j].CallIndex
+		}
+		return rows[i].SlotID < rows[j].SlotID
+	})
+	return rows
+}
+
+func moduleCoverageRow(bySlot map[uint32]*moduleCoverageSlotSummary, slotID uint32) *moduleCoverageSlotSummary {
+	row := bySlot[slotID]
+	if row == nil {
+		row = &moduleCoverageSlotSummary{SlotID: slotID}
+		bySlot[slotID] = row
+	}
+	return row
+}
+
+func moduleCoverageCallRow(byKey map[uint64]*moduleCoverageCallSummary, callIndex, slotID uint32, callName string) *moduleCoverageCallSummary {
+	key := uint64(callIndex)<<32 | uint64(slotID)
+	row := byKey[key]
+	if row == nil {
+		row = &moduleCoverageCallSummary{CallIndex: callIndex, SlotID: slotID, CallName: callName}
+		byKey[key] = row
+	}
+	return row
+}
+
+func callNameForIndex(callNames []string, index uint32) string {
+	if int(index) < len(callNames) && callNames[index] != "" {
+		return callNames[index]
+	}
+	return "<unknown>"
 }
 
 func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage, error) {
@@ -1599,7 +1910,7 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return nil, err
 		}
 		r.coveragePrimed = true
-		if execResultHasCoverage(primeMsg) {
+		if !primeResultNeedsReplay(primeMsg) {
 			return primeMsg, nil
 		}
 		log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
@@ -1609,6 +1920,10 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		r.coveragePrimed = true
 	}
 	return r.executeRequestOnce(req, false)
+}
+
+func primeResultNeedsReplay(msg *flatrpc.ExecutorMessage) bool {
+	return !execResultHasCoverage(msg) && !execResultHanged(msg)
 }
 
 func execResultHanged(msg *flatrpc.ExecutorMessage) bool {
@@ -1926,8 +2241,8 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 		return p, true, nil
 	}
 	ct := target.BuildChoiceTable(nil, standaloneEnabledCalls(target, meta))
-	for attempts := 0; attempts < 32; attempts++ {
-		p := target.Generate(mrand.NewSource(seed+int64(attempts)), 1, ct)
+	for attempts := 0; attempts < 128; attempts++ {
+		p := target.Generate(mrand.NewSource(seed+int64(attempts)), 6, ct)
 		if standaloneProgramContainsCall(p, meta.Name) {
 			return p, false, nil
 		}
@@ -1998,7 +2313,35 @@ func standaloneNeedsFileHandleProgram(meta *prog.Syscall) bool {
 		"NtFsControlFile$ntfs_set_zero_data", "NtFsControlFile$ntfs_query_allocated_ranges",
 		"NtQueryInformationFile$basic", "NtQueryInformationFile$standard",
 		"NtQueryInformationFile$network_open", "NtReadFile", "NtSetInformationFile$basic",
-		"NtWriteFile", "TransmitFile$inet_accept":
+		"NtWriteFile", "TransmitFile$inet_accept",
+		"ConnectEx$inet_tcp", "DisconnectEx$inet_tcp", "GetAcceptExSockaddrs$inet_tcp",
+		"ConnectEx$inet_tcp_pending", "CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending", "CancelIoEx$connect_pending",
+		"CancelIo$connect_pending", "closesocket$connect_pending",
+		"DisconnectEx$inet_tcp_reuse", "ConnectEx$inet_tcp_reuse",
+		"TransmitPackets$inet_accept", "WSARecvMsg$udp",
+		"WSAEventSelect$tcp", "WSAEnumNetworkEvents$tcp",
+		"WSAEventSelect$accept", "WSAEnumNetworkEvents$accept",
+		"WSAGetOverlappedResult$socket", "CancelIoEx$socket", "CancelIo$socket",
+		"CreateIoCompletionPort$socket", "GetQueuedCompletionStatus$socket",
+		"AcceptEx$inet_tcp_pending", "setsockopt$update_accept_context",
+		"CreateIoCompletionPort$accept_pending", "WSAGetOverlappedResult$accept_pending",
+		"CancelIoEx$accept_pending", "CancelIo$accept_pending",
+		"closesocket$accept_pending",
+		"WSARecv$accept_pending", "WSASend$accept_pending",
+		"CreateIoCompletionPort$accept_recv_pending", "CreateIoCompletionPort$accept_send_pending",
+		"WSAGetOverlappedResult$accept_recv_pending", "WSAGetOverlappedResult$accept_send_pending",
+		"CancelIoEx$accept_recv_pending", "CancelIoEx$accept_send_pending",
+		"CancelIo$accept_recv_pending", "CancelIo$accept_send_pending",
+		"closesocket$accept_recv_pending", "closesocket$accept_send_pending",
+		"WSARecv$tcp_pending", "WSASend$tcp_pending",
+		"CreateIoCompletionPort$tcp_recv_pending", "CreateIoCompletionPort$tcp_send_pending",
+		"WSAGetOverlappedResult$tcp_recv_pending", "WSAGetOverlappedResult$tcp_send_pending",
+		"CancelIoEx$tcp_recv_pending", "CancelIoEx$tcp_send_pending",
+		"CancelIo$tcp_recv_pending", "CancelIo$tcp_send_pending",
+		"closesocket$tcp_recv_pending", "closesocket$tcp_send_pending",
+		"send$inet_accept_updated", "recv$inet_accept_updated",
+		"setsockopt$int_accept_updated", "getsockopt$int_accept_updated":
 		return true
 	}
 	return false
@@ -2089,6 +2432,239 @@ func standaloneFileHandleProgram(name string) ([]byte, error) {
 				"closesocket$any(r2)\n" +
 				"closesocket$any(r1)\n" +
 				"closesocket$any(r0)\n"), nil
+	case "ConnectEx$inet_tcp":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$connectex_tcp(r1, &(0x7f0000000120)={0x2, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"ConnectEx$inet_tcp(r1, &(0x7f0000000140)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000180)='cx', 0x2, &(0x7f00000001c0), 0x0)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "ConnectEx$inet_tcp_pending", "CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending", "CancelIoEx$connect_pending",
+		"CancelIo$connect_pending", "closesocket$connect_pending":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$connectex_tcp(r1, &(0x7f0000000120)={0x2, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = ConnectEx$inet_tcp_pending(r1, &(0x7f0000000140)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000180)='cx', 0x2, &(0x7f00000001c0), &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+				"r3 = CreateIoCompletionPort$connect_pending(r2, 0x0, 0xafd, 0x0)\n" +
+				"CancelIoEx$connect_pending(r2, &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+				"WSAGetOverlappedResult$connect_pending(r2, &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000300), 0x0, &(0x7f0000000340)=0x0)\n" +
+				"CancelIo$connect_pending(r2)\n" +
+				"GetQueuedCompletionStatus$socket(r3, &(0x7f0000000380), &(0x7f00000003c0), &(0x7f0000000400), 0x0)\n" +
+				"closesocket$connect_pending(r2)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "DisconnectEx$inet_tcp":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"DisconnectEx$inet_tcp(r1, 0x0, 0x0, 0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "DisconnectEx$inet_tcp_reuse":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"r3 = DisconnectEx$inet_tcp_reuse(r1, 0x0, 0x2, 0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r3)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "ConnectEx$inet_tcp_reuse":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"r3 = DisconnectEx$inet_tcp_reuse(r1, 0x0, 0x2, 0x0)\n" +
+				"ConnectEx$inet_tcp_reuse(r3, &(0x7f00000001c0)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000200)='cx', 0x2, &(0x7f0000000240), 0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r3)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "GetAcceptExSockaddrs$inet_tcp":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"GetAcceptExSockaddrs$inet_tcp(&(0x7f0000000100)='\\x00'/96, 0x0, 0x20, 0x20, &(0x7f0000000200), &(0x7f0000000240), &(0x7f0000000280), &(0x7f00000002c0))\n"), nil
+	case "TransmitPackets$inet_accept":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"TransmitPackets$inet_accept(r2, &(0x7f0000000200)=[{0x5, 0x4, &(0x7f0000000280)='abcd', 0x0}], 0x1, 0x0, 0x0, 0x0)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "WSARecvMsg$udp":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$bound_udp(0x2, 0x2, 0x11)\n" +
+				"bind$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r1 = socket$connected_udp(0x2, 0x2, 0x11)\n" +
+				"connect$inet_udp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"send$inet_udp(r1, &(0x7f0000000180)='msg', 0x3, 0x0)\n" +
+				"WSARecvMsg$udp(r0, &(0x7f0000000200)={&(0x7f0000000280), 0x10, 0x0, &(0x7f0000000300)=[{0x40, &(0x7f0000000380)='\\x00'/64}], 0x1, 0x0, {0x20, &(0x7f0000000400)='\\x00'/32}, 0x0, 0x0}, &(0x7f0000000480), 0x0, 0x0)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "WSAEventSelect$tcp", "WSAEnumNetworkEvents$tcp":
+		return []byte(bootstrapTCPAcceptedSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"r3 = WSACreateEvent()\n" +
+			"WSAEventSelect$tcp(r1, r3, 0x3f)\n" +
+			"send$inet_accept(r2, &(0x7f0000000200)='evt', 0x3, 0x0)\n" +
+			"WSAEnumNetworkEvents$tcp(r1, r3, &(0x7f0000000280))\n" +
+			"WSACloseEvent(r3)\n" +
+			"closesocket$any(r2)\n" +
+			"closesocket$any(r1)\n" +
+			"closesocket$any(r0)\n"), nil
+	case "WSAEventSelect$accept", "WSAEnumNetworkEvents$accept":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"r3 = WSACreateEvent()\n" +
+				"WSAEventSelect$accept(r2, r3, 0x3f)\n" +
+				"send$inet_tcp(r1, &(0x7f0000000200)='evt', 0x3, 0x0)\n" +
+				"WSAEnumNetworkEvents$accept(r2, r3, &(0x7f0000000280))\n" +
+				"WSACloseEvent(r3)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "WSAGetOverlappedResult$socket", "CancelIoEx$socket", "CancelIo$socket",
+		"CreateIoCompletionPort$socket", "GetQueuedCompletionStatus$socket":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
+				"r3 = CreateIoCompletionPort$socket(r2, 0x0, 0xafd, 0x0)\n" +
+				"WSARecv$accept(r2, &(0x7f0000000200)=[{0x40, &(0x7f0000000280)='\\x00'/64}], 0x1, &(0x7f0000000300), &(0x7f0000000340)=0x0, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)\n" +
+				"CancelIoEx$socket(r2, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+				"WSAGetOverlappedResult$socket(r2, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000400), 0x0, &(0x7f0000000440)=0x0)\n" +
+				"GetQueuedCompletionStatus$socket(r3, &(0x7f0000000480), &(0x7f00000004c0), &(0x7f0000000500), 0x0)\n" +
+				"CancelIo$socket(r2)\n" +
+				"closesocket$any(r2)\n" +
+				"closesocket$any(r1)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "AcceptEx$inet_tcp_pending", "CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending", "CancelIoEx$accept_pending",
+		"CancelIo$accept_pending", "closesocket$accept_pending":
+		return []byte(bootstrapTCPAcceptExPendingSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"r4 = CreateIoCompletionPort$accept_pending(r3, 0x0, 0xafd, 0x0)\n" +
+			"CancelIoEx$accept_pending(r3, &(0x7f0000000300)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+			"WSAGetOverlappedResult$accept_pending(r3, &(0x7f0000000300)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000400), 0x0, &(0x7f0000000440)=0x0)\n" +
+			"CancelIo$accept_pending(r3)\n" +
+			"GetQueuedCompletionStatus$socket(r4, &(0x7f0000000480), &(0x7f00000004c0), &(0x7f0000000500), 0x0)\n" +
+			"closesocket$accept_pending(r3)\n" +
+			"closesocket$any(r1)\n" +
+			"closesocket$any(r0)\n"), nil
+	case "WSARecv$accept_pending", "CreateIoCompletionPort$accept_recv_pending",
+		"WSAGetOverlappedResult$accept_recv_pending", "CancelIoEx$accept_recv_pending",
+		"CancelIo$accept_recv_pending", "closesocket$accept_recv_pending":
+		return []byte(bootstrapTCPAcceptedSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e22, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e22, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"r3 = WSARecv$accept_pending(r2, &(0x7f0000000200)=[{0x40, &(0x7f0000000280)='\\x00'/64}], 0x1, &(0x7f0000000300), &(0x7f0000000340)=0x0, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)\n" +
+			"r4 = CreateIoCompletionPort$accept_recv_pending(r3, 0x0, 0xafd, 0x0)\n" +
+			"CancelIoEx$accept_recv_pending(r3, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+			"WSAGetOverlappedResult$accept_recv_pending(r3, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000400), 0x0, &(0x7f0000000440)=0x0)\n" +
+			"CancelIo$accept_recv_pending(r3)\n" +
+			"GetQueuedCompletionStatus$socket(r4, &(0x7f0000000480), &(0x7f00000004c0), &(0x7f0000000500), 0x0)\n" +
+			"closesocket$accept_recv_pending(r3)\n" +
+			"closesocket$any(r1)\n" +
+			"closesocket$any(r0)\n"), nil
+	case "WSASend$accept_pending", "CreateIoCompletionPort$accept_send_pending",
+		"WSAGetOverlappedResult$accept_send_pending", "CancelIoEx$accept_send_pending",
+		"CancelIo$accept_send_pending", "closesocket$accept_send_pending":
+		return []byte(bootstrapTCPAcceptedSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e23, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e23, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"r3 = WSASend$accept_pending(r2, &(0x7f0000000200)=[{0x4, &(0x7f0000000280)='send'}], 0x1, &(0x7f0000000300), 0x0, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)\n" +
+			"r4 = CreateIoCompletionPort$accept_send_pending(r3, 0x0, 0xafd, 0x0)\n" +
+			"CancelIoEx$accept_send_pending(r3, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+			"WSAGetOverlappedResult$accept_send_pending(r3, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000400), 0x0, &(0x7f0000000440)=0x0)\n" +
+			"CancelIo$accept_send_pending(r3)\n" +
+			"GetQueuedCompletionStatus$socket(r4, &(0x7f0000000480), &(0x7f00000004c0), &(0x7f0000000500), 0x0)\n" +
+			"closesocket$accept_send_pending(r3)\n" +
+			"closesocket$any(r1)\n" +
+			"closesocket$any(r0)\n"), nil
+	case "WSARecv$tcp_pending", "CreateIoCompletionPort$tcp_recv_pending",
+		"WSAGetOverlappedResult$tcp_recv_pending", "CancelIoEx$tcp_recv_pending",
+		"CancelIo$tcp_recv_pending", "closesocket$tcp_recv_pending":
+		return []byte(bootstrapTCPAcceptedSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e24, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e24, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"send$inet_accept(r2, &(0x7f0000000200)='recv', 0x4, 0x0)\n" +
+			"r3 = WSARecv$tcp_pending(r1, &(0x7f0000000280)=[{0x40, &(0x7f0000000300)='\\x00'/64}], 0x1, &(0x7f0000000380), &(0x7f00000003c0)=0x0, &(0x7f0000000400)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)\n" +
+			"r4 = CreateIoCompletionPort$tcp_recv_pending(r3, 0x0, 0xafd, 0x0)\n" +
+			"CancelIoEx$tcp_recv_pending(r3, &(0x7f0000000400)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+			"WSAGetOverlappedResult$tcp_recv_pending(r3, &(0x7f0000000400)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000480), 0x0, &(0x7f00000004c0)=0x0)\n" +
+			"CancelIo$tcp_recv_pending(r3)\n" +
+			"GetQueuedCompletionStatus$socket(r4, &(0x7f0000000500), &(0x7f0000000540), &(0x7f0000000580), 0x0)\n" +
+			"closesocket$tcp_recv_pending(r3)\n" +
+			"closesocket$any(r2)\n" +
+			"closesocket$any(r0)\n"), nil
+	case "WSASend$tcp_pending", "CreateIoCompletionPort$tcp_send_pending",
+		"WSAGetOverlappedResult$tcp_send_pending", "CancelIoEx$tcp_send_pending",
+		"CancelIo$tcp_send_pending", "closesocket$tcp_send_pending":
+		return []byte(bootstrapTCPAcceptedSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e25, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e25, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"r3 = WSASend$tcp_pending(r1, &(0x7f0000000200)=[{0x4, &(0x7f0000000280)='send'}], 0x1, &(0x7f0000000300), 0x0, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)\n" +
+			"r4 = CreateIoCompletionPort$tcp_send_pending(r3, 0x0, 0xafd, 0x0)\n" +
+			"CancelIoEx$tcp_send_pending(r3, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+			"WSAGetOverlappedResult$tcp_send_pending(r3, &(0x7f0000000380)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000400), 0x0, &(0x7f0000000440)=0x0)\n" +
+			"CancelIo$tcp_send_pending(r3)\n" +
+			"GetQueuedCompletionStatus$socket(r4, &(0x7f0000000480), &(0x7f00000004c0), &(0x7f0000000500), 0x0)\n" +
+			"closesocket$tcp_send_pending(r3)\n" +
+			"closesocket$any(r2)\n" +
+			"closesocket$any(r0)\n"), nil
+	case "setsockopt$update_accept_context", "send$inet_accept_updated", "recv$inet_accept_updated",
+		"setsockopt$int_accept_updated", "getsockopt$int_accept_updated":
+		return []byte(bootstrapTCPAcceptExUpdatedSessionWithClient(
+			"&(0x7f0000000100)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}",
+			"&(0x7f0000000120)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}") +
+			"send$inet_tcp(r1, &(0x7f0000000400)='upd', 0x3, 0x0)\n" +
+			"recv$inet_accept_updated(r4, &(0x7f0000000480)='\\x00'/64, 0x40, 0x0)\n" +
+			"send$inet_accept_updated(r4, &(0x7f0000000500)='reply', 0x5, 0x0)\n" +
+			"setsockopt$int_accept_updated(r4, 0x1, 0x8, &(0x7f0000000580)=0x1, 0x4)\n" +
+			"getsockopt$int_accept_updated(r4, 0x1, 0x8, &(0x7f00000005c0)=0x0, &(0x7f0000000600)=0x4)\n" +
+			"closesocket$any(r4)\n" +
+			"closesocket$any(r1)\n" +
+			"closesocket$any(r0)\n"), nil
 	default:
 		return nil, fmt.Errorf("unsupported file-handle standalone syscall %q", name)
 	}

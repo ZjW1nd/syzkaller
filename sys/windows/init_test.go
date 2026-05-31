@@ -1,8 +1,10 @@
 package windows_test
 
 import (
+	"math/rand"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/syzkaller/prog"
@@ -40,7 +42,8 @@ func TestInitTargetMarksWindowsHelpers(t *testing.T) {
 		"GetCurrentProcess$process", "GetCurrentThread$thread",
 		"CreateEventA$manual", "CreateEventA$auto", "CreateSemaphoreA$sem",
 		"WSAStartup", "WSACleanup",
-		"socket$inet_tcp", "socket$inet_udp", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp",
+		"socket$inet_tcp", "socket$inet_udp", "socket$bound_udp", "socket$connected_udp",
+		"socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp",
 		"closesocket$any",
 	} {
 		call := target.SyscallMap[name]
@@ -71,6 +74,79 @@ func TestWindowsCallRelevance(t *testing.T) {
 		{name: "recv$inet_udp", want: 2},
 		{name: "send$inet_tcp", want: 3},
 		{name: "recv$inet_accept", want: 4},
+		{name: "shutdown$tcp", want: 4},
+		{name: "shutdown$tcp_rd", want: 4},
+		{name: "shutdown$tcp_wr", want: 4},
+		{name: "shutdown$accept_rd", want: 4},
+		{name: "shutdown$accept_wr", want: 4},
+		{name: "getsockname$udp", want: 4},
+		{name: "getpeername$accept", want: 4},
+		{name: "select$afd_basic", want: 4},
+		{name: "WSARecv$accept", want: 5},
+		{name: "WSASend$tcp", want: 5},
+		{name: "recvfrom$udp_bound", want: 5},
+		{name: "WSARecvFrom$udp", want: 5},
+		{name: "WSAIoctl$sio_address_list_query", want: 5},
+		{name: "WSAIoctl$sio_routing_interface_query", want: 5},
+		{name: "WSAIoctl$sio_keepalive_vals", want: 5},
+		{name: "WSAIoctl$sio_get_extension_function_pointer", want: 5},
+		{name: "ConnectEx$inet_tcp", want: 5},
+		{name: "DisconnectEx$inet_tcp", want: 5},
+		{name: "DisconnectEx$inet_tcp_reuse", want: 5},
+		{name: "ConnectEx$inet_tcp_reuse", want: 5},
+		{name: "GetAcceptExSockaddrs$inet_tcp", want: 5},
+		{name: "TransmitPackets$inet_accept", want: 5},
+		{name: "WSARecvMsg$udp", want: 5},
+		{name: "WSAEventSelect$tcp", want: 5},
+		{name: "WSAEnumNetworkEvents$tcp", want: 5},
+		{name: "WSAEventSelect$accept", want: 5},
+		{name: "WSAEnumNetworkEvents$accept", want: 5},
+		{name: "WSAGetOverlappedResult$socket", want: 5},
+		{name: "WSAGetOverlappedResult$accept_pending", want: 5},
+		{name: "WSAGetOverlappedResult$accept_recv_pending", want: 5},
+		{name: "WSAGetOverlappedResult$accept_send_pending", want: 5},
+		{name: "WSAGetOverlappedResult$tcp_recv_pending", want: 5},
+		{name: "WSAGetOverlappedResult$tcp_send_pending", want: 5},
+		{name: "WSAGetOverlappedResult$connect_pending", want: 5},
+		{name: "CancelIoEx$socket", want: 5},
+		{name: "CancelIoEx$accept_pending", want: 5},
+		{name: "CancelIoEx$accept_recv_pending", want: 5},
+		{name: "CancelIoEx$accept_send_pending", want: 5},
+		{name: "CancelIoEx$tcp_recv_pending", want: 5},
+		{name: "CancelIoEx$tcp_send_pending", want: 5},
+		{name: "CancelIoEx$connect_pending", want: 5},
+		{name: "CancelIo$socket", want: 5},
+		{name: "CancelIo$accept_pending", want: 5},
+		{name: "CancelIo$accept_recv_pending", want: 5},
+		{name: "CancelIo$accept_send_pending", want: 5},
+		{name: "CancelIo$tcp_recv_pending", want: 5},
+		{name: "CancelIo$tcp_send_pending", want: 5},
+		{name: "CancelIo$connect_pending", want: 5},
+		{name: "closesocket$accept_pending", want: 5},
+		{name: "closesocket$accept_recv_pending", want: 5},
+		{name: "closesocket$accept_send_pending", want: 5},
+		{name: "closesocket$tcp_recv_pending", want: 5},
+		{name: "closesocket$tcp_send_pending", want: 5},
+		{name: "closesocket$connect_pending", want: 5},
+		{name: "CreateIoCompletionPort$socket", want: 5},
+		{name: "CreateIoCompletionPort$accept_pending", want: 5},
+		{name: "CreateIoCompletionPort$accept_recv_pending", want: 5},
+		{name: "CreateIoCompletionPort$accept_send_pending", want: 5},
+		{name: "CreateIoCompletionPort$tcp_recv_pending", want: 5},
+		{name: "CreateIoCompletionPort$tcp_send_pending", want: 5},
+		{name: "CreateIoCompletionPort$connect_pending", want: 5},
+		{name: "GetQueuedCompletionStatus$socket", want: 5},
+		{name: "WSARecv$accept_pending", want: 5},
+		{name: "WSASend$accept_pending", want: 5},
+		{name: "WSARecv$tcp_pending", want: 5},
+		{name: "WSASend$tcp_pending", want: 5},
+		{name: "AcceptEx$inet_tcp_pending", want: 5},
+		{name: "ConnectEx$inet_tcp_pending", want: 5},
+		{name: "setsockopt$update_accept_context", want: 5},
+		{name: "send$inet_accept_updated", want: 5},
+		{name: "recv$inet_accept_updated", want: 5},
+		{name: "setsockopt$int_accept_updated", want: 5},
+		{name: "getsockopt$int_accept_updated", want: 5},
 		{name: "WaitForSingleObject$wait", want: 2},
 		{name: "GetTokenInformation$token", want: 3},
 		{name: "MapViewOfFile$section", want: 3},
@@ -176,8 +252,16 @@ func TestWindowsExpandEnabledCallsAddsPeerTrafficScaffold(t *testing.T) {
 			want: []string{"send$inet_accept", "socket$listener_tcp", "listen$inet_tcp", "accept$inet_tcp"},
 		},
 		{
-			root: "recv$inet_udp",
-			want: []string{"send$inet_udp", "socket$inet_udp", "connect$inet_udp"},
+			root: "WSARecv$tcp",
+			want: []string{"WSASend$accept", "socket$listener_tcp", "listen$inet_tcp", "accept$inet_tcp"},
+		},
+		{
+			root: "recvfrom$udp_bound",
+			want: []string{"sendto$udp_connected", "socket$bound_udp", "bind$inet_udp", "socket$connected_udp", "connect$inet_udp"},
+		},
+		{
+			root: "WSARecvFrom$udp",
+			want: []string{"WSASendTo$udp", "socket$bound_udp", "bind$inet_udp", "socket$connected_udp", "connect$inet_udp"},
 		},
 		{
 			root: "recv$inet_accept",
@@ -215,7 +299,103 @@ func TestWindowsExpandEnabledCallsAddsTCPAndUDPConnectScaffold(t *testing.T) {
 		},
 		{
 			root: "getsockopt$int_udp",
-			want: []string{"WSAStartup", "WSACleanup", "socket$inet_udp", "closesocket$any", "connect$inet_udp"},
+			want: []string{"WSAStartup", "WSACleanup", "closesocket$any"},
+		},
+		{
+			root: "send$inet_udp",
+			want: []string{"WSAStartup", "WSACleanup", "socket$connected_udp", "closesocket$any", "connect$inet_udp"},
+		},
+		{
+			root: "WSAIoctl$sio_address_list_query",
+			want: []string{"WSAStartup", "WSACleanup", "socket$bound_udp", "closesocket$any", "bind$inet_udp"},
+		},
+		{
+			root: "WSAIoctl$sio_routing_interface_query",
+			want: []string{"WSAStartup", "WSACleanup", "socket$connected_udp", "closesocket$any", "connect$inet_udp"},
+		},
+		{
+			root: "WSAIoctl$sio_keepalive_vals",
+			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "connect$inet_tcp"},
+		},
+		{
+			root: "ConnectEx$inet_tcp",
+			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "bind$connectex_tcp"},
+		},
+		{
+			root: "ConnectEx$inet_tcp_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "bind$connectex_tcp"},
+		},
+		{
+			root: "ConnectEx$inet_tcp_reuse",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "DisconnectEx$inet_tcp_reuse"},
+		},
+		{
+			root: "WSARecvMsg$udp",
+			want: []string{"WSAStartup", "WSACleanup", "socket$bound_udp", "socket$connected_udp", "closesocket$any", "bind$inet_udp", "connect$inet_udp", "send$inet_udp"},
+		},
+		{
+			root: "WSAEventSelect$accept",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "WSACreateEvent", "WSACloseEvent"},
+		},
+		{
+			root: "CancelIoEx$socket",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp"},
+		},
+		{
+			root: "CancelIoEx$accept_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
+		},
+		{
+			root: "closesocket$accept_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
+		},
+		{
+			root: "CancelIoEx$connect_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp_pending"},
+		},
+		{
+			root: "closesocket$connect_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp_pending"},
+		},
+		{
+			root: "CancelIoEx$tcp_recv_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSARecv$tcp_pending", "send$inet_accept"},
+		},
+		{
+			root: "closesocket$tcp_send_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "connect$inet_tcp", "WSASend$tcp_pending"},
+		},
+		{
+			root: "CancelIoEx$accept_recv_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSARecv$accept_pending", "send$inet_tcp"},
+		},
+		{
+			root: "CancelIoEx$accept_send_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSASend$accept_pending"},
+		},
+		{
+			root: "closesocket$accept_recv_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSARecv$accept_pending", "send$inet_tcp"},
+		},
+		{
+			root: "closesocket$accept_send_pending",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSASend$accept_pending"},
+		},
+		{
+			root: "setsockopt$update_accept_context",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
+		},
+		{
+			root: "send$inet_accept_updated",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending", "setsockopt$update_accept_context"},
+		},
+		{
+			root: "GetQueuedCompletionStatus$socket",
+			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "CreateIoCompletionPort$socket"},
+		},
+		{
+			root: "WSAEnumNetworkEvents$tcp",
+			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "connect$inet_tcp", "WSACreateEvent", "WSACloseEvent"},
 		},
 	}
 	for _, test := range tests {
@@ -231,6 +411,90 @@ func TestWindowsExpandEnabledCallsAddsTCPAndUDPConnectScaffold(t *testing.T) {
 				t.Fatalf("%s expansion is missing %q", test.root, name)
 			}
 		}
+	}
+}
+
+func TestWindowsExpandEnabledCallsUsesSocketResourceRoles(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	tests := []struct {
+		name string
+		kind string
+		want []string
+	}{
+		{
+			name: "synthetic_tcp_connected_consumer",
+			kind: "SOCKET_TCP_CONNECTED",
+			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$connected_tcp", "connect$inet_tcp"},
+		},
+		{
+			name: "synthetic_accept_pending_consumer",
+			kind: "SOCKET_TCP_ACCEPT_PENDING",
+			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$listener_tcp", "socket$accept_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
+		},
+		{
+			name: "synthetic_updated_accept_consumer",
+			kind: "SOCKET_TCP_ACCEPTED_UPDATED",
+			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$listener_tcp", "socket$accept_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending", "setsockopt$update_accept_context"},
+		},
+		{
+			name: "synthetic_connecting_consumer",
+			kind: "SOCKET_TCP_CONNECTING",
+			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$listener_tcp", "socket$connected_tcp", "listen$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp_pending"},
+		},
+		{
+			name: "synthetic_udp_bound_consumer",
+			kind: "SOCKET_UDP_BOUND",
+			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$bound_udp", "bind$inet_udp"},
+		},
+		{
+			name: "synthetic_udp_peer_consumer",
+			kind: "SOCKET_UDP_PEERED",
+			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$connected_udp", "connect$inet_udp"},
+		},
+	}
+	for _, test := range tests {
+		root := syntheticWindowsSocketConsumer(test.name, test.kind)
+		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{
+			root: true,
+		})
+		if !expanded[root] {
+			t.Fatalf("%s expansion dropped synthetic root", test.name)
+		}
+		for _, name := range test.want {
+			call := target.SyscallMap[name]
+			if call == nil {
+				t.Fatalf("missing syscall %q", name)
+			}
+			if !expanded[call] {
+				t.Fatalf("%s(%s) expansion is missing %q", test.name, test.kind, name)
+			}
+		}
+	}
+}
+
+func syntheticWindowsSocketConsumer(name, kind string) *prog.Syscall {
+	return &prog.Syscall{
+		Name:     name,
+		CallName: name,
+		Args: []prog.Field{
+			{
+				Name: "s",
+				Type: &prog.ResourceType{
+					TypeCommon: prog.TypeCommon{
+						TypeName: kind,
+						TypeSize: 8,
+					},
+					Desc: &prog.ResourceDesc{
+						Name:   kind,
+						Kind:   []string{kind},
+						Values: []uint64{^uint64(0)},
+					},
+				},
+			},
+		},
 	}
 }
 
@@ -407,6 +671,9 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("NtSetInformationProcess", 0, "PROCESS_HANDLE")
 	assertResource("NtFlushInstructionCache", 0, "PROCESS_HANDLE")
 	assertResource("CreateEventA$manual", -1, "EVENT_HANDLE")
+	assertResource("WSACreateEvent", -1, "WSAEVENT_HANDLE")
+	assertResource("WSAEventSelect$accept", 1, "WSAEVENT_HANDLE")
+	assertResource("WSAEnumNetworkEvents$accept", 1, "WSAEVENT_HANDLE")
 	assertResource("SetEvent$event", 0, "EVENT_HANDLE")
 	assertResource("WaitForSingleObject$wait", 0, "WAIT_HANDLE")
 	assertResource("CreateSemaphoreA$sem", -1, "SEMAPHORE_HANDLE")
@@ -415,9 +682,34 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("GetTokenInformation$token", 0, "TOKEN_HANDLE")
 	assertResource("CreateFileMappingA$file", -1, "SECTION_HANDLE")
 	assertResource("MapViewOfFile$section", 0, "SECTION_HANDLE")
+	assertResource("socket$inet_tcp", -1, "SOCKET_TCP_CREATED")
+	assertResource("socket$inet_udp", -1, "SOCKET_UDP_CREATED")
+	assertResource("bind$inet_tcp", 0, "SOCKET_TCP_CREATED")
+	assertResource("bind$inet_tcp", -1, "SOCKET_TCP_BOUND")
+	assertResource("connect$inet_tcp", 0, "SOCKET_TCP_CREATED")
+	assertResource("connect$inet_tcp", -1, "SOCKET_TCP_CONNECTED")
+	assertResource("bind$inet_udp", 0, "SOCKET_UDP_CREATED")
+	assertResource("bind$inet_udp", -1, "SOCKET_UDP_BOUND")
+	assertResource("connect$inet_udp", 0, "SOCKET_UDP_CREATED")
+	assertResource("connect$inet_udp", -1, "SOCKET_UDP_PEERED")
 	assertResource("CreateIoCompletionPort$create", -1, "IOCP_HANDLE")
 	assertResource("CreateIoCompletionPort$associate", 1, "IOCP_HANDLE")
 	assertResource("GetQueuedCompletionStatus$iocp", 0, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$socket", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("CreateIoCompletionPort$accept_pending", 0, "SOCKET_TCP_ACCEPT_PENDING")
+	assertResource("CreateIoCompletionPort$accept_recv_pending", 0, "SOCKET_TCP_ACCEPT_RECV_PENDING")
+	assertResource("CreateIoCompletionPort$accept_send_pending", 0, "SOCKET_TCP_ACCEPT_SEND_PENDING")
+	assertResource("CreateIoCompletionPort$tcp_recv_pending", 0, "SOCKET_TCP_RECV_PENDING")
+	assertResource("CreateIoCompletionPort$tcp_send_pending", 0, "SOCKET_TCP_SEND_PENDING")
+	assertResource("CreateIoCompletionPort$connect_pending", 0, "SOCKET_TCP_CONNECTING")
+	assertResource("CreateIoCompletionPort$socket", -1, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$accept_pending", -1, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$accept_recv_pending", -1, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$accept_send_pending", -1, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$tcp_recv_pending", -1, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$tcp_send_pending", -1, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$connect_pending", -1, "IOCP_HANDLE")
+	assertResource("GetQueuedCompletionStatus$socket", 0, "IOCP_HANDLE")
 	assertPtrResource("CreatePipe$anon", 0, "PIPE_READ_HANDLE")
 	assertPtrResource("CreatePipe$anon", 1, "PIPE_WRITE_HANDLE")
 	assertResource("ReadFile$pipe", 0, "PIPE_READ_HANDLE")
@@ -445,7 +737,87 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertPtrStruct("NtFsControlFile$ntfs_query_allocated_ranges", 6, "FILE_ALLOCATED_RANGE_BUFFER")
 	assertPtrArrayStruct("NtFsControlFile$ntfs_query_allocated_ranges", 8, "FILE_ALLOCATED_RANGE_BUFFER")
 	assertPtrStruct("AcceptEx$inet_tcp", 7, "OVERLAPPED")
+	assertResource("AcceptEx$inet_tcp_pending", 0, "SOCKET_LISTENER")
+	assertResource("AcceptEx$inet_tcp_pending", 1, "SOCKET_ACCEPT")
+	assertResource("AcceptEx$inet_tcp_pending", -1, "SOCKET_TCP_ACCEPT_PENDING")
+	assertPtrStruct("AcceptEx$inet_tcp_pending", 7, "OVERLAPPED")
+	assertResource("setsockopt$update_accept_context", 0, "SOCKET_TCP_ACCEPT_PENDING")
+	assertPtrResource("setsockopt$update_accept_context", 3, "SOCKET_LISTENER")
+	assertResource("setsockopt$update_accept_context", -1, "SOCKET_TCP_ACCEPTED_UPDATED")
+	assertResource("send$inet_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
+	assertResource("recv$inet_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
+	assertResource("setsockopt$int_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
+	assertResource("getsockopt$int_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
 	assertPtrStruct("TransmitFile$inet_accept", 4, "OVERLAPPED")
+	assertPtrStruct("WSAIoctl$sio_address_list_query", 4, "afd_address_list")
+	assertPtrStruct("WSAIoctl$sio_routing_interface_query", 2, "sockaddr_in")
+	assertPtrStruct("WSAIoctl$sio_routing_interface_query", 4, "sockaddr_in")
+	assertResource("WSAIoctl$sio_routing_interface_query", 0, "SOCKET_UDP_PEERED")
+	assertPtrStruct("WSAIoctl$sio_keepalive_vals", 2, "tcp_keepalive")
+	assertPtrStruct("WSAIoctl$sio_get_extension_function_pointer", 2, "wsa_guid_connectex")
+	assertPtrStruct("ConnectEx$inet_tcp", 1, "sockaddr_in")
+	assertResource("ConnectEx$inet_tcp_pending", 0, "SOCKET_CONNECTED")
+	assertResource("ConnectEx$inet_tcp_pending", -1, "SOCKET_TCP_CONNECTING")
+	assertPtrStruct("ConnectEx$inet_tcp_pending", 1, "sockaddr_in")
+	assertPtrStruct("ConnectEx$inet_tcp_pending", 6, "OVERLAPPED")
+	assertPtrStruct("DisconnectEx$inet_tcp", 1, "OVERLAPPED")
+	assertPtrArrayStruct("TransmitPackets$inet_accept", 1, "transmit_packet_memory")
+	assertResource("WSARecvMsg$udp", 0, "SOCKET_UDP_BOUND")
+	assertPtrStruct("WSARecvMsg$udp", 1, "WSAMSG_OUT")
+	assertPtrStruct("WSAEnumNetworkEvents$tcp", 2, "WSANETWORKEVENTS")
+	assertResource("WSAGetOverlappedResult$socket", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("WSAGetOverlappedResult$accept_pending", 0, "SOCKET_TCP_ACCEPT_PENDING")
+	assertResource("WSAGetOverlappedResult$accept_recv_pending", 0, "SOCKET_TCP_ACCEPT_RECV_PENDING")
+	assertResource("WSAGetOverlappedResult$accept_send_pending", 0, "SOCKET_TCP_ACCEPT_SEND_PENDING")
+	assertResource("WSAGetOverlappedResult$tcp_recv_pending", 0, "SOCKET_TCP_RECV_PENDING")
+	assertResource("WSAGetOverlappedResult$tcp_send_pending", 0, "SOCKET_TCP_SEND_PENDING")
+	assertResource("WSAGetOverlappedResult$connect_pending", 0, "SOCKET_TCP_CONNECTING")
+	assertResource("CancelIoEx$socket", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("CancelIoEx$accept_pending", 0, "SOCKET_TCP_ACCEPT_PENDING")
+	assertResource("CancelIoEx$accept_recv_pending", 0, "SOCKET_TCP_ACCEPT_RECV_PENDING")
+	assertResource("CancelIoEx$accept_send_pending", 0, "SOCKET_TCP_ACCEPT_SEND_PENDING")
+	assertResource("CancelIoEx$tcp_recv_pending", 0, "SOCKET_TCP_RECV_PENDING")
+	assertResource("CancelIoEx$tcp_send_pending", 0, "SOCKET_TCP_SEND_PENDING")
+	assertResource("CancelIoEx$connect_pending", 0, "SOCKET_TCP_CONNECTING")
+	assertResource("CancelIo$socket", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("CancelIo$accept_pending", 0, "SOCKET_TCP_ACCEPT_PENDING")
+	assertResource("CancelIo$accept_recv_pending", 0, "SOCKET_TCP_ACCEPT_RECV_PENDING")
+	assertResource("CancelIo$accept_send_pending", 0, "SOCKET_TCP_ACCEPT_SEND_PENDING")
+	assertResource("CancelIo$tcp_recv_pending", 0, "SOCKET_TCP_RECV_PENDING")
+	assertResource("CancelIo$tcp_send_pending", 0, "SOCKET_TCP_SEND_PENDING")
+	assertResource("CancelIo$connect_pending", 0, "SOCKET_TCP_CONNECTING")
+	assertResource("closesocket$accept_pending", 0, "SOCKET_TCP_ACCEPT_PENDING")
+	assertResource("closesocket$accept_recv_pending", 0, "SOCKET_TCP_ACCEPT_RECV_PENDING")
+	assertResource("closesocket$accept_send_pending", 0, "SOCKET_TCP_ACCEPT_SEND_PENDING")
+	assertResource("closesocket$tcp_recv_pending", 0, "SOCKET_TCP_RECV_PENDING")
+	assertResource("closesocket$tcp_send_pending", 0, "SOCKET_TCP_SEND_PENDING")
+	assertResource("closesocket$connect_pending", 0, "SOCKET_TCP_CONNECTING")
+	assertPtrStruct("WSAGetOverlappedResult$socket", 1, "OVERLAPPED")
+	assertPtrStruct("WSAGetOverlappedResult$accept_pending", 1, "OVERLAPPED")
+	assertPtrStruct("WSAGetOverlappedResult$accept_recv_pending", 1, "OVERLAPPED")
+	assertPtrStruct("WSAGetOverlappedResult$accept_send_pending", 1, "OVERLAPPED")
+	assertPtrStruct("WSAGetOverlappedResult$tcp_recv_pending", 1, "OVERLAPPED")
+	assertPtrStruct("WSAGetOverlappedResult$tcp_send_pending", 1, "OVERLAPPED")
+	assertPtrStruct("WSAGetOverlappedResult$connect_pending", 1, "OVERLAPPED")
+	assertPtrStruct("CancelIoEx$socket", 1, "OVERLAPPED")
+	assertPtrStruct("CancelIoEx$accept_pending", 1, "OVERLAPPED")
+	assertPtrStruct("CancelIoEx$accept_recv_pending", 1, "OVERLAPPED")
+	assertPtrStruct("CancelIoEx$accept_send_pending", 1, "OVERLAPPED")
+	assertPtrStruct("CancelIoEx$tcp_recv_pending", 1, "OVERLAPPED")
+	assertPtrStruct("CancelIoEx$tcp_send_pending", 1, "OVERLAPPED")
+	assertPtrStruct("CancelIoEx$connect_pending", 1, "OVERLAPPED")
+	assertResource("WSARecv$accept_pending", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("WSARecv$accept_pending", -1, "SOCKET_TCP_ACCEPT_RECV_PENDING")
+	assertResource("WSASend$accept_pending", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("WSASend$accept_pending", -1, "SOCKET_TCP_ACCEPT_SEND_PENDING")
+	assertResource("WSARecv$tcp_pending", 0, "SOCKET_TCP_CONNECTED")
+	assertResource("WSARecv$tcp_pending", -1, "SOCKET_TCP_RECV_PENDING")
+	assertResource("WSASend$tcp_pending", 0, "SOCKET_TCP_CONNECTED")
+	assertResource("WSASend$tcp_pending", -1, "SOCKET_TCP_SEND_PENDING")
+	assertPtrStruct("WSARecv$accept_pending", 5, "OVERLAPPED")
+	assertPtrStruct("WSASend$accept_pending", 5, "OVERLAPPED")
+	assertPtrStruct("WSARecv$tcp_pending", 5, "OVERLAPPED")
+	assertPtrStruct("WSASend$tcp_pending", 5, "OVERLAPPED")
 }
 
 func TestWindowsObjectStructLayouts(t *testing.T) {
@@ -480,6 +852,12 @@ func TestWindowsObjectStructLayouts(t *testing.T) {
 		{name: "FILE_SET_SPARSE_BUFFER", size: 0x1},
 		{name: "FILE_ZERO_DATA_INFORMATION", size: 0x10},
 		{name: "FILE_ALLOCATED_RANGE_BUFFER", size: 0x10},
+		{name: "tcp_keepalive", size: 0xc},
+		{name: "wsa_guid_connectex", size: 0x10},
+		{name: "afd_address_list", size: 0x44},
+		{name: "WSAMSG_OUT", size: 0x38},
+		{name: "transmit_packet_memory", size: 0x18},
+		{name: "WSANETWORKEVENTS", size: 0x2c},
 	}
 	for _, test := range tests {
 		if got := typeByName(test.name).Size(); got != test.size {
@@ -666,6 +1044,428 @@ func TestWindowsChoiceTableResourcePriorities(t *testing.T) {
 			t.Fatalf("scaffold syscall %q is not generatable after expansion", name)
 		}
 	}
+}
+
+func TestWindowsAFDAsyncSeedOnlyCallsAreNotGeneratedStandalone(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	helper := target.SyscallMap["socket$listener_tcp"]
+	if helper == nil {
+		t.Fatal("socket$listener_tcp missing from windows/amd64 target")
+	}
+	for _, name := range []string{
+		"GetQueuedCompletionStatus$socket",
+		"WSAEventSelect$tcp",
+		"WSAEventSelect$accept",
+		"WSAEnumNetworkEvents$tcp",
+		"WSAEnumNetworkEvents$accept",
+		"AcceptEx$inet_tcp_pending",
+		"ConnectEx$inet_tcp_pending",
+		"WSARecv$tcp_pending",
+		"WSASend$tcp_pending",
+		"WSARecv$accept_pending",
+		"WSASend$accept_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"CreateIoCompletionPort$accept_recv_pending",
+		"CreateIoCompletionPort$accept_send_pending",
+		"CreateIoCompletionPort$tcp_recv_pending",
+		"CreateIoCompletionPort$tcp_send_pending",
+		"CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$socket",
+		"WSAGetOverlappedResult$accept_pending",
+		"WSAGetOverlappedResult$accept_recv_pending",
+		"WSAGetOverlappedResult$accept_send_pending",
+		"WSAGetOverlappedResult$tcp_recv_pending",
+		"WSAGetOverlappedResult$tcp_send_pending",
+		"WSAGetOverlappedResult$connect_pending",
+		"CancelIoEx$socket",
+		"CancelIoEx$accept_pending",
+		"CancelIoEx$accept_recv_pending",
+		"CancelIoEx$accept_send_pending",
+		"CancelIoEx$tcp_recv_pending",
+		"CancelIoEx$tcp_send_pending",
+		"CancelIoEx$connect_pending",
+		"CancelIo$socket",
+		"CancelIo$accept_pending",
+		"CancelIo$accept_recv_pending",
+		"CancelIo$accept_send_pending",
+		"CancelIo$tcp_recv_pending",
+		"CancelIo$tcp_send_pending",
+		"CancelIo$connect_pending",
+		"closesocket$accept_pending",
+		"closesocket$accept_recv_pending",
+		"closesocket$accept_send_pending",
+		"closesocket$tcp_recv_pending",
+		"closesocket$tcp_send_pending",
+		"closesocket$connect_pending",
+	} {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("%s missing from windows/amd64 target", name)
+		}
+		if !meta.Attrs.NoGenerate || !meta.Attrs.NoMinimize {
+			t.Fatalf("%s should stay scaffold/seed-only and no_minimize", name)
+		}
+		ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{
+			meta:   true,
+			helper: true,
+		})
+		if ct.Generatable(meta.ID) {
+			t.Fatalf("%s should not be chosen as a standalone generated call", name)
+		}
+	}
+}
+
+func TestWindowsAFDStateMachineCallsAreGeneratable(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	tests := []struct {
+		root string
+		want []string
+	}{
+		{
+			root: "recv$inet_accept",
+			want: []string{"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "recv$inet_accept"},
+		},
+		{
+			root: "send$inet_tcp",
+			want: []string{"socket$inet_tcp", "connect$inet_tcp", "send$inet_tcp"},
+		},
+		{
+			root: "recvfrom$udp_bound",
+			want: []string{"socket$inet_udp", "bind$inet_udp", "recvfrom$udp_bound"},
+		},
+		{
+			root: "sendto$udp_connected",
+			want: []string{"socket$inet_udp", "connect$inet_udp", "sendto$udp_connected"},
+		},
+		{
+			root: "shutdown$tcp_wr",
+			want: []string{"socket$inet_tcp", "connect$inet_tcp", "shutdown$tcp_wr", "closesocket$tcp_shutdown_wr"},
+		},
+		{
+			root: "ConnectEx$inet_tcp_reuse",
+			want: []string{"socket$connected_tcp", "connect$inet_tcp", "DisconnectEx$inet_tcp_reuse", "ConnectEx$inet_tcp_reuse"},
+		},
+	}
+	for _, test := range tests {
+		root := target.SyscallMap[test.root]
+		if root == nil {
+			t.Fatalf("missing syscall %q", test.root)
+		}
+		ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{root: true})
+		if ct == nil {
+			t.Fatalf("BuildChoiceTable(%s) returned nil", test.root)
+		}
+		for _, name := range test.want {
+			call := target.SyscallMap[name]
+			if call == nil {
+				t.Fatalf("missing syscall %q", name)
+			}
+			if !ct.Generatable(call.ID) {
+				t.Fatalf("%s scaffold call %q is not generatable", test.root, name)
+			}
+		}
+	}
+}
+
+func TestWindowsAFDStateMachineGeneratesResourceChains(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	tests := []struct {
+		root string
+		want []string
+	}{
+		{
+			root: "recv$inet_accept",
+			want: []string{"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "recv$inet_accept"},
+		},
+		{
+			root: "setsockopt$int_accept",
+			want: []string{"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "setsockopt$int_accept"},
+		},
+		{
+			root: "send$inet_tcp",
+			want: []string{"socket$inet_tcp", "connect$inet_tcp", "send$inet_tcp"},
+		},
+		{
+			root: "shutdown$tcp",
+			want: []string{"socket$inet_tcp", "connect$inet_tcp", "shutdown$tcp"},
+		},
+		{
+			root: "recvfrom$udp_bound",
+			want: []string{"socket$inet_udp", "bind$inet_udp", "recvfrom$udp_bound"},
+		},
+		{
+			root: "sendto$udp_connected",
+			want: []string{"socket$inet_udp", "connect$inet_udp", "sendto$udp_connected"},
+		},
+	}
+	for _, test := range tests {
+		root := target.SyscallMap[test.root]
+		if root == nil {
+			t.Fatalf("missing syscall %q", test.root)
+		}
+		var last *prog.Prog
+		for seed := int64(0); seed < 128; seed++ {
+			p := generateWindowsProgramFromRoot(target, root, seed, 12)
+			last = p
+			if windowsTestHasOrderedCalls(p, test.want) {
+				last = nil
+				break
+			}
+		}
+		if last != nil {
+			t.Fatalf("%s generation did not produce ordered chain %v; last program:\n%s",
+				test.root, test.want, last.Serialize())
+		}
+	}
+}
+
+func generateWindowsProgramFromRoot(target *prog.Target, root *prog.Syscall, seed int64, ncalls int) *prog.Prog {
+	clone := target.Clone()
+	clone.Bias.SelectGeneratedCall = func(_ *prog.Prog, insertionPoint int, _ int, ct *prog.ChoiceTable) int {
+		if insertionPoint == 0 && ct.Generatable(root.ID) {
+			return root.ID
+		}
+		return -1
+	}
+	ct := clone.BuildChoiceTable(nil, map[*prog.Syscall]bool{
+		root: true,
+	})
+	return clone.Generate(rand.NewSource(seed), ncalls, ct)
+}
+
+func windowsTestHasOrderedCalls(p *prog.Prog, want []string) bool {
+	next := 0
+	for _, call := range p.Calls {
+		if call.Meta == nil || call.Meta.Name != want[next] {
+			continue
+		}
+		next++
+		if next == len(want) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestWindowsAFDResourceReusePrefersStatefulSocket(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	if target.ResourceReuseScore == nil {
+		t.Fatal("windows target did not set ResourceReuseScore")
+	}
+	tests := []struct {
+		name       string
+		program    string
+		current    string
+		deepCall   string
+		compatCall string
+	}{
+		{
+			name: "accepted socket",
+			program: strings.Join([]string{
+				"r0 = socket$accept_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r2 = bind$inet_tcp(r1, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r3 = listen$inet_tcp(r2, 0x1)",
+				"r4 = accept$inet_tcp(r3, 0x0, 0x0)",
+			}, "\n") + "\n",
+			current:    "recv$inet_accept",
+			deepCall:   "accept$inet_tcp",
+			compatCall: "socket$accept_tcp",
+		},
+		{
+			name: "connected tcp",
+			program: strings.Join([]string{
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r2 = connect$inet_tcp(r1, &(0x7f0000000000)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+			}, "\n") + "\n",
+			current:    "send$inet_tcp",
+			deepCall:   "connect$inet_tcp",
+			compatCall: "socket$connected_tcp",
+		},
+		{
+			name: "disconnectex reusable tcp",
+			program: strings.Join([]string{
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r2 = connect$inet_tcp(r1, &(0x7f0000000000)={0x2, 0x4e24, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r3 = DisconnectEx$inet_tcp_reuse(r2, 0x0, 0x2, 0x0)",
+			}, "\n") + "\n",
+			current:    "ConnectEx$inet_tcp_reuse",
+			deepCall:   "DisconnectEx$inet_tcp_reuse",
+			compatCall: "socket$connected_tcp",
+		},
+		{
+			name: "connectex pending",
+			program: strings.Join([]string{
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$listener_tcp(0x2, 0x1, 0x6)",
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r3 = bind$inet_tcp(r2, &(0x7f0000000000)={0x2, 0x4e29, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"listen$inet_tcp(r3, 0x1)",
+				"bind$connectex_tcp(r0, &(0x7f0000000100)={0x2, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r4 = ConnectEx$inet_tcp_pending(r0, &(0x7f0000000180)={0x2, 0x4e29, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000200)='cx', 0x2, &(0x7f0000000240), &(0x7f0000000280)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})",
+			}, "\n") + "\n",
+			current:    "CancelIoEx$connect_pending",
+			deepCall:   "ConnectEx$inet_tcp_pending",
+			compatCall: "socket$connected_tcp",
+		},
+		{
+			name: "tcp recv pending",
+			program: strings.Join([]string{
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$listener_tcp(0x2, 0x1, 0x6)",
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r3 = bind$inet_tcp(r2, &(0x7f0000000000)={0x2, 0x4e2a, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"listen$inet_tcp(r3, 0x1)",
+				"connect$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e2a, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r4 = WSARecv$tcp_pending(r0, &(0x7f0000000180)=[{0x40, &(0x7f0000000200)='\\x00'/64}], 0x1, &(0x7f0000000280), &(0x7f00000002c0)=0x0, &(0x7f0000000300)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)",
+			}, "\n") + "\n",
+			current:    "CancelIoEx$tcp_recv_pending",
+			deepCall:   "WSARecv$tcp_pending",
+			compatCall: "socket$connected_tcp",
+		},
+		{
+			name: "tcp send pending",
+			program: strings.Join([]string{
+				"r0 = socket$connected_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$listener_tcp(0x2, 0x1, 0x6)",
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r3 = bind$inet_tcp(r2, &(0x7f0000000000)={0x2, 0x4e2b, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"listen$inet_tcp(r3, 0x1)",
+				"connect$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e2b, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r4 = WSASend$tcp_pending(r0, &(0x7f0000000180)=[{0x4, &(0x7f0000000200)='send'}], 0x1, &(0x7f0000000280), 0x0, &(0x7f0000000300)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)",
+			}, "\n") + "\n",
+			current:    "CancelIoEx$tcp_send_pending",
+			deepCall:   "WSASend$tcp_pending",
+			compatCall: "socket$connected_tcp",
+		},
+		{
+			name: "udp bound",
+			program: strings.Join([]string{
+				"r0 = socket$bound_udp(0x2, 0x2, 0x11)",
+				"r1 = socket$inet_udp(0x2, 0x2, 0x11)",
+				"r2 = bind$inet_udp(r1, &(0x7f0000000000)={0x2, 0x4e22, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+			}, "\n") + "\n",
+			current:    "recv$inet_udp",
+			deepCall:   "bind$inet_udp",
+			compatCall: "socket$bound_udp",
+		},
+		{
+			name: "udp connected",
+			program: strings.Join([]string{
+				"r0 = socket$connected_udp(0x2, 0x2, 0x11)",
+				"r1 = socket$inet_udp(0x2, 0x2, 0x11)",
+				"r2 = connect$inet_udp(r1, &(0x7f0000000000)={0x2, 0x4e23, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+			}, "\n") + "\n",
+			current:    "send$inet_udp",
+			deepCall:   "connect$inet_udp",
+			compatCall: "socket$connected_udp",
+		},
+		{
+			name: "accept pending",
+			program: strings.Join([]string{
+				"r0 = socket$accept_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$listener_tcp(0x2, 0x1, 0x6)",
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r3 = bind$inet_tcp(r2, &(0x7f0000000000)={0x2, 0x4e25, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r4 = listen$inet_tcp(r3, 0x1)",
+				"r5 = AcceptEx$inet_tcp_pending(r4, r0, &(0x7f0000000100)='\\x00'/96, 0x0, 0x20, 0x20, &(0x7f0000000200), &(0x7f0000000240)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})",
+			}, "\n") + "\n",
+			current:    "CancelIoEx$accept_pending",
+			deepCall:   "AcceptEx$inet_tcp_pending",
+			compatCall: "socket$accept_tcp",
+		},
+		{
+			name: "accept recv pending",
+			program: strings.Join([]string{
+				"r0 = socket$accept_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$listener_tcp(0x2, 0x1, 0x6)",
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r3 = bind$inet_tcp(r2, &(0x7f0000000000)={0x2, 0x4e27, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r4 = listen$inet_tcp(r3, 0x1)",
+				"r5 = accept$inet_tcp(r4, 0x0, 0x0)",
+				"r6 = WSARecv$accept_pending(r5, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, &(0x7f0000000280)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)",
+			}, "\n") + "\n",
+			current:    "CancelIoEx$accept_recv_pending",
+			deepCall:   "WSARecv$accept_pending",
+			compatCall: "socket$accept_tcp",
+		},
+		{
+			name: "accept send pending",
+			program: strings.Join([]string{
+				"r0 = socket$accept_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$listener_tcp(0x2, 0x1, 0x6)",
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r3 = bind$inet_tcp(r2, &(0x7f0000000000)={0x2, 0x4e28, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r4 = listen$inet_tcp(r3, 0x1)",
+				"r5 = accept$inet_tcp(r4, 0x0, 0x0)",
+				"r6 = WSASend$accept_pending(r5, &(0x7f0000000100)=[{0x4, &(0x7f0000000180)='send'}], 0x1, &(0x7f0000000200), 0x0, &(0x7f0000000280)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x0)",
+			}, "\n") + "\n",
+			current:    "CancelIoEx$accept_send_pending",
+			deepCall:   "WSASend$accept_pending",
+			compatCall: "socket$accept_tcp",
+		},
+		{
+			name: "updated accept",
+			program: strings.Join([]string{
+				"r0 = socket$accept_tcp(0x2, 0x1, 0x6)",
+				"r1 = socket$listener_tcp(0x2, 0x1, 0x6)",
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)",
+				"r3 = bind$inet_tcp(r2, &(0x7f0000000000)={0x2, 0x4e26, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)",
+				"r4 = listen$inet_tcp(r3, 0x1)",
+				"r5 = AcceptEx$inet_tcp_pending(r4, r0, &(0x7f0000000100)='\\x00'/96, 0x0, 0x20, 0x20, &(0x7f0000000200), &(0x7f0000000240)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})",
+				"r6 = setsockopt$update_accept_context(r5, 0xffff, 0x700b, &(0x7f0000000300)=r4, 0x8)",
+			}, "\n") + "\n",
+			current:    "send$inet_accept_updated",
+			deepCall:   "setsockopt$update_accept_context",
+			compatCall: "socket$accept_tcp",
+		},
+	}
+	for _, test := range tests {
+		base, err := target.Deserialize([]byte(test.program), prog.NonStrict)
+		if err != nil {
+			t.Fatalf("%s Deserialize: %v", test.name, err)
+		}
+		root := target.SyscallMap[test.current]
+		if root == nil {
+			t.Fatalf("missing syscall %q", test.current)
+		}
+		deep := windowsTestCallReturn(t, base, test.deepCall)
+		compat := windowsTestCallReturn(t, base, test.compatCall)
+		deepScore := target.ResourceReuseScore(root, deep, base, len(base.Calls))
+		compatScore := target.ResourceReuseScore(root, compat, base, len(base.Calls))
+		if deepScore <= compatScore {
+			t.Fatalf("%s reuse score: deep=%d compat=%d", test.name, deepScore, compatScore)
+		}
+	}
+}
+
+func windowsTestCallReturn(t *testing.T, p *prog.Prog, callName string) *prog.ResultArg {
+	t.Helper()
+	for _, call := range p.Calls {
+		if call.Meta == nil || call.Meta.Name != callName {
+			continue
+		}
+		if call.Ret == nil {
+			t.Fatalf("%s has no return resource", callName)
+		}
+		return call.Ret
+	}
+	t.Fatalf("program is missing %s", callName)
+	return nil
 }
 
 func TestWindowsSeedProgramsDeserialize(t *testing.T) {

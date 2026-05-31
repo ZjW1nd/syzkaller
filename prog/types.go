@@ -24,6 +24,9 @@ type Syscall struct {
 	inputResources []*ResourceDesc
 	// Resources that this call can be used to create (out, but excluding no_generate).
 	createsResources []*ResourceDesc
+	// Resources created by no_generate calls. These are usable by seed/replay
+	// programs, but must not become random-generation constructors.
+	seedCreatesResources []*ResourceDesc
 	// Both inputs and output resources (including no_generate).
 	usesResources []*ResourceDesc
 }
@@ -341,6 +344,9 @@ type ResourceDesc struct {
 	Kind   []string
 	Values []uint64
 	Ctors  []ResourceCtor
+	// Constructors that are no_generate. They can make seed programs type-complete,
+	// but are intentionally excluded from random resource construction.
+	seedCtors []ResourceCtor
 }
 
 type ResourceCtor struct {

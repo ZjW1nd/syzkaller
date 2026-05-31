@@ -18,7 +18,8 @@ func TestResourceCtors(t *testing.T) {
 	}
 	testEachTarget(t, func(t *testing.T, target *Target) {
 		for _, res := range target.Resources {
-			if len(target.calcResourceCtors(res, true)) == 0 && !strings.HasPrefix(res.Name, "ANY") &&
+			if len(target.calcResourceCtors(res, true)) == 0 && len(res.seedCtors) == 0 &&
+				!strings.HasPrefix(res.Name, "ANY") &&
 				res.Name != "disabled_resource" {
 				t.Errorf("resource %v can't be created", res.Name)
 			}
@@ -198,7 +199,7 @@ func testCreateResource(t *testing.T, target *Target, calls map[*Syscall]bool, r
 	r.inGenerateResource = true
 	ct := target.BuildChoiceTable(nil, calls)
 	for call := range calls {
-		if call.Attrs.Disabled {
+		if call.Attrs.Disabled || call.Attrs.NoGenerate {
 			continue
 		}
 		t.Logf("testing call %v", call.Name)

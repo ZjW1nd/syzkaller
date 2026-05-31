@@ -521,6 +521,218 @@ static void mmap_input();
 #include <winsock2.h>
 #include <winspool.h>
 #include <ws2tcpip.h>
+
+static bool windows_winsock_extension(SOCKET s, const GUID& guid, void** out)
+{
+	DWORD bytes = 0;
+	*out = nullptr;
+	return WSAIoctl(s, SIO_GET_EXTENSION_FUNCTION_POINTER, const_cast<GUID*>(&guid),
+			sizeof(guid), out, sizeof(*out), &bytes, nullptr, nullptr) == 0 &&
+	       *out != nullptr;
+}
+
+static intptr_t SYSCALLAPI ConnectEx(intptr_t s, intptr_t name, intptr_t namelen,
+				     intptr_t send_buf, intptr_t send_len, intptr_t bytes_sent,
+				     intptr_t overlapped, intptr_t, intptr_t, intptr_t);
+static intptr_t SYSCALLAPI DisconnectEx(intptr_t s, intptr_t overlapped, intptr_t flags,
+					intptr_t reserved, intptr_t, intptr_t, intptr_t,
+					intptr_t, intptr_t, intptr_t);
+
+static intptr_t SYSCALLAPI windows_bind_state(intptr_t s, intptr_t addr, intptr_t namelen,
+					      intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
+					      intptr_t, intptr_t)
+{
+	return bind((SOCKET)s, (const struct sockaddr*)addr, (int)namelen) == 0 ? s : -1;
+}
+
+static intptr_t SYSCALLAPI windows_connect_state(intptr_t s, intptr_t name, intptr_t namelen,
+						 intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
+						 intptr_t, intptr_t)
+{
+	return connect((SOCKET)s, (const struct sockaddr*)name, (int)namelen) == 0 ? s : -1;
+}
+
+static intptr_t SYSCALLAPI windows_listen_state(intptr_t s, intptr_t backlog, intptr_t,
+						intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
+						intptr_t, intptr_t)
+{
+	return listen((SOCKET)s, (int)backlog) == 0 ? s : -1;
+}
+
+static intptr_t SYSCALLAPI windows_accept_ex_state(intptr_t listen_socket, intptr_t accept_socket,
+						   intptr_t out_buf, intptr_t recv_len,
+						   intptr_t local_len, intptr_t remote_len,
+						   intptr_t bytes, intptr_t overlapped,
+						   intptr_t, intptr_t)
+{
+	if (AcceptEx((SOCKET)listen_socket, (SOCKET)accept_socket, (PVOID)out_buf,
+		     (DWORD)recv_len, (DWORD)local_len, (DWORD)remote_len, (LPDWORD)bytes,
+		     (LPOVERLAPPED)overlapped))
+		return accept_socket;
+	if (WSAGetLastError() == ERROR_IO_PENDING)
+		return accept_socket;
+	return -1;
+}
+
+static intptr_t SYSCALLAPI windows_update_accept_context_state(intptr_t s, intptr_t level,
+							       intptr_t optname, intptr_t optval,
+							       intptr_t optlen, intptr_t,
+							       intptr_t, intptr_t, intptr_t,
+							       intptr_t)
+{
+	return setsockopt((SOCKET)s, (int)level, (int)optname, (const char*)optval,
+			  (int)optlen) == 0
+		   ? s
+		   : -1;
+}
+
+static intptr_t SYSCALLAPI windows_wsa_recv_state(intptr_t s, intptr_t buffers,
+						  intptr_t buffer_count, intptr_t bytes,
+						  intptr_t flags, intptr_t overlapped,
+						  intptr_t completion, intptr_t,
+						  intptr_t, intptr_t)
+{
+	if (WSARecv((SOCKET)s, (LPWSABUF)buffers, (DWORD)buffer_count, (LPDWORD)bytes,
+		    (LPDWORD)flags, (LPWSAOVERLAPPED)overlapped,
+		    (LPWSAOVERLAPPED_COMPLETION_ROUTINE)completion) == 0)
+		return s;
+	if (WSAGetLastError() == WSA_IO_PENDING)
+		return s;
+	return -1;
+}
+
+static intptr_t SYSCALLAPI windows_wsa_send_state(intptr_t s, intptr_t buffers,
+						  intptr_t buffer_count, intptr_t bytes,
+						  intptr_t flags, intptr_t overlapped,
+						  intptr_t completion, intptr_t,
+						  intptr_t, intptr_t)
+{
+	if (WSASend((SOCKET)s, (LPWSABUF)buffers, (DWORD)buffer_count, (LPDWORD)bytes,
+		    (DWORD)flags, (LPWSAOVERLAPPED)overlapped,
+		    (LPWSAOVERLAPPED_COMPLETION_ROUTINE)completion) == 0)
+		return s;
+	if (WSAGetLastError() == WSA_IO_PENDING)
+		return s;
+	return -1;
+}
+
+static intptr_t SYSCALLAPI windows_shutdown_state(intptr_t s, intptr_t how, intptr_t,
+						  intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
+						  intptr_t, intptr_t)
+{
+	return shutdown((SOCKET)s, (int)how) == 0 ? s : -1;
+}
+
+static intptr_t SYSCALLAPI windows_connect_ex_state(intptr_t s, intptr_t name, intptr_t namelen,
+						    intptr_t send_buf, intptr_t send_len,
+						    intptr_t bytes_sent, intptr_t overlapped,
+						    intptr_t, intptr_t, intptr_t)
+{
+	if (ConnectEx(s, name, namelen, send_buf, send_len, bytes_sent, overlapped, 0, 0, 0))
+		return s;
+	if (WSAGetLastError() == ERROR_IO_PENDING)
+		return s;
+	return -1;
+}
+
+static intptr_t SYSCALLAPI windows_disconnect_ex_state(intptr_t s, intptr_t overlapped,
+						       intptr_t flags, intptr_t reserved,
+						       intptr_t, intptr_t, intptr_t, intptr_t,
+						       intptr_t, intptr_t)
+{
+	if (DisconnectEx(s, overlapped, flags, reserved, 0, 0, 0, 0, 0, 0))
+		return s;
+	if (WSAGetLastError() == ERROR_IO_PENDING)
+		return s;
+	return -1;
+}
+
+static intptr_t SYSCALLAPI windows_create_iocp_socket(intptr_t file_handle, intptr_t existing_iocp,
+						      intptr_t completion_key, intptr_t threads,
+						      intptr_t, intptr_t, intptr_t, intptr_t,
+						      intptr_t, intptr_t)
+{
+	return (intptr_t)CreateIoCompletionPort((HANDLE)file_handle, (HANDLE)existing_iocp,
+						(ULONG_PTR)completion_key, (DWORD)threads);
+}
+
+static intptr_t SYSCALLAPI windows_get_queued_completion_status(intptr_t iocp,
+							       intptr_t bytes,
+							       intptr_t key,
+							       intptr_t overlapped,
+							       intptr_t timeout,
+							       intptr_t, intptr_t,
+							       intptr_t, intptr_t,
+							       intptr_t)
+{
+	return GetQueuedCompletionStatus((HANDLE)iocp, (LPDWORD)bytes, (PULONG_PTR)key,
+					 (LPOVERLAPPED*)overlapped, (DWORD)timeout);
+}
+
+static intptr_t SYSCALLAPI windows_cancel_io_ex(intptr_t handle, intptr_t overlapped,
+						intptr_t, intptr_t, intptr_t, intptr_t,
+						intptr_t, intptr_t, intptr_t, intptr_t)
+{
+	return CancelIoEx((HANDLE)handle, (LPOVERLAPPED)overlapped);
+}
+
+static intptr_t SYSCALLAPI windows_cancel_io(intptr_t handle, intptr_t, intptr_t, intptr_t,
+					     intptr_t, intptr_t, intptr_t, intptr_t,
+					     intptr_t, intptr_t)
+{
+	return CancelIo((HANDLE)handle);
+}
+
+static intptr_t SYSCALLAPI ConnectEx(intptr_t s, intptr_t name, intptr_t namelen,
+				     intptr_t send_buf, intptr_t send_len, intptr_t bytes_sent,
+				     intptr_t overlapped, intptr_t, intptr_t, intptr_t)
+{
+	static const GUID guid = WSAID_CONNECTEX;
+	void* fn = nullptr;
+	if (!windows_winsock_extension((SOCKET)s, guid, &fn))
+		return FALSE;
+	return ((LPFN_CONNECTEX)fn)((SOCKET)s, (const struct sockaddr*)name, (int)namelen,
+				    (PVOID)send_buf, (DWORD)send_len, (LPDWORD)bytes_sent,
+				    (LPOVERLAPPED)overlapped);
+}
+
+static intptr_t SYSCALLAPI DisconnectEx(intptr_t s, intptr_t overlapped, intptr_t flags,
+					intptr_t reserved, intptr_t, intptr_t, intptr_t,
+					intptr_t, intptr_t, intptr_t)
+{
+	static const GUID guid = WSAID_DISCONNECTEX;
+	void* fn = nullptr;
+	if (!windows_winsock_extension((SOCKET)s, guid, &fn))
+		return FALSE;
+	return ((LPFN_DISCONNECTEX)fn)((SOCKET)s, (LPOVERLAPPED)overlapped, (DWORD)flags,
+				       (DWORD)reserved);
+}
+
+static intptr_t SYSCALLAPI TransmitPackets(intptr_t s, intptr_t packets, intptr_t count,
+					   intptr_t send_size, intptr_t overlapped, intptr_t flags,
+					   intptr_t, intptr_t, intptr_t, intptr_t)
+{
+	static const GUID guid = WSAID_TRANSMITPACKETS;
+	void* fn = nullptr;
+	if (!windows_winsock_extension((SOCKET)s, guid, &fn))
+		return FALSE;
+	return ((LPFN_TRANSMITPACKETS)fn)((SOCKET)s, (LPTRANSMIT_PACKETS_ELEMENT)packets,
+					  (DWORD)count, (DWORD)send_size,
+					  (LPOVERLAPPED)overlapped, (DWORD)flags);
+}
+
+static intptr_t SYSCALLAPI WSARecvMsg(intptr_t s, intptr_t msg, intptr_t bytes,
+				      intptr_t overlapped, intptr_t completion, intptr_t,
+				      intptr_t, intptr_t, intptr_t, intptr_t)
+{
+	static const GUID guid = WSAID_WSARECVMSG;
+	void* fn = nullptr;
+	if (!windows_winsock_extension((SOCKET)s, guid, &fn))
+		return SOCKET_ERROR;
+	return ((LPFN_WSARECVMSG)fn)((SOCKET)s, (LPWSAMSG)msg, (LPDWORD)bytes,
+				     (LPWSAOVERLAPPED)overlapped,
+				     (LPWSAOVERLAPPED_COMPLETION_ROUTINE)completion);
+}
 #endif
 
 #if GOOS_windows && SYZ_NYX_WINDOWS_SPARSE_TABLE

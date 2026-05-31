@@ -67,6 +67,9 @@ type Target struct {
 	// RuntimePolicy groups target-specific runtime pipeline steering hooks that are
 	// consumed outside pure prog semantics (triage/corpus/collide scheduling).
 	RuntimePolicy RuntimePolicy
+	// ApplyTargetProfile returns a target instance with named target-specific policy
+	// knobs applied. Implementations should clone before mutating profile state.
+	ApplyTargetProfile func(target *Target, profile string) (*Target, error)
 	// SelectCollideCallIndices lets a target choose which calls in a program should be treated
 	// as the primary race/collide targets. It returns preferred call indices plus a flag that
 	// blocks generic collide transforms when the target considers the whole program too shallow.
@@ -218,6 +221,9 @@ type RuntimePolicy struct {
 	// focused flows such as collide:triage where preserving deep owners can matter more than
 	// strict global novelty.
 	ShouldForceTriageCall func(origin string, p *Prog, call int) bool
+	// ShouldSkipTriageProgram lets a target treat a program as execute-only: its signal can
+	// still update the global max-signal, but it should not enter deflake/minimize/corpus work.
+	ShouldSkipTriageProgram func(origin string, p *Prog) bool
 	// ShouldPersistStableTriageCall lets a target request corpus persistence for a triaged call
 	// even when newStableSignal is empty, provided the call still has non-empty stableSignal.
 	// This is intended for focused modes where a stable deep owner is useful for future mutation
@@ -659,52 +665,53 @@ func (target *Target) Clone() *Target {
 		return nil
 	}
 	clone := &Target{
-		OS:                                 target.OS,
-		Arch:                               target.Arch,
-		Revision:                           target.Revision,
-		PtrSize:                            target.PtrSize,
-		PageSize:                           target.PageSize,
-		NumPages:                           target.NumPages,
-		DataOffset:                         target.DataOffset,
-		BigEndian:                          target.BigEndian,
-		Syscalls:                           target.Syscalls,
-		Resources:                          target.Resources,
-		Consts:                             target.Consts,
-		Flags:                              target.Flags,
-		Types:                              target.Types,
-		MakeDataMmap:                       target.MakeDataMmap,
-		Neutralize:                         target.Neutralize,
-		AnnotateCall:                       target.AnnotateCall,
-		SpecialTypes:                       target.SpecialTypes,
-		AuxResources:                       target.AuxResources,
-		Helpers:                            target.Helpers,
-		Bias:                               target.Bias,
-		SelectCollideCallIndices:           target.SelectCollideCallIndices,
-		RuntimePolicy:                      target.RuntimePolicy,
-		ResourceUseScore:                   target.ResourceUseScore,
-		ResourceReuseScore:                 target.ResourceReuseScore,
-		CorpusResourceScore:                target.CorpusResourceScore,
-		PreferResourceCentricBorrowing:     target.PreferResourceCentricBorrowing,
-		SelectResourceCtor:                 target.SelectResourceCtor,
-		CallRelevanceScore:                 target.CallRelevanceScore,
-		TriageCallScore:                    target.TriageCallScore,
-		ExpandEnabledCalls:                 target.ExpandEnabledCalls,
-		MinimumHintsCallRelevance:          target.MinimumHintsCallRelevance,
-		MinimumTriageCallRelevance:         target.MinimumTriageCallRelevance,
-		MinimumCollideCallRelevance:        target.MinimumCollideCallRelevance,
-		MinimumMutationCallRelevance:       target.MinimumMutationCallRelevance,
-		SpecialPointers:                    target.SpecialPointers,
-		SpecialFileLenghts:                 target.SpecialFileLenghts,
-		SyscallMap:                         target.SyscallMap,
-		ConstMap:                           target.ConstMap,
-		FlagsMap:                           target.FlagsMap,
-		ObserveTemplateHook:                target.ObserveTemplateHook,
-		fillArch:                           target.fillArch,
-		initArch:                           target.initArch,
-		resourceMap:                        target.resourceMap,
-		resourceCtors:                      target.resourceCtors,
-		any:                                target.any,
-		kFuzzTestID:                        target.kFuzzTestID,
+		OS:                             target.OS,
+		Arch:                           target.Arch,
+		Revision:                       target.Revision,
+		PtrSize:                        target.PtrSize,
+		PageSize:                       target.PageSize,
+		NumPages:                       target.NumPages,
+		DataOffset:                     target.DataOffset,
+		BigEndian:                      target.BigEndian,
+		Syscalls:                       target.Syscalls,
+		Resources:                      target.Resources,
+		Consts:                         target.Consts,
+		Flags:                          target.Flags,
+		Types:                          target.Types,
+		MakeDataMmap:                   target.MakeDataMmap,
+		Neutralize:                     target.Neutralize,
+		AnnotateCall:                   target.AnnotateCall,
+		SpecialTypes:                   target.SpecialTypes,
+		AuxResources:                   target.AuxResources,
+		Helpers:                        target.Helpers,
+		Bias:                           target.Bias,
+		SelectCollideCallIndices:       target.SelectCollideCallIndices,
+		RuntimePolicy:                  target.RuntimePolicy,
+		ApplyTargetProfile:             target.ApplyTargetProfile,
+		ResourceUseScore:               target.ResourceUseScore,
+		ResourceReuseScore:             target.ResourceReuseScore,
+		CorpusResourceScore:            target.CorpusResourceScore,
+		PreferResourceCentricBorrowing: target.PreferResourceCentricBorrowing,
+		SelectResourceCtor:             target.SelectResourceCtor,
+		CallRelevanceScore:             target.CallRelevanceScore,
+		TriageCallScore:                target.TriageCallScore,
+		ExpandEnabledCalls:             target.ExpandEnabledCalls,
+		MinimumHintsCallRelevance:      target.MinimumHintsCallRelevance,
+		MinimumTriageCallRelevance:     target.MinimumTriageCallRelevance,
+		MinimumCollideCallRelevance:    target.MinimumCollideCallRelevance,
+		MinimumMutationCallRelevance:   target.MinimumMutationCallRelevance,
+		SpecialPointers:                target.SpecialPointers,
+		SpecialFileLenghts:             target.SpecialFileLenghts,
+		SyscallMap:                     target.SyscallMap,
+		ConstMap:                       target.ConstMap,
+		FlagsMap:                       target.FlagsMap,
+		ObserveTemplateHook:            target.ObserveTemplateHook,
+		fillArch:                       target.fillArch,
+		initArch:                       target.initArch,
+		resourceMap:                    target.resourceMap,
+		resourceCtors:                  target.resourceCtors,
+		any:                            target.any,
+		kFuzzTestID:                    target.kFuzzTestID,
 	}
 	return clone
 }
