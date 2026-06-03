@@ -5,8 +5,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer"
+	"github.com/google/syzkaller/pkg/fuzzer/queue"
 	"github.com/google/syzkaller/pkg/manager"
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
@@ -35,6 +38,89 @@ func TestCollideEnabledForConfig(t *testing.T) {
 	cfg.Experimental.WindowsVMLessCollide = false
 	if !collideEnabledForConfig(cfg) {
 		t.Fatal("non-windows targets should keep collide enabled")
+	}
+}
+
+func TestModeCandidateRunIsRegistered(t *testing.T) {
+	for _, mode := range modes {
+		if mode == ModeCandidateRun {
+			if !mode.LoadCorpus {
+				t.Fatal("candidate-run mode must load corpus seeds")
+			}
+			return
+		}
+	}
+	t.Fatal("candidate-run mode is not registered")
+}
+
+func TestCandidateRunSourceRunsCandidatesOnceAndStops(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"))
+	second := parseSeedProgram(t, target, []byte("WSACleanup()\n"))
+
+	finished := make(chan error, 1)
+	src := &candidateRunSource{
+		candidates: []fuzzer.Candidate{
+			{Prog: first},
+			{Prog: second},
+		},
+		finish: func(err error) {
+			finished <- err
+		},
+	}
+
+	req1 := src.Next()
+	req2 := src.Next()
+	if req1 == nil || req2 == nil {
+		t.Fatalf("candidate-run returned nil before exhausting candidates: %v %v", req1, req2)
+	}
+	if req1.Prog != first || req2.Prog != second {
+		t.Fatal("candidate-run did not preserve candidate order")
+	}
+	if req1.Origin != "candidate-run" || req2.Origin != "candidate-run" {
+		t.Fatalf("origins = %q/%q, want candidate-run", req1.Origin, req2.Origin)
+	}
+	wantFlags := flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover
+	if req1.ExecOpts.ExecFlags&wantFlags != wantFlags ||
+		req2.ExecOpts.ExecFlags&wantFlags != wantFlags {
+		t.Fatalf("candidate-run requests flags = %v/%v, want at least %v",
+			req1.ExecOpts.ExecFlags, req2.ExecOpts.ExecFlags, wantFlags)
+	}
+	if got := src.Next(); got != nil {
+		t.Fatalf("candidate-run produced extra request after candidates: %v", got)
+	}
+
+	req2.Done(&queue.Result{Status: queue.Success})
+	assertNoCandidateRunFinish(t, finished)
+	req1.Done(&queue.Result{Status: queue.Success})
+	assertCandidateRunFinish(t, finished, "")
+}
+
+func TestCandidateRunSourceStopsOnFailure(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"))
+
+	finished := make(chan error, 1)
+	src := &candidateRunSource{
+		candidates: []fuzzer.Candidate{{Prog: p}},
+		finish: func(err error) {
+			finished <- err
+		},
+	}
+	req := src.Next()
+	if req == nil {
+		t.Fatal("candidate-run returned nil")
+	}
+	req.Done(&queue.Result{Status: queue.Hanged})
+	err = assertCandidateRunFinish(t, finished, "candidate 1 finished with status Hanged")
+	if err == nil {
+		t.Fatal("candidate-run failure should report an error")
 	}
 }
 
@@ -82,6 +168,33 @@ func TestLoadBorrowingSeedsFiltersByPrefix(t *testing.T) {
 	}
 	if string(progs[0].Serialize()) != string(parsed.Serialize()) {
 		t.Fatalf("loaded borrowing seed mismatch:\n%s\nwant:\n%s", progs[0].Serialize(), parsed.Serialize())
+	}
+}
+
+func assertNoCandidateRunFinish(t *testing.T, finished <-chan error) {
+	t.Helper()
+	select {
+	case err := <-finished:
+		t.Fatalf("candidate-run finished too early: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+}
+
+func assertCandidateRunFinish(t *testing.T, finished <-chan error, wantErrSubstring string) error {
+	t.Helper()
+	select {
+	case err := <-finished:
+		if wantErrSubstring == "" {
+			if err != nil {
+				t.Fatalf("candidate-run finished with error: %v", err)
+			}
+		} else if err == nil || !strings.Contains(err.Error(), wantErrSubstring) {
+			t.Fatalf("candidate-run error = %v, want substring %q", err, wantErrSubstring)
+		}
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for candidate-run finish")
+		return nil
 	}
 }
 

@@ -156,10 +156,15 @@ var (
 		Description: `continuously run the corpus programs`,
 		LoadCorpus:  true,
 	}
+	ModeCandidateRun = &Mode{
+		Name:        "candidate-run",
+		Description: `run loaded corpus candidates once and exit`,
+		LoadCorpus:  true,
+	}
 	ModeRunTests = &Mode{
 		Name: "run-tests",
 		Description: `run unit tests
-	Run sys/os/test/* tests in various modes and print results.`,
+Run sys/os/test/* tests in various modes and print results.`,
 	}
 	ModeIfaceProbe = &Mode{
 		Name: "iface-probe",
@@ -184,6 +189,7 @@ var (
 		ModeSmokeTest,
 		ModeCorpusTriage,
 		ModeCorpusRun,
+		ModeCandidateRun,
 		ModeRunTests,
 		ModeIfaceProbe,
 	}
@@ -1346,6 +1352,20 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 			rnd:        rand.New(rand.NewSource(time.Now().UnixNano())),
 		}
 		return queue.DefaultOpts(ctx, opts), nil
+	case ModeCandidateRun:
+		if len(candidates) == 0 {
+			log.Fatalf("%v mode requires at least one corpus candidate", mgr.mode.Name)
+		}
+		ctx := &candidateRunSource{
+			candidates: candidates,
+			finish: func(err error) {
+				if err != nil {
+					log.Fatalf("%v mode failed: %v", mgr.mode.Name, err)
+				}
+				mgr.exit("candidate run")
+			},
+		}
+		return queue.DefaultOpts(ctx, opts), nil
 	case ModeRunTests:
 		ctx := &runtest.Context{
 			Dir:      filepath.Join(mgr.cfg.Syzkaller, "sys", mgr.cfg.Target.OS, "test"),
@@ -1414,6 +1434,72 @@ func (cr *corpusRunner) Next() *queue.Request {
 	return &queue.Request{
 		Prog:      p,
 		Important: true,
+	}
+}
+
+type candidateRunSource struct {
+	candidates []fuzzer.Candidate
+	finish     func(error)
+
+	mu        sync.Mutex
+	seq       int
+	completed int
+	finished  bool
+}
+
+func (cr *candidateRunSource) Next() *queue.Request {
+	cr.mu.Lock()
+	if cr.seq >= len(cr.candidates) {
+		cr.mu.Unlock()
+		return nil
+	}
+	candidate := cr.candidates[cr.seq]
+	cr.seq++
+	id := cr.seq
+	cr.mu.Unlock()
+
+	req := &queue.Request{
+		Prog:      candidate.Prog,
+		ExecOpts:  flatrpc.ExecOpts{ExecFlags: flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover},
+		Origin:    "candidate-run",
+		TraceID:   fmt.Sprintf("candidate-run-%d", id),
+		Important: true,
+	}
+	req.OnDone(func(_ *queue.Request, res *queue.Result) bool {
+		cr.onDone(id, res)
+		return true
+	})
+	return req
+}
+
+func (cr *candidateRunSource) onDone(id int, res *queue.Result) {
+	var finish func(error)
+	var err error
+
+	cr.mu.Lock()
+	if cr.finished {
+		cr.mu.Unlock()
+		return
+	}
+	if res == nil {
+		err = fmt.Errorf("candidate %d finished without result", id)
+		cr.finished = true
+	} else if res.Status != queue.Success {
+		err = fmt.Errorf("candidate %d finished with status %v: %v", id, res.Status, res.Err)
+		cr.finished = true
+	} else {
+		cr.completed++
+		if cr.completed == len(cr.candidates) {
+			cr.finished = true
+		}
+	}
+	if cr.finished {
+		finish = cr.finish
+	}
+	cr.mu.Unlock()
+
+	if finish != nil {
+		go finish(err)
 	}
 }
 
