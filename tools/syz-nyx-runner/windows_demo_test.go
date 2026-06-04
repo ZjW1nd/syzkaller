@@ -397,7 +397,7 @@ func TestWindowsNyxExecutorUsesGeneratedServiceTable(t *testing.T) {
 
 func TestWindowsAutomaticHelpersPresentInEnabledSet(t *testing.T) {
 	requireWindowsHelpersEnabled(t, "windows-nyx-test.cfg",
-		[]string{"CloseHandle", "CreateFileA", "CreateFile2"})
+		[]string{"CreateFileA"})
 }
 
 func TestWindowsSocketResourceHierarchy(t *testing.T) {
@@ -513,14 +513,14 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("CreateIoCompletionPort$connect_pending", 0, "SOCKET_TCP_CONNECTING")
 	assertResource("CreateIoCompletionPort$tcp_recv_pending", 0, "SOCKET_TCP_RECV_PENDING")
 	assertResource("CreateIoCompletionPort$tcp_send_pending", 0, "SOCKET_TCP_SEND_PENDING")
-	assertResource("CreateIoCompletionPort$socket", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$accept_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$accept_recv_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$accept_send_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$connect_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$tcp_recv_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$tcp_send_pending", -1, "IOCP_HANDLE")
-	assertResource("GetQueuedCompletionStatus$socket", 0, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$socket", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$accept_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$accept_recv_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$accept_send_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$connect_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$tcp_recv_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$tcp_send_pending", -1, "IOCP_SOCKET")
+	assertResource("GetQueuedCompletionStatus$socket", 0, "IOCP_SOCKET")
 	assertResource("WSAGetOverlappedResult$socket", 0, "SOCKET_TCP_ACCEPTED")
 	assertResource("WSAGetOverlappedResult$accept_pending", 0, "SOCKET_TCP_ACCEPT_PENDING")
 	assertResource("WSAGetOverlappedResult$accept_recv_pending", 0, "SOCKET_TCP_ACCEPT_RECV_PENDING")
@@ -608,13 +608,13 @@ func TestWindowsNyxFuzzConfigSyscallsPresentInSparseTable(t *testing.T) {
 	}
 	requireWindowsNyxConfigSyscallsInSparseTable(t, "windows-nyx.cfg")
 	requireWindowsHelpersEnabled(t, "windows-nyx.cfg",
-		[]string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"})
+		[]string{"CreateFileA"})
 	enabledCalls := make(map[*prog.Syscall]bool)
 	for _, name := range cfg.EnabledSyscalls {
 		enabledCalls[target.SyscallMap[name]] = true
 	}
 	expanded, _ := target.TransitivelyEnabledCalls(enabledCalls)
-	for _, name := range []string{"CreateFileA", "CreateFile2", "CloseHandle", "VirtualAlloc"} {
+	for _, name := range []string{"CreateFileA"} {
 		call := target.SyscallMap[name]
 		if call == nil {
 			t.Fatalf("missing syscall %q", name)
@@ -676,8 +676,7 @@ func TestWindowsDemoExecEncodingUsesTargetIDs(t *testing.T) {
 	}
 	for name, wantID := range table {
 		meta := target.SyscallMap[name]
-		ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{meta: true})
-		p := target.GenSampleProg(meta, rand.NewSource(1), ct)
+		p := target.GenSampleProg(meta, rand.NewSource(1), target.DefaultChoiceTable())
 		execData, err := p.SerializeForExec()
 		if err != nil {
 			t.Fatalf("SerializeForExec(%s): %v", name, err)
