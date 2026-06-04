@@ -198,9 +198,9 @@ var (
 	rePTDecode                 = regexp.MustCompile(`PT_DECODE\] bytes=(\d+) decode_bytes=(\d+) trimmed=(\d+) terminator_before=0x[0-9a-fA-F]+ result=(\d+) bb_before=\d+ bb_after=(\d+) trace_size=(\d+)`)
 	reSYZCovDump               = regexp.MustCompile(`SYZ_COV_DUMP\] active=\d+ records=(\d+) last_call=(\d+) last_slot=\d+ last_pcs=(\d+) ip_callbacks=(\d+) ip_recorded=(\d+)`)
 	reWindowsCollideResult     = regexp.MustCompile(`windows collide result: origin=([^ ]+)(?: trace=([^ ]+))? active=\[(.*)\]`)
-	reWindowsTriage            = regexp.MustCompile(`windows triage: call=(\d+) name=([^ ]+) signal=(\d+) cover=(\d+) prio=\d+ new=(\d+)`)
-	reWindowsTriageQueued      = regexp.MustCompile(`windows triage job queued: origin=([^ ]+)(?: trace=([^ ]+))? calls=\[(.*)\]`)
-	reWindowsCorpusSaveOrigin  = regexp.MustCompile(`windows corpus save:(?: origin=([^ ]+)(?: trace=([^ ]+))?)? call=(\d+) name=([^ ]+) stable_signal=(\d+) new_stable=(\d+) cover=(\d+) raw_cover=(\d+)`)
+	reTriage                   = regexp.MustCompile(`(?:windows )?triage: call=(\d+) name=([^ ]+) signal=(\d+) cover=(\d+) prio=\d+ new=(\d+)`)
+	reTriageQueued             = regexp.MustCompile(`(?:windows )?triage job queued: origin=([^ ]+)(?: trace=([^ ]+))? calls=\[(.*)\]`)
+	reCorpusSaveOrigin         = regexp.MustCompile(`(?:windows )?corpus save:(?: origin=([^ ]+)(?: trace=([^ ]+))?)? call=(\d+) name=([^ ]+) stable_signal=(\d+) new_stable=(\d+) cover=(\d+) raw_cover=(\d+)`)
 	reWindowsCollideActive     = regexp.MustCompile(`(?:^|\s)\d+:([^(\s]+)\(sig=(\d+) cover=(\d+)`)
 	reNyxModuleRangeSubmitted  = regexp.MustCompile(`nyx module range submitted slot=(\d+) target=([^ ]+) name=([^ ]+)`)
 	reRunnerModuleCoverage     = regexp.MustCompile(`runner module coverage: id=(\d+) slot=(\d+) records=(\d+) pcs=(\d+)`)
@@ -713,10 +713,10 @@ func (c *collector) handleManagerLine(line string) {
 			c.state.nonZeroExec++
 		}
 	}
-	if strings.Contains(line, "windows corpus save:") {
+	if strings.Contains(line, "corpus save:") {
 		c.state.corpusSaves++
 	}
-	if strings.Contains(line, "windows triage:") {
+	if reTriage.FindStringSubmatch(line) != nil {
 		c.state.triageEvents++
 		if strings.Contains(line, "NtFsControlFile") {
 			c.state.ntfsTriage++
@@ -1474,7 +1474,7 @@ func parseCollideQualityRows(data string) []collideQualityEntry {
 		if line == "" {
 			continue
 		}
-		if m := reWindowsTriageQueued.FindStringSubmatch(line); m != nil {
+		if m := reTriageQueued.FindStringSubmatch(line); m != nil {
 			origin, traceID := m[1], m[2]
 			var pending map[string]bool
 			if traceID != "" {
@@ -1540,7 +1540,7 @@ func parseCollideQualityRows(data string) []collideQualityEntry {
 			eventsByOrigin[origin] = append(eventsByOrigin[origin], event)
 			continue
 		}
-		if m := reWindowsCorpusSaveOrigin.FindStringSubmatch(line); m != nil {
+		if m := reCorpusSaveOrigin.FindStringSubmatch(line); m != nil {
 			origin, traceID := m[1], m[2]
 			callName := m[4]
 			if traceID != "" {
@@ -1667,7 +1667,7 @@ func runAFDSummary(args []string) error {
 				continue
 			}
 			managerCollector.handleManagerLine(line)
-			if m := reWindowsTriage.FindStringSubmatch(line); m != nil {
+			if m := reTriage.FindStringSubmatch(line); m != nil {
 				st := afdCallStat(callStats, m[2])
 				st.TriageEvents++
 				st.TriageSignal += mustAtoi(m[3])
@@ -1675,13 +1675,13 @@ func runAFDSummary(args []string) error {
 				st.TriageNewSignal += mustAtoi(m[5])
 				continue
 			}
-			if m := reWindowsTriageQueued.FindStringSubmatch(line); m != nil {
+			if m := reTriageQueued.FindStringSubmatch(line); m != nil {
 				for _, call := range splitCallList(m[3]) {
 					afdCallStat(callStats, call).TriageJobs++
 				}
 				continue
 			}
-			if m := reWindowsCorpusSaveOrigin.FindStringSubmatch(line); m != nil {
+			if m := reCorpusSaveOrigin.FindStringSubmatch(line); m != nil {
 				st := afdCallStat(callStats, m[4])
 				st.CorpusSaves++
 				st.CorpusStableSignal += mustAtoi(m[5])

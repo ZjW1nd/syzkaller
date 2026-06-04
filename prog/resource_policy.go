@@ -492,6 +492,7 @@ func resultArgResourceDesc(arg *ResultArg) *ResourceDesc {
 // may be triaged, persisted, and scheduled for collide attempts.
 func FocusedResourceRuntimePolicy(target *Target, minOwnerScore int) RuntimePolicy {
 	return RuntimePolicy{
+		TriageDiagnostics: true,
 		PreferCollideProgram: func(p *Prog) bool {
 			return ProgramHasResourceOwner(target, p, minOwnerScore)
 		},

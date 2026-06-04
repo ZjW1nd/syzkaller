@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"testing"
 
 	"github.com/google/syzkaller/pkg/corpus"
@@ -165,6 +166,318 @@ func TestTriageExecuteSignalsReadyAfterSubmit(t *testing.T) {
 		t.Fatal("triage request was not submitted before ready was signaled")
 	}
 	<-done
+}
+
+func TestFocusedResourceTriageDeflakeLogsProgress(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	var logs []string
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			Logf: func(level int, msg string, args ...any) {
+				logs = append(logs, fmt.Sprintf(msg, args...))
+			},
+		},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	fuzzer.Cover.addRawMaxSignal([]uint64{0x10}, 3)
+	job := &triageJob{
+		p:       p,
+		flags:   ProgMinimized | ProgSmashed,
+		origin:  "candidate",
+		traceID: "candidate-1",
+		fuzzer:  fuzzer,
+		calls: map[int]*triageCall{call: {
+			newSignal:       signal.FromRaw([]uint64{0x10}, 3),
+			candidateSignal: signal.FromRaw([]uint64{0x10}, 3),
+			signals:         [deflakeNeedRuns]signal.Signal{signal.FromRaw([]uint64{0x10}, 3)},
+		}},
+		info: &JobInfo{},
+	}
+	var run int
+	stop := job.deflake(func(_ *queue.Request, _ ProgFlags) *queue.Result {
+		run++
+		calls := make([]*flatrpc.CallInfo, len(p.Calls))
+		calls[call] = &flatrpc.CallInfo{
+			Signal: []uint64{0x10},
+			Cover:  []uint64{0x20 + uint64(run)},
+		}
+		return &queue.Result{
+			Status: queue.Success,
+			Info:   &flatrpc.ProgInfo{Calls: calls},
+		}
+	})
+	if stop {
+		t.Fatal("deflake unexpectedly stopped")
+	}
+	got := strings.Join(logs, "\n")
+	for _, want := range []string{
+		"triage deflake start: origin=candidate trace=candidate-1 calls=[WSARecv$accept] need_runs=3",
+		"triage deflake run: origin=candidate trace=candidate-1 run=1 need_runs=3 calls=[WSARecv$accept] status=Success",
+		"triage deflake signal: origin=candidate trace=candidate-1 run=1 need_runs=3 call=",
+		"name=WSARecv$accept signal=1 cover=1 prio=3 new_max=0 candidate_overlap=1 new_overlap=1 buckets=[1 1 0]",
+		"triage deflake complete: origin=candidate trace=candidate-1 call=",
+		"name=WSARecv$accept stable_signal=1 new_stable=1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing log %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestWindowsAFDTriageDeflakeStopsForPersistableStableOwner(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"recv$inet_accept(r3, &(0x7f0000000100)=\"\"/64, 0x40, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	acceptCall := windowsFuzzerTestCallIndex(t, p, "accept$inet_tcp")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	fuzzer := &Fuzzer{
+		Config: &Config{},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	job := &triageJob{
+		p:      p,
+		flags:  ProgMinimized | ProgSmashed,
+		origin: "candidate",
+		fuzzer: fuzzer,
+		calls: map[int]*triageCall{
+			acceptCall: {
+				newSignal:       signal.FromRaw([]uint64{0x30}, 1),
+				candidateSignal: signal.FromRaw([]uint64{0x30, 0x31}, 1),
+				signals:         [deflakeNeedRuns]signal.Signal{signal.FromRaw([]uint64{0x30, 0x31}, 1)},
+			},
+			recvCall: {
+				newSignal:       signal.FromRaw([]uint64{0x10}, 3),
+				candidateSignal: signal.FromRaw([]uint64{0x10, 0x20}, 3),
+				signals:         [deflakeNeedRuns]signal.Signal{signal.FromRaw([]uint64{0x10, 0x20}, 3)},
+			},
+		},
+		info: &JobInfo{},
+	}
+	var runs int
+	stop := job.deflake(func(_ *queue.Request, _ ProgFlags) *queue.Result {
+		runs++
+		calls := make([]*flatrpc.CallInfo, len(p.Calls))
+		calls[acceptCall] = &flatrpc.CallInfo{
+			Signal: []uint64{0x30 + uint64(runs-1)},
+			Cover:  []uint64{0x100 + uint64(runs)},
+		}
+		calls[recvCall] = &flatrpc.CallInfo{
+			Signal: []uint64{0x20},
+			Cover:  []uint64{0x200 + uint64(runs)},
+		}
+		return &queue.Result{
+			Status: queue.Success,
+			Info:   &flatrpc.ProgInfo{Calls: calls},
+		}
+	})
+	if stop {
+		t.Fatal("deflake unexpectedly stopped")
+	}
+	if runs != 2 {
+		t.Fatalf("deflake runs=%d, want 2 once stable AFD owner can be persisted", runs)
+	}
+	info := job.calls[recvCall]
+	if info.stableSignal.Empty() {
+		t.Fatal("recv$inet_accept should have stable signal")
+	}
+	if !job.calls[acceptCall].stableSignal.Empty() {
+		t.Fatalf("accept$inet_tcp stable signal=%d, want only deep persistable owner to stop deflake",
+			job.calls[acceptCall].stableSignal.Len())
+	}
+}
+
+func TestFocusedResourceTriageSkipLogsEmptyNewStableSignal(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"recv$inet_accept(r3, &(0x7f0000000100)=\"\"/64, 0x40, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	var logs []string
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			NewInputFilter: func(string) bool { return true },
+			Logf: func(level int, msg string, args ...any) {
+				logs = append(logs, fmt.Sprintf(msg, args...))
+			},
+		},
+		target: profiled,
+	}
+	job := &triageJob{
+		p:       p,
+		flags:   ProgMinimized | ProgSmashed,
+		origin:  "fuzz",
+		traceID: "candidate-1",
+		fuzzer:  fuzzer,
+	}
+	job.handleCall(call, &triageCall{
+		newSignal:    signal.FromRaw([]uint64{0x10, 0x20}, 3),
+		stableSignal: signal.FromRaw([]uint64{0x30}, 3),
+		cover:        cover.FromRaw([]uint64{0x40}),
+	})
+	got := strings.Join(logs, "\n")
+	for _, want := range []string{
+		"triage skip: origin=fuzz trace=candidate-1 call=",
+		"name=recv$inet_accept reason=no_new_stable_signal",
+		"stable_signal=1 new_stable=0 new_signal=2 cover=1 raw_cover=0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing log %q in:\n%s", want, got)
+		}
+	}
+}
+
+func TestWindowsAFDPersistsStableCandidateOwner(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	corp := corpus.NewCorpus(context.Background())
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			Corpus:         corp,
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	job := &triageJob{
+		p:      p,
+		flags:  ProgMinimized | ProgSmashed,
+		origin: "candidate",
+		fuzzer: fuzzer,
+	}
+	job.handleCall(call, &triageCall{
+		stableSignal: signal.FromRaw([]uint64{1}, 0),
+		cover:        cover.FromRaw([]uint64{1}),
+	})
+	items := corp.Items()
+	if len(items) != 1 {
+		t.Fatalf("corpus items=%d, want one deep candidate owner", len(items))
+	}
+	if got := items[0].StringCall(); got != "WSARecv$accept" {
+		t.Fatalf("corpus owner=%q, want WSARecv$accept", got)
+	}
+}
+
+func TestWindowsAFDCorpusSaveCallbackIncludesCandidateTrace(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	var events []CorpusSaveEvent
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			Corpus:         corpus.NewCorpus(context.Background()),
+			NewInputFilter: func(string) bool { return true },
+			CorpusSaveCallback: func(event CorpusSaveEvent) {
+				events = append(events, event)
+			},
+		},
+		target: profiled,
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	job := &triageJob{
+		p:       p,
+		flags:   ProgMinimized | ProgSmashed,
+		origin:  "candidate",
+		traceID: "candidate-7",
+		fuzzer:  fuzzer,
+	}
+	job.handleCall(call, &triageCall{
+		stableSignal:    signal.FromRaw([]uint64{1, 2}, 0),
+		newStableSignal: signal.FromRaw([]uint64{2}, 0),
+		cover:           cover.FromRaw([]uint64{3, 4, 5}),
+		rawCover:        []uint64{6},
+	})
+	if len(events) != 1 {
+		t.Fatalf("corpus save events=%d, want one", len(events))
+	}
+	event := events[0]
+	if event.Origin != "candidate" || event.TraceID != "candidate-7" ||
+		event.Call != call || event.CallName != "WSARecv$accept" {
+		t.Fatalf("bad corpus save event: %+v", event)
+	}
+	if event.StableSignal != 2 || event.NewStableSignal != 1 ||
+		event.Cover != 3 || event.RawCover != 1 {
+		t.Fatalf("bad corpus save event counts: %+v", event)
+	}
 }
 
 func TestWindowsAFDPersistsStableCollideOwner(t *testing.T) {

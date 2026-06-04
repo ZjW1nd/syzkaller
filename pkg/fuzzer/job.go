@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -102,9 +103,10 @@ type triageJob struct {
 }
 
 type triageCall struct {
-	errno     int32
-	newSignal signal.Signal
-	origin    string
+	errno           int32
+	newSignal       signal.Signal
+	candidateSignal signal.Signal
+	origin          string
 
 	// Filled after deflake:
 	signals         [deflakeNeedRuns]signal.Signal
@@ -176,6 +178,7 @@ func (job *triageJob) run(fuzzer *Fuzzer) {
 	// Compute input coverage and non-flaky signal for minimization.
 	stop := job.deflake(job.execute)
 	if stop {
+		job.logTriageSkip(-1, ".all", nil, "deflake_stopped")
 		return
 	}
 	var wg sync.WaitGroup
@@ -190,12 +193,14 @@ func (job *triageJob) run(fuzzer *Fuzzer) {
 }
 
 func (job *triageJob) handleCall(call int, info *triageCall) {
+	origCallName := job.p.CallName(call)
 	if info.newStableSignal.Empty() {
 		if job != nil && job.fuzzer != nil && job.fuzzer.target != nil &&
 			job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall != nil &&
 			!info.stableSignal.Empty() &&
 			job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall(job.origin, job.p, call) {
 		} else {
+			job.logTriageSkip(call, origCallName, info, "no_new_stable_signal")
 			return
 		}
 	}
@@ -204,14 +209,17 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 	if job.flags&ProgMinimized == 0 {
 		p, call = job.minimize(call, info)
 		if p == nil {
+			job.logTriageSkip(call, origCallName, info, "minimize_failed")
 			return
 		}
 	}
 	callName := p.CallName(call)
 	if !job.shouldPersistCall(p, call) {
+		job.logTriageSkip(call, callName, info, "should_persist_call")
 		return
 	}
 	if !job.fuzzer.Config.NewInputFilter(callName) {
+		job.logTriageSkip(call, callName, info, "new_input_filter")
 		return
 	}
 	if job.flags&ProgSmashed == 0 {
@@ -245,15 +253,67 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 		}
 	}
 	job.fuzzer.Logf(2, "added new input for %v to the corpus: %s", callName, p)
+	coverData := info.cover.Serialize()
+	job.notifyCorpusSave(call, callName, info, coverData)
+	job.logCorpusSave(call, callName, info, coverData)
 	input := corpus.NewInput{
 		Prog:     p,
 		Call:     call,
 		Signal:   info.stableSignal,
-		Cover:    info.cover.Serialize(),
+		Cover:    coverData,
 		RawCover: info.rawCover,
 	}
 	job.fuzzer.Config.Corpus.Save(input)
 	job.maybeScheduleImmediateCollide(p, call)
+}
+
+func (job *triageJob) notifyCorpusSave(call int, callName string, info *triageCall, coverData []uint64) {
+	if job == nil || job.fuzzer == nil || job.fuzzer.Config.CorpusSaveCallback == nil ||
+		info == nil {
+		return
+	}
+	job.fuzzer.Config.CorpusSaveCallback(CorpusSaveEvent{
+		Origin:          job.origin,
+		TraceID:         job.traceID,
+		Call:            call,
+		CallName:        callName,
+		StableSignal:    info.stableSignal.Len(),
+		NewStableSignal: info.newStableSignal.Len(),
+		Cover:           len(coverData),
+		RawCover:        len(info.rawCover),
+	})
+}
+
+func (job *triageJob) logCorpusSave(call int, callName string, info *triageCall, coverData []uint64) {
+	if !job.triageDiagnosticsEnabled() || info == nil {
+		return
+	}
+	trace := ""
+	if job.traceID != "" {
+		trace = fmt.Sprintf(" trace=%s", job.traceID)
+	}
+	job.fuzzer.Logf(0, "corpus save: origin=%s%s call=%d name=%s stable_signal=%d new_stable=%d cover=%d raw_cover=%d",
+		job.origin, trace, call, callName, info.stableSignal.Len(), info.newStableSignal.Len(), len(coverData), len(info.rawCover))
+}
+
+func (job *triageJob) logTriageSkip(call int, callName string, info *triageCall, reason string) {
+	if !job.triageDiagnosticsEnabled() {
+		return
+	}
+	stableSignal, newStableSignal, newSignal, cover, rawCover := 0, 0, 0, 0, 0
+	if info != nil {
+		stableSignal = info.stableSignal.Len()
+		newStableSignal = info.newStableSignal.Len()
+		newSignal = info.newSignal.Len()
+		cover = len(info.cover.Serialize())
+		rawCover = len(info.rawCover)
+	}
+	trace := ""
+	if job.traceID != "" {
+		trace = fmt.Sprintf(" trace=%s", job.traceID)
+	}
+	job.fuzzer.Logf(0, "triage skip: origin=%s%s call=%d name=%s reason=%s stable_signal=%d new_stable=%d new_signal=%d cover=%d raw_cover=%d",
+		job.origin, trace, call, callName, reason, stableSignal, newStableSignal, newSignal, cover, rawCover)
 }
 
 func (job *triageJob) shouldStartHints(p *prog.Prog, call int) bool {
@@ -332,6 +392,7 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 	} else if job.flags&ProgFromCorpus == 0 {
 		needRuns = deflakeNeedRuns
 	}
+	job.logTriageDeflakeStart(needRuns)
 	prevTotalNewSignal := 0
 	for run := 1; ; run++ {
 		totalNewSignal := 0
@@ -351,7 +412,9 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 			Avoid:           avoid,
 			Stat:            job.fuzzer.statExecTriage,
 		}, progInTriage)
+		job.logTriageDeflakeRun(run, needRuns, indices, result)
 		if result.Stop() {
+			job.logTriageDeflakeStop(run, needRuns, result.Status)
 			return true
 		}
 		avoid = append(avoid, result.Executor)
@@ -378,15 +441,19 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 			// But also we already observed it and we know it's flaky, so at least doing
 			// cover.addRawMaxSignal for it looks useful.
 			prio := signalPrio(job.p, res, call)
+			thisSignal := signal.FromRaw(res.Signal, prio)
+			candidateOverlap := info.candidateSignal.Intersection(thisSignal).Len()
+			newOverlap := info.newSignal.Intersection(thisSignal).Len()
 			newMaxSignal := job.fuzzer.Cover.addRawMaxSignal(res.Signal, prio)
 			info.newSignal.Merge(newMaxSignal)
 			info.cover.Merge(res.Cover)
-			thisSignal := signal.FromRaw(res.Signal, prio)
 			for j := needRuns - 1; j > 0; j-- {
 				intersect := info.signals[j-1].Intersection(thisSignal)
 				info.signals[j].Merge(intersect)
 			}
 			info.signals[0].Merge(thisSignal)
+			job.logTriageDeflakeSignalRun(run, needRuns, call, res, newMaxSignal.Len(),
+				candidateOverlap, newOverlap, info)
 		}
 		for i, callInfo := range result.Info.Calls {
 			deflakeCall(i, callInfo)
@@ -400,8 +467,97 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 		job.info.Logf("call #%d [%s]: |stable signal|=%d, |new stable signal|=%d%s",
 			call, job.p.CallName(call), info.stableSignal.Len(), info.newStableSignal.Len(),
 			signalPreview(info.newStableSignal))
+		job.logTriageDeflakeComplete(call, info)
 	}
 	return false
+}
+
+func (job *triageJob) logTriageDeflakeStart(needRuns int) {
+	if !job.triageDiagnosticsEnabled() {
+		return
+	}
+	job.fuzzer.Logf(0, "triage deflake start: origin=%s%s calls=[%s] need_runs=%d flags=0x%x",
+		job.origin, job.traceLogSuffix(), job.callNamesForLog(job.callIndices()), needRuns, job.flags)
+}
+
+func (job *triageJob) logTriageDeflakeRun(run, needRuns int, calls []int, result *queue.Result) {
+	if !job.triageDiagnosticsEnabled() || result == nil {
+		return
+	}
+	infoCalls := 0
+	if result.Info != nil {
+		infoCalls = len(result.Info.Calls)
+	}
+	job.fuzzer.Logf(0, "triage deflake run: origin=%s%s run=%d need_runs=%d calls=[%s] status=%s info_calls=%d",
+		job.origin, job.traceLogSuffix(), run, needRuns, job.callNamesForLog(calls), result.Status, infoCalls)
+}
+
+func (job *triageJob) logTriageDeflakeStop(run, needRuns int, status queue.Status) {
+	if !job.triageDiagnosticsEnabled() {
+		return
+	}
+	job.fuzzer.Logf(0, "triage deflake stop: origin=%s%s run=%d need_runs=%d status=%s",
+		job.origin, job.traceLogSuffix(), run, needRuns, status)
+}
+
+func (job *triageJob) logTriageDeflakeComplete(call int, info *triageCall) {
+	if !job.triageDiagnosticsEnabled() || info == nil {
+		return
+	}
+	job.fuzzer.Logf(0, "triage deflake complete: origin=%s%s call=%d name=%s stable_signal=%d new_stable=%d new_signal=%d cover=%d raw_cover=%d",
+		job.origin, job.traceLogSuffix(), call, job.p.CallName(call), info.stableSignal.Len(), info.newStableSignal.Len(),
+		info.newSignal.Len(), len(info.cover.Serialize()), len(info.rawCover))
+}
+
+func (job *triageJob) logTriageDeflakeSignalRun(run, needRuns, call int, res *flatrpc.CallInfo,
+	newMaxSignal, candidateOverlap, newOverlap int, info *triageCall) {
+	if !job.triageDiagnosticsEnabled() || res == nil || info == nil {
+		return
+	}
+	buckets := make([]int, needRuns)
+	for i := 0; i < needRuns; i++ {
+		buckets[i] = info.signals[i].Len()
+	}
+	job.fuzzer.Logf(0, "triage deflake signal: origin=%s%s run=%d need_runs=%d call=%d name=%s signal=%d cover=%d prio=%d new_max=%d candidate_overlap=%d new_overlap=%d buckets=[%s] errno=%d flags=0x%x",
+		job.origin, job.traceLogSuffix(), run, needRuns, call, job.p.CallName(call), len(res.Signal),
+		len(res.Cover), signalPrio(job.p, res, call), newMaxSignal, candidateOverlap, newOverlap,
+		intsForLog(buckets), res.Error, uint8(res.Flags))
+}
+
+func (job *triageJob) triageDiagnosticsEnabled() bool {
+	return job != nil && job.fuzzer != nil && job.fuzzer.triageDiagnosticsEnabled()
+}
+
+func (job *triageJob) traceLogSuffix() string {
+	if job.traceID == "" {
+		return ""
+	}
+	return fmt.Sprintf(" trace=%s", job.traceID)
+}
+
+func (job *triageJob) callIndices() []int {
+	calls := make([]int, 0, len(job.calls))
+	for call := range job.calls {
+		calls = append(calls, call)
+	}
+	return calls
+}
+
+func (job *triageJob) callNamesForLog(calls []int) string {
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		names = append(names, job.p.CallName(call))
+	}
+	slices.Sort(names)
+	return strings.Join(names, " ")
+}
+
+func intsForLog(values []int) string {
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		parts = append(parts, fmt.Sprint(value))
+	}
+	return strings.Join(parts, " ")
 }
 
 func (job *triageJob) stopDeflake(run, needRuns int, noNewSignal bool) bool {
@@ -409,9 +565,13 @@ func (job *triageJob) stopDeflake(run, needRuns int, noNewSignal bool) bool {
 		return run >= needRuns+1
 	}
 	haveSignal := true
-	for _, call := range job.calls {
-		if !call.newSignal.IntersectsWith(call.signals[needRuns-1]) {
+	havePersistableStableSignal := false
+	for call, info := range job.calls {
+		if !info.newSignal.IntersectsWith(info.signals[needRuns-1]) {
 			haveSignal = false
+		}
+		if job.shouldStopDeflakeForStableTriageCall(call, info, needRuns) {
+			havePersistableStableSignal = true
 		}
 	}
 	if job.flags&ProgFromCorpus == 0 {
@@ -427,7 +587,7 @@ func (job *triageJob) stopDeflake(run, needRuns int, noNewSignal bool) bool {
 				noChance = false
 			}
 		}
-		if haveSignal || noChance {
+		if haveSignal || havePersistableStableSignal || noChance {
 			return true
 		}
 	} else if run >= deflakeTotalCorpusRuns ||
@@ -442,6 +602,17 @@ func (job *triageJob) stopDeflake(run, needRuns int, noNewSignal bool) bool {
 		return true
 	}
 	return false
+}
+
+func (job *triageJob) shouldStopDeflakeForStableTriageCall(call int, info *triageCall, needRuns int) bool {
+	if call < 0 || info == nil || info.signals[needRuns-1].Empty() {
+		return false
+	}
+	if job.fuzzer == nil || job.fuzzer.target == nil ||
+		job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall == nil {
+		return false
+	}
+	return job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall(job.origin, job.p, call)
 }
 
 func (job *triageJob) minimize(call int, info *triageCall) (*prog.Prog, int) {

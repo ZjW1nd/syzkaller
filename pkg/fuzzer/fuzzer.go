@@ -52,6 +52,9 @@ func NewFuzzer(ctx context.Context, cfg *Config, rnd *rand.Rand,
 			return true
 		}
 	}
+	if target != nil && target.RuntimePolicy.TriageDiagnostics {
+		cfg.TriageDiagnostics = true
+	}
 	cfg.NoMutateCalls = mergeTargetNoMutateCalls(target, cfg.NoMutateCalls)
 	f := &Fuzzer{
 		Stats:  newStats(target),
@@ -240,6 +243,7 @@ func (fuzzer *Fuzzer) processResult(req *queue.Request, res *queue.Result, flags
 				job.info.Calls = append(job.info.Calls, job.p.CallName(id))
 			}
 			slices.Sort(job.info.Calls)
+			fuzzer.logTriageJobQueued(req.Origin, req.TraceID, job.info.Calls, flags, attempt, res.Status)
 			fuzzer.startJob(stat, job)
 			<-job.ready
 		}
@@ -277,6 +281,8 @@ type Config struct {
 	Debug               bool
 	Corpus              *corpus.Corpus
 	Logf                func(level int, msg string, args ...any)
+	TriageDiagnostics   bool
+	CorpusSaveCallback  func(CorpusSaveEvent)
 	Snapshot            bool
 	Coverage            bool
 	FaultInjection      bool
@@ -298,18 +304,22 @@ func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.
 		return
 	}
 	prio := signalPrio(p, info, call)
-	newMaxSignal := fuzzer.Cover.addRawMaxSignal(info.Signal, prio)
 	if fuzzer.target != nil && fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram != nil &&
 		fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram(origin, p) {
-		return
-	}
-	if !fuzzer.Config.NewInputFilter(p.CallName(call)) {
+		fuzzer.Cover.addRawMaxSignal(info.Signal, prio)
 		return
 	}
 	if call >= 0 && !fuzzer.target.CallEligibleForTriage(p.Calls[call].Meta) {
 		return
 	}
+	if !fuzzer.Config.NewInputFilter(p.CallName(call)) {
+		return
+	}
+	newMaxSignal := fuzzer.Cover.addRawMaxSignal(info.Signal, prio)
 	if newMaxSignal.Empty() {
+		if len(info.Signal) == 0 {
+			return
+		}
 		if fuzzer.target == nil || fuzzer.target.RuntimePolicy.ShouldForceTriageCall == nil ||
 			!fuzzer.target.RuntimePolicy.ShouldForceTriageCall(origin, p, call) {
 			return
@@ -320,14 +330,16 @@ func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.
 		return
 	}
 	fuzzer.Logf(2, "found new signal in call %d in %s", call, p)
+	fuzzer.logTriageCall(p, call, info, prio, newMaxSignal.Len())
 	if *triage == nil {
 		*triage = make(map[int]*triageCall)
 	}
 	(*triage)[call] = &triageCall{
-		errno:     info.Error,
-		newSignal: newMaxSignal,
-		origin:    origin,
-		signals:   [deflakeNeedRuns]signal.Signal{signal.FromRaw(info.Signal, prio)},
+		errno:           info.Error,
+		newSignal:       newMaxSignal,
+		candidateSignal: signal.FromRaw(info.Signal, prio),
+		origin:          origin,
+		signals:         [deflakeNeedRuns]signal.Signal{signal.FromRaw(info.Signal, prio)},
 	}
 }
 
@@ -481,6 +493,36 @@ func (fuzzer *Fuzzer) Logf(level int, msg string, args ...any) {
 	fuzzer.Config.Logf(level, msg, args...)
 }
 
+func (fuzzer *Fuzzer) logTriageCall(p *prog.Prog, call int, info *flatrpc.CallInfo, prio uint8, newSignal int) {
+	if !fuzzer.triageDiagnosticsEnabled() || info == nil {
+		return
+	}
+	fuzzer.Logf(0, "triage: call=%d name=%s signal=%d cover=%d prio=%d new=%d errno=%d flags=0x%x",
+		call, p.CallName(call), len(info.Signal), len(info.Cover), prio, newSignal, info.Error, uint8(info.Flags))
+}
+
+func (fuzzer *Fuzzer) logTriageJobQueued(origin, traceID string, calls []string, flags ProgFlags, attempt int, status queue.Status) {
+	if !fuzzer.triageDiagnosticsEnabled() {
+		return
+	}
+	trace := ""
+	if traceID != "" {
+		trace = fmt.Sprintf(" trace=%s", traceID)
+	}
+	fuzzer.Logf(0, "triage job queued: origin=%s%s calls=[%s] flags=0x%x attempt=%d status=%s",
+		origin, trace, strings.Join(calls, " "), flags, attempt, status)
+}
+
+func (fuzzer *Fuzzer) triageDiagnosticsEnabled() bool {
+	if fuzzer == nil {
+		return false
+	}
+	if fuzzer.Config != nil && fuzzer.Config.TriageDiagnostics {
+		return true
+	}
+	return fuzzer.target != nil && fuzzer.target.RuntimePolicy.TriageDiagnostics
+}
+
 type ProgFlags int
 
 const (
@@ -496,6 +538,17 @@ const (
 type Candidate struct {
 	Prog  *prog.Prog
 	Flags ProgFlags
+}
+
+type CorpusSaveEvent struct {
+	Origin          string
+	TraceID         string
+	Call            int
+	CallName        string
+	StableSignal    int
+	NewStableSignal int
+	Cover           int
+	RawCover        int
 }
 
 func (fuzzer *Fuzzer) AddCandidates(candidates []Candidate) {

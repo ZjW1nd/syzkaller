@@ -392,6 +392,9 @@ func TestWindowsAFDSkipsTriageForSeedOnlyPrograms(t *testing.T) {
 	if len(triage) != 0 {
 		t.Fatal("seed-only AFD program should update max signal without entering triage")
 	}
+	if got := fuzzer.Cover.CopyMaxSignal().Len(); got != 3 {
+		t.Fatalf("seed-only AFD program max signal=%d, want 3", got)
+	}
 	creatorProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: creator}}}
 	fuzzer.triageProgCall("candidate", creatorProg, &flatrpc.CallInfo{
 		Signal: []uint64{4, 5, 6},

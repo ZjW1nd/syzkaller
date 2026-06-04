@@ -208,6 +208,9 @@ type BiasPolicy struct {
 }
 
 type RuntimePolicy struct {
+	// TriageDiagnostics requests detailed triage/corpus-save logs for focused
+	// runs where gate scripts or stats tools need to attribute owners precisely.
+	TriageDiagnostics bool
 	// PreferCollideProgram lets a target request a higher collide probability for programs that
 	// already match a target-specific local interaction template.
 	PreferCollideProgram func(p *Prog) bool
