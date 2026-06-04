@@ -99,6 +99,42 @@ func TestCandidateRunSourceRunsCandidatesOnceAndStops(t *testing.T) {
 	assertCandidateRunFinish(t, finished, "")
 }
 
+func TestCandidateRunSourceStopsAtLimit(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"))
+	second := parseSeedProgram(t, target, []byte("WSACleanup()\n"))
+	third := parseSeedProgram(t, target, []byte("VirtualAlloc(0x200000000000, 0x1000, 0x3000, 0x40)\n"))
+
+	finished := make(chan error, 1)
+	src := &candidateRunSource{
+		candidates: []fuzzer.Candidate{
+			{Prog: first},
+			{Prog: second},
+			{Prog: third},
+		},
+		limit: 2,
+		finish: func(err error) {
+			finished <- err
+		},
+	}
+
+	req1 := src.Next()
+	req2 := src.Next()
+	if req1 == nil || req2 == nil {
+		t.Fatalf("candidate-run returned nil before limit: %v %v", req1, req2)
+	}
+	if got := src.Next(); got != nil {
+		t.Fatalf("candidate-run produced request after limit: %v", got)
+	}
+	req1.Done(&queue.Result{Status: queue.Success})
+	assertNoCandidateRunFinish(t, finished)
+	req2.Done(&queue.Result{Status: queue.Success})
+	assertCandidateRunFinish(t, finished, "")
+}
+
 func TestCandidateRunSourceStopsOnFailure(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -121,6 +157,181 @@ func TestCandidateRunSourceStopsOnFailure(t *testing.T) {
 	err = assertCandidateRunFinish(t, finished, "candidate 1 finished with status Hanged")
 	if err == nil {
 		t.Fatal("candidate-run failure should report an error")
+	}
+}
+
+func TestLimitFocusedCandidates(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"))
+	second := parseSeedProgram(t, target, []byte("WSACleanup()\n"))
+	candidates := []fuzzer.Candidate{{Prog: first}, {Prog: second}}
+
+	if got := limitFocusedCandidates(candidates, 0); len(got) != 2 {
+		t.Fatalf("limit 0 returned %d candidates, want all", len(got))
+	}
+	limited := limitFocusedCandidates(candidates, 1)
+	if len(limited) != 1 || limited[0].Prog != first {
+		t.Fatalf("limit 1 returned %+v, want first candidate only", limited)
+	}
+	if got := limitFocusedCandidates(candidates, 3); len(got) != 2 {
+		t.Fatalf("limit above size returned %d candidates, want all", len(got))
+	}
+}
+
+func TestFocusedFuzzingGateEnabled(t *testing.T) {
+	tests := []struct {
+		name             string
+		candidateLimit   int
+		corpusMin        int
+		candidateSaveMin int
+		genMin           int
+		collideMin       int
+		want             bool
+	}{
+		{name: "disabled", want: false},
+		{name: "candidate limit", candidateLimit: 1, want: true},
+		{name: "corpus minimum", corpusMin: 1, want: true},
+		{name: "candidate save minimum", candidateSaveMin: 1, want: true},
+		{name: "generation minimum", genMin: 1, want: true},
+		{name: "collide minimum", collideMin: 1, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := focusedFuzzingGateEnabled(test.candidateLimit, test.corpusMin,
+				test.candidateSaveMin, test.genMin, test.collideMin); got != test.want {
+				t.Fatalf("focusedFuzzingGateEnabled(%d, %d, %d, %d, %d) = %v, want %v",
+					test.candidateLimit, test.corpusMin, test.candidateSaveMin, test.genMin,
+					test.collideMin, got, test.want)
+			}
+		})
+	}
+}
+
+func TestFocusedFuzzingGateDoneRequiresCorpusMinimum(t *testing.T) {
+	done, err := focusedFuzzingGateDone(focusedFuzzingGateStats{CorpusPrograms: 1}, focusedFuzzingGateConfig{
+		CorpusMin: 2,
+	})
+	if !done {
+		t.Fatal("focused gate should finish once candidate triage drained")
+	}
+	if err == nil || !strings.Contains(err.Error(), "corpus=1, want at least 2") {
+		t.Fatalf("focused gate error = %v, want corpus minimum failure", err)
+	}
+	done, err = focusedFuzzingGateDone(focusedFuzzingGateStats{CorpusPrograms: 2}, focusedFuzzingGateConfig{
+		CorpusMin: 2,
+	})
+	if !done || err != nil {
+		t.Fatalf("focused gate with enough corpus = (%v, %v), want done without error", done, err)
+	}
+	done, err = focusedFuzzingGateDone(focusedFuzzingGateStats{}, focusedFuzzingGateConfig{})
+	if !done || err != nil {
+		t.Fatalf("focused gate without corpus minimum = (%v, %v), want done without error", done, err)
+	}
+}
+
+func TestFocusedFuzzingGateDoneRequiresCandidateSaves(t *testing.T) {
+	done, err := focusedFuzzingGateDone(focusedFuzzingGateStats{
+		CorpusPrograms: 3,
+		CandidateSaves: 1,
+	}, focusedFuzzingGateConfig{
+		CorpusMin:        1,
+		CandidateSaveMin: 2,
+	})
+	if !done {
+		t.Fatal("focused gate should finish once candidate triage drained")
+	}
+	if err == nil || !strings.Contains(err.Error(), "candidate_saves=1, want at least 2") {
+		t.Fatalf("focused gate error = %v, want candidate save minimum failure", err)
+	}
+	done, err = focusedFuzzingGateDone(focusedFuzzingGateStats{
+		CorpusPrograms: 3,
+		CandidateSaves: 2,
+	}, focusedFuzzingGateConfig{
+		CorpusMin:        1,
+		CandidateSaveMin: 2,
+	})
+	if !done || err != nil {
+		t.Fatalf("focused gate with enough candidate saves = (%v, %v), want done without error", done, err)
+	}
+}
+
+func TestFocusedFuzzingGateWaitsForGenerationAndCollideMinimums(t *testing.T) {
+	cfg := focusedFuzzingGateConfig{
+		CorpusMin:        1,
+		CandidateSaveMin: 1,
+		GenMin:           1,
+		CollideMin:       1,
+	}
+	done, err := focusedFuzzingGateDone(focusedFuzzingGateStats{
+		CorpusPrograms: 1,
+		CandidateSaves: 1,
+	}, cfg)
+	if done || err != nil {
+		t.Fatalf("focused gate before gen/collide = (%v, %v), want continue", done, err)
+	}
+	done, err = focusedFuzzingGateDone(focusedFuzzingGateStats{
+		CorpusPrograms: 1,
+		CandidateSaves: 1,
+		ExecFuzz:       1,
+		ExecRegular:    1,
+	}, cfg)
+	if done || err != nil {
+		t.Fatalf("focused gate before collide = (%v, %v), want continue", done, err)
+	}
+	done, err = focusedFuzzingGateDone(focusedFuzzingGateStats{
+		CorpusPrograms: 1,
+		CandidateSaves: 1,
+		ExecGen:        1,
+		ExecRegular:    1,
+		ExecCollide:    1,
+	}, cfg)
+	if !done || err != nil {
+		t.Fatalf("focused gate with gen/collide minimums = (%v, %v), want done without error", done, err)
+	}
+}
+
+func TestFocusedFuzzingGateWaitsBeforeFailingMinimums(t *testing.T) {
+	cfg := focusedFuzzingGateConfig{
+		CorpusMin: 2,
+		GenMin:    1,
+	}
+	done, err := focusedFuzzingGateDone(focusedFuzzingGateStats{
+		CorpusPrograms: 1,
+	}, cfg)
+	if done || err != nil {
+		t.Fatalf("focused gate before required gen = (%v, %v), want continue", done, err)
+	}
+	done, err = focusedFuzzingGateDone(focusedFuzzingGateStats{
+		CorpusPrograms: 1,
+		ExecRegular:    1,
+	}, cfg)
+	if !done || err == nil || !strings.Contains(err.Error(), "corpus=1, want at least 2") {
+		t.Fatalf("focused gate after required gen = (%v, %v), want corpus failure", done, err)
+	}
+}
+
+func TestFocusedCandidateSaveTrackerCountsDistinctCandidateTraces(t *testing.T) {
+	mgr := &Manager{}
+	mgr.recordFocusedCorpusSave(fuzzer.CorpusSaveEvent{
+		Origin: "candidate", TraceID: "candidate-1", CallName: "recv$inet_accept",
+	})
+	mgr.recordFocusedCorpusSave(fuzzer.CorpusSaveEvent{
+		Origin: "candidate", TraceID: "candidate-1", CallName: "accept$inet_tcp",
+	})
+	mgr.recordFocusedCorpusSave(fuzzer.CorpusSaveEvent{
+		Origin: "candidate", TraceID: "candidate-2", CallName: "WSARecv$accept",
+	})
+	mgr.recordFocusedCorpusSave(fuzzer.CorpusSaveEvent{
+		Origin: "collide:triage", TraceID: "collide-1", CallName: "WSARecv$accept",
+	})
+	mgr.recordFocusedCorpusSave(fuzzer.CorpusSaveEvent{
+		Origin: "candidate", CallName: "ioctlsocket$fionbio_accept",
+	})
+	if got := mgr.focusedCandidateCorpusSaveCount(); got != 2 {
+		t.Fatalf("focused candidate save count=%d, want distinct candidate traces only", got)
 	}
 }
 

@@ -55,11 +55,22 @@ import (
 )
 
 var (
-	flagConfig = flag.String("config", "", "configuration file")
-	flagDebug  = flag.Bool("debug", false, "dump all VM output to console")
-	flagBench  = flag.String("bench", "", "write execution statistics into this file periodically")
-	flagMode   = flag.String("mode", ModeFuzzing.Name, modesDescription())
-	flagTests  = flag.String("tests", "", "prefix to match test file names (for -mode run-tests)")
+	flagConfig                = flag.String("config", "", "configuration file")
+	flagDebug                 = flag.Bool("debug", false, "dump all VM output to console")
+	flagBench                 = flag.String("bench", "", "write execution statistics into this file periodically")
+	flagMode                  = flag.String("mode", ModeFuzzing.Name, modesDescription())
+	flagTests                 = flag.String("tests", "", "prefix to match test file names (for -mode run-tests)")
+	flagCandidateRunLimit     = flag.Int("candidate_run_limit", 0, "limit number of corpus candidates to run in -mode candidate-run (0 = all)")
+	flagFocusedCandidateLimit = flag.Int("focused_candidate_limit", 0,
+		"limit initial corpus candidates enqueued in -mode fuzzing for focused gates (0 = all)")
+	flagFocusedCorpusMin = flag.Int("focused_corpus_min", 0,
+		"exit -mode fuzzing after focused candidates drain if corpus has at least this many programs (0 = no minimum)")
+	flagFocusedCandidateSaveMin = flag.Int("focused_candidate_save_min", 0,
+		"exit -mode fuzzing after focused candidates drain if at least this many distinct candidate traces saved corpus entries (0 = no minimum)")
+	flagFocusedGenMin = flag.Int("focused_gen_min", 0,
+		"exit -mode fuzzing after focused candidates drain and at least this many generated executions complete (0 = no minimum)")
+	flagFocusedCollideMin = flag.Int("focused_collide_min", 0,
+		"exit -mode fuzzing after focused candidates drain and at least this many collide executions complete (0 = no minimum)")
 )
 
 type Manager struct {
@@ -115,6 +126,9 @@ type Manager struct {
 	reproLoop *manager.ReproLoop
 
 	Stats
+
+	focusedMu                       sync.Mutex
+	focusedCandidateCorpusSaveTrace map[string]struct{}
 }
 
 type Mode struct {
@@ -285,23 +299,24 @@ func RunManager(mode *Mode, cfg *mgrconfig.Config) {
 	}
 
 	mgr := &Manager{
-		cfg:                cfg,
-		mode:               mode,
-		vmPool:             vmPool,
-		corpusPreload:      make(chan []fuzzer.Candidate),
-		target:             cfg.Target,
-		sysTarget:          cfg.SysTarget,
-		reporter:           reporter,
-		crashStore:         manager.NewCrashStore(cfg),
-		crashTypes:         make(map[string]bool),
-		disabledHashes:     make(map[string]struct{}),
-		memoryLeakFrames:   make(map[string]bool),
-		dataRaceFrames:     make(map[string]bool),
-		fresh:              true,
-		externalReproQueue: make(chan *manager.Crash, 10),
-		crashes:            make(chan *manager.Crash, 10),
-		saturatedCalls:     make(map[string]bool),
-		reportGenerator:    manager.ReportGeneratorCache(cfg),
+		cfg:                             cfg,
+		mode:                            mode,
+		vmPool:                          vmPool,
+		corpusPreload:                   make(chan []fuzzer.Candidate),
+		target:                          cfg.Target,
+		sysTarget:                       cfg.SysTarget,
+		reporter:                        reporter,
+		crashStore:                      manager.NewCrashStore(cfg),
+		crashTypes:                      make(map[string]bool),
+		disabledHashes:                  make(map[string]struct{}),
+		memoryLeakFrames:                make(map[string]bool),
+		dataRaceFrames:                  make(map[string]bool),
+		fresh:                           true,
+		externalReproQueue:              make(chan *manager.Crash, 10),
+		crashes:                         make(chan *manager.Crash, 10),
+		saturatedCalls:                  make(map[string]bool),
+		reportGenerator:                 manager.ReportGeneratorCache(cfg),
+		focusedCandidateCorpusSaveTrace: make(map[string]struct{}),
 	}
 	mgr.crashStore.Reporter = reporter
 	if subsystem.HasList(cfg.TargetOS) {
@@ -1312,6 +1327,7 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 				}
 				log.Logf(level, msg, args...)
 			},
+			CorpusSaveCallback: mgr.recordFocusedCorpusSave,
 			NewInputFilter: func(call string) bool {
 				mgr.mu.Lock()
 				defer mgr.mu.Unlock()
@@ -1321,6 +1337,9 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 			MaxCallsPerProg:     mgr.cfg.Experimental.MaxCallsPerProg,
 			ForceGenerateEveryN: mgr.cfg.Experimental.ForceGenerateEveryN,
 		}, rnd, mgr.target)
+		if mgr.mode == ModeFuzzing {
+			candidates = limitFocusedCandidates(candidates, *flagFocusedCandidateLimit)
+		}
 		fuzzerObj.AddCandidates(candidates)
 		mgr.fuzzer.Store(fuzzerObj)
 		mgr.http.Fuzzer.Store(fuzzerObj)
@@ -1358,6 +1377,7 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		}
 		ctx := &candidateRunSource{
 			candidates: candidates,
+			limit:      *flagCandidateRunLimit,
 			finish: func(err error) {
 				if err != nil {
 					log.Fatalf("%v mode failed: %v", mgr.mode.Name, err)
@@ -1411,6 +1431,13 @@ func collideEnabledForConfig(cfg *mgrconfig.Config) bool {
 	return true
 }
 
+func limitFocusedCandidates(candidates []fuzzer.Candidate, limit int) []fuzzer.Candidate {
+	if limit <= 0 || limit >= len(candidates) {
+		return candidates
+	}
+	return candidates[:limit]
+}
+
 type corpusRunner struct {
 	candidates []fuzzer.Candidate
 	mu         sync.Mutex
@@ -1439,6 +1466,7 @@ func (cr *corpusRunner) Next() *queue.Request {
 
 type candidateRunSource struct {
 	candidates []fuzzer.Candidate
+	limit      int
 	finish     func(error)
 
 	mu        sync.Mutex
@@ -1449,7 +1477,7 @@ type candidateRunSource struct {
 
 func (cr *candidateRunSource) Next() *queue.Request {
 	cr.mu.Lock()
-	if cr.seq >= len(cr.candidates) {
+	if cr.seq >= cr.targetCount() {
 		cr.mu.Unlock()
 		return nil
 	}
@@ -1472,6 +1500,13 @@ func (cr *candidateRunSource) Next() *queue.Request {
 	return req
 }
 
+func (cr *candidateRunSource) targetCount() int {
+	if cr.limit > 0 && cr.limit < len(cr.candidates) {
+		return cr.limit
+	}
+	return len(cr.candidates)
+}
+
 func (cr *candidateRunSource) onDone(id int, res *queue.Result) {
 	var finish func(error)
 	var err error
@@ -1489,7 +1524,7 @@ func (cr *candidateRunSource) onDone(id int, res *queue.Result) {
 		cr.finished = true
 	} else {
 		cr.completed++
-		if cr.completed == len(cr.candidates) {
+		if cr.completed == cr.targetCount() {
 			cr.finished = true
 		}
 	}
@@ -1519,6 +1554,7 @@ func (mgr *Manager) MaxSignal() signal.Signal {
 }
 
 func (mgr *Manager) fuzzerLoop(fuzzer *fuzzer.Fuzzer) {
+	var lastFocusedGateWaitingLog time.Time
 	for ; ; time.Sleep(time.Second / 2) {
 		if mgr.cfg.Cover && !mgr.cfg.Snapshot {
 			// Distribute new max signal over all instances.
@@ -1533,6 +1569,37 @@ func (mgr *Manager) fuzzerLoop(fuzzer *fuzzer.Fuzzer) {
 
 		// Update the state machine.
 		if fuzzer.CandidateTriageFinished() {
+			if mgr.mode == ModeFuzzing && focusedFuzzingGateEnabled(*flagFocusedCandidateLimit,
+				*flagFocusedCorpusMin, *flagFocusedCandidateSaveMin, *flagFocusedGenMin,
+				*flagFocusedCollideMin) {
+				stats := mgr.focusedFuzzingGateStats(fuzzer)
+				cfg := focusedFuzzingGateConfig{
+					CorpusMin:        *flagFocusedCorpusMin,
+					CandidateSaveMin: *flagFocusedCandidateSaveMin,
+					GenMin:           *flagFocusedGenMin,
+					CollideMin:       *flagFocusedCollideMin,
+				}
+				if done, err := focusedFuzzingGateDone(stats, cfg); done {
+					if err != nil {
+						log.Logf(0, "focused fuzzing gate failed: corpus=%d corpus_min=%d candidate_saves=%d candidate_save_min=%d exec_regular=%d gen_min=%d exec_gen=%d exec_fuzz=%d exec_collide=%d collide_min=%d",
+							stats.CorpusPrograms, cfg.CorpusMin, stats.CandidateSaves,
+							cfg.CandidateSaveMin, stats.ExecRegular, cfg.GenMin, stats.ExecGen,
+							stats.ExecFuzz, stats.ExecCollide, cfg.CollideMin)
+						log.Fatalf("focused fuzzing gate failed: %v", err)
+					}
+					log.Logf(0, "focused fuzzing gate finished: corpus=%d corpus_min=%d candidate_saves=%d candidate_save_min=%d exec_regular=%d gen_min=%d exec_gen=%d exec_fuzz=%d exec_collide=%d collide_min=%d",
+						stats.CorpusPrograms, cfg.CorpusMin, stats.CandidateSaves,
+						cfg.CandidateSaveMin, stats.ExecRegular, cfg.GenMin, stats.ExecGen,
+						stats.ExecFuzz, stats.ExecCollide, cfg.CollideMin)
+					mgr.exit("focused fuzzing gate")
+				} else if lastFocusedGateWaitingLog.IsZero() || time.Since(lastFocusedGateWaitingLog) >= 30*time.Second {
+					log.Logf(0, "focused fuzzing gate waiting: corpus=%d corpus_min=%d candidate_saves=%d candidate_save_min=%d exec_regular=%d gen_min=%d exec_gen=%d exec_fuzz=%d exec_collide=%d collide_min=%d",
+						stats.CorpusPrograms, cfg.CorpusMin, stats.CandidateSaves,
+						cfg.CandidateSaveMin, stats.ExecRegular, cfg.GenMin, stats.ExecGen,
+						stats.ExecFuzz, stats.ExecCollide, cfg.CollideMin)
+					lastFocusedGateWaitingLog = time.Now()
+				}
+			}
 			if mgr.mode == ModeCorpusTriage {
 				mgr.exit("corpus triage")
 			}
@@ -1555,6 +1622,77 @@ func (mgr *Manager) fuzzerLoop(fuzzer *fuzzer.Fuzzer) {
 			mgr.mu.Unlock()
 		}
 	}
+}
+
+type focusedFuzzingGateConfig struct {
+	CorpusMin        int
+	CandidateSaveMin int
+	GenMin           int
+	CollideMin       int
+}
+
+type focusedFuzzingGateStats struct {
+	CorpusPrograms int
+	CandidateSaves int
+	ExecGen        int
+	ExecFuzz       int
+	ExecRegular    int
+	ExecCollide    int
+}
+
+func focusedFuzzingGateEnabled(candidateLimit, corpusMin, candidateSaveMin, genMin, collideMin int) bool {
+	return candidateLimit > 0 || corpusMin > 0 || candidateSaveMin > 0 || genMin > 0 || collideMin > 0
+}
+
+func focusedFuzzingGateDone(stats focusedFuzzingGateStats, cfg focusedFuzzingGateConfig) (bool, error) {
+	if cfg.GenMin > 0 && stats.ExecRegular < cfg.GenMin {
+		return false, nil
+	}
+	if cfg.CollideMin > 0 && stats.ExecCollide < cfg.CollideMin {
+		return false, nil
+	}
+	if cfg.CorpusMin > 0 && stats.CorpusPrograms < cfg.CorpusMin {
+		return true, fmt.Errorf("corpus=%d, want at least %d", stats.CorpusPrograms, cfg.CorpusMin)
+	}
+	if cfg.CandidateSaveMin > 0 && stats.CandidateSaves < cfg.CandidateSaveMin {
+		return true, fmt.Errorf("candidate_saves=%d, want at least %d", stats.CandidateSaves, cfg.CandidateSaveMin)
+	}
+	return true, nil
+}
+
+func (mgr *Manager) focusedFuzzingGateStats(fuzzer *fuzzer.Fuzzer) focusedFuzzingGateStats {
+	stats := focusedFuzzingGateStats{
+		CandidateSaves: mgr.focusedCandidateCorpusSaveCount(),
+	}
+	if fuzzer == nil {
+		return stats
+	}
+	if fuzzer.Config.Corpus != nil {
+		stats.CorpusPrograms = fuzzer.Config.Corpus.StatProgs.Val()
+	}
+	stats.ExecGen = fuzzer.ExecGenCount()
+	stats.ExecFuzz = fuzzer.ExecFuzzCount()
+	stats.ExecRegular = stats.ExecGen + stats.ExecFuzz
+	stats.ExecCollide = fuzzer.ExecCollideCount()
+	return stats
+}
+
+func (mgr *Manager) recordFocusedCorpusSave(event fuzzer.CorpusSaveEvent) {
+	if event.Origin != "candidate" || event.TraceID == "" {
+		return
+	}
+	mgr.focusedMu.Lock()
+	defer mgr.focusedMu.Unlock()
+	if mgr.focusedCandidateCorpusSaveTrace == nil {
+		mgr.focusedCandidateCorpusSaveTrace = make(map[string]struct{})
+	}
+	mgr.focusedCandidateCorpusSaveTrace[event.TraceID] = struct{}{}
+}
+
+func (mgr *Manager) focusedCandidateCorpusSaveCount() int {
+	mgr.focusedMu.Lock()
+	defer mgr.focusedMu.Unlock()
+	return len(mgr.focusedCandidateCorpusSaveTrace)
 }
 
 func (mgr *Manager) setPhaseLocked(newPhase int) {

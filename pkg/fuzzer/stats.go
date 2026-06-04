@@ -51,6 +51,18 @@ type SyscallStats struct {
 	CompsOverflows atomic.Uint64
 }
 
+func (fuzzer *Fuzzer) ExecGenCount() int {
+	return fuzzer.statExecGenerate.Val()
+}
+
+func (fuzzer *Fuzzer) ExecFuzzCount() int {
+	return fuzzer.statExecFuzz.Val()
+}
+
+func (fuzzer *Fuzzer) ExecCollideCount() int {
+	return fuzzer.statExecCollide.Val()
+}
+
 func newStats(target *prog.Target) Stats {
 	return Stats{
 		Syscalls: make([]SyscallStats, len(target.Syscalls)+1),
