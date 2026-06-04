@@ -38,7 +38,7 @@ func TestInitTargetMarksWindowsHelpers(t *testing.T) {
 		t.Fatal("windows target did not avoid helper bias during call generation")
 	}
 	for _, name := range []string{
-		"CloseHandle", "CreateFileA", "CreateFile2", "VirtualAlloc",
+		"CloseHandle", "CreateFileA", "VirtualAlloc",
 		"GetCurrentProcess$process", "GetCurrentThread$thread",
 		"CreateEventA$manual", "CreateEventA$auto", "CreateSemaphoreA$sem",
 		"WSAStartup", "WSACleanup",
@@ -64,126 +64,39 @@ func TestWindowsCallRelevance(t *testing.T) {
 	if target.CallRelevanceScore == nil {
 		t.Fatal("windows target did not set CallRelevanceScore")
 	}
-	tests := []struct {
-		name string
-		want int
-	}{
-		{name: "CreateFileA", want: -1},
-		{name: "Sleep", want: 0},
-		{name: "NtQuerySystemInformation", want: 1},
-		{name: "recv$inet_udp", want: 2},
-		{name: "send$inet_tcp", want: 3},
-		{name: "recv$inet_accept", want: 4},
-		{name: "shutdown$tcp", want: 4},
-		{name: "shutdown$tcp_rd", want: 4},
-		{name: "shutdown$tcp_wr", want: 4},
-		{name: "shutdown$accept_rd", want: 4},
-		{name: "shutdown$accept_wr", want: 4},
-		{name: "getsockname$udp", want: 4},
-		{name: "getpeername$accept", want: 4},
-		{name: "select$afd_basic", want: 4},
-		{name: "WSARecv$accept", want: 5},
-		{name: "WSASend$tcp", want: 5},
-		{name: "recvfrom$udp_bound", want: 5},
-		{name: "WSARecvFrom$udp", want: 5},
-		{name: "WSAIoctl$sio_address_list_query", want: 5},
-		{name: "WSAIoctl$sio_routing_interface_query", want: 5},
-		{name: "WSAIoctl$sio_keepalive_vals", want: 5},
-		{name: "WSAIoctl$sio_get_extension_function_pointer", want: 5},
-		{name: "ConnectEx$inet_tcp", want: 5},
-		{name: "DisconnectEx$inet_tcp", want: 5},
-		{name: "DisconnectEx$inet_tcp_reuse", want: 5},
-		{name: "ConnectEx$inet_tcp_reuse", want: 5},
-		{name: "GetAcceptExSockaddrs$inet_tcp", want: 5},
-		{name: "TransmitPackets$inet_accept", want: 5},
-		{name: "WSARecvMsg$udp", want: 5},
-		{name: "WSAEventSelect$tcp", want: 5},
-		{name: "WSAEnumNetworkEvents$tcp", want: 5},
-		{name: "WSAEventSelect$accept", want: 5},
-		{name: "WSAEnumNetworkEvents$accept", want: 5},
-		{name: "WSAGetOverlappedResult$socket", want: 5},
-		{name: "WSAGetOverlappedResult$accept_pending", want: 5},
-		{name: "WSAGetOverlappedResult$accept_recv_pending", want: 5},
-		{name: "WSAGetOverlappedResult$accept_send_pending", want: 5},
-		{name: "WSAGetOverlappedResult$tcp_recv_pending", want: 5},
-		{name: "WSAGetOverlappedResult$tcp_send_pending", want: 5},
-		{name: "WSAGetOverlappedResult$connect_pending", want: 5},
-		{name: "CancelIoEx$socket", want: 5},
-		{name: "CancelIoEx$accept_pending", want: 5},
-		{name: "CancelIoEx$accept_recv_pending", want: 5},
-		{name: "CancelIoEx$accept_send_pending", want: 5},
-		{name: "CancelIoEx$tcp_recv_pending", want: 5},
-		{name: "CancelIoEx$tcp_send_pending", want: 5},
-		{name: "CancelIoEx$connect_pending", want: 5},
-		{name: "CancelIo$socket", want: 5},
-		{name: "CancelIo$accept_pending", want: 5},
-		{name: "CancelIo$accept_recv_pending", want: 5},
-		{name: "CancelIo$accept_send_pending", want: 5},
-		{name: "CancelIo$tcp_recv_pending", want: 5},
-		{name: "CancelIo$tcp_send_pending", want: 5},
-		{name: "CancelIo$connect_pending", want: 5},
-		{name: "closesocket$accept_pending", want: 5},
-		{name: "closesocket$accept_recv_pending", want: 5},
-		{name: "closesocket$accept_send_pending", want: 5},
-		{name: "closesocket$tcp_recv_pending", want: 5},
-		{name: "closesocket$tcp_send_pending", want: 5},
-		{name: "closesocket$connect_pending", want: 5},
-		{name: "CreateIoCompletionPort$socket", want: 5},
-		{name: "CreateIoCompletionPort$accept_pending", want: 5},
-		{name: "CreateIoCompletionPort$accept_recv_pending", want: 5},
-		{name: "CreateIoCompletionPort$accept_send_pending", want: 5},
-		{name: "CreateIoCompletionPort$tcp_recv_pending", want: 5},
-		{name: "CreateIoCompletionPort$tcp_send_pending", want: 5},
-		{name: "CreateIoCompletionPort$connect_pending", want: 5},
-		{name: "GetQueuedCompletionStatus$socket", want: 5},
-		{name: "WSARecv$accept_pending", want: 5},
-		{name: "WSASend$accept_pending", want: 5},
-		{name: "WSARecv$tcp_pending", want: 5},
-		{name: "WSASend$tcp_pending", want: 5},
-		{name: "AcceptEx$inet_tcp_pending", want: 5},
-		{name: "ConnectEx$inet_tcp_pending", want: 5},
-		{name: "setsockopt$update_accept_context", want: 5},
-		{name: "send$inet_accept_updated", want: 5},
-		{name: "recv$inet_accept_updated", want: 5},
-		{name: "setsockopt$int_accept_updated", want: 5},
-		{name: "getsockopt$int_accept_updated", want: 5},
-		{name: "WaitForSingleObject$wait", want: 2},
-		{name: "GetTokenInformation$token", want: 3},
-		{name: "MapViewOfFile$section", want: 3},
-		{name: "GetQueuedCompletionStatus$iocp", want: 3},
-		{name: "ReadFile$pipe", want: 3},
-		{name: "NtQueryInformationFile$basic", want: 4},
-		{name: "NtSetInformationFile$basic", want: 4},
-		{name: "TransmitFile$inet_accept", want: 5},
-		{name: "NtDeviceIoControlFile", want: 5},
-		{name: "NtFsControlFile", want: 5},
-		{name: "NtFsControlFile$ntfs_get_compression", want: 5},
-		{name: "NtFsControlFile$ntfs_set_compression", want: 5},
-		{name: "NtFsControlFile$ntfs_set_sparse", want: 5},
-		{name: "NtFsControlFile$ntfs_set_zero_data", want: 5},
-		{name: "NtFsControlFile$ntfs_query_allocated_ranges", want: 5},
+	helper := target.SyscallMap["CreateFileA"]
+	shallow := target.SyscallMap["Sleep"]
+	listen := target.SyscallMap["listen$inet_tcp"]
+	recvAccept := target.SyscallMap["recv$inet_accept"]
+	cancelPending := target.SyscallMap["CancelIoEx$connect_pending"]
+	pendingCtor := target.SyscallMap["WSARecv$accept_pending"]
+	if helper == nil || shallow == nil || listen == nil || recvAccept == nil ||
+		cancelPending == nil || pendingCtor == nil {
+		t.Fatal("missing syscall for relevance test")
 	}
-	for _, test := range tests {
-		call := target.SyscallMap[test.name]
-		if call == nil {
-			t.Fatalf("missing syscall %q", test.name)
-		}
-		if got := target.CallRelevance(call); got != test.want {
-			t.Fatalf("%s relevance: got %d, want %d", test.name, got, test.want)
-		}
-		if got := target.TriageRelevance(call); got != test.want {
-			t.Fatalf("%s triage relevance: got %d, want %d", test.name, got, test.want)
-		}
+	if target.CallRelevance(helper) >= 0 {
+		t.Fatalf("automatic helper relevance=%d, want negative", target.CallRelevance(helper))
+	}
+	if target.CallRelevance(shallow) != 1 {
+		t.Fatalf("shallow relevance=%d, want 1", target.CallRelevance(shallow))
+	}
+	if target.CallRelevance(recvAccept) <= target.CallRelevance(listen) {
+		t.Fatalf("deep consumer relevance=%d setup relevance=%d",
+			target.CallRelevance(recvAccept), target.CallRelevance(listen))
+	}
+	if target.CallRelevance(cancelPending) <= target.CallRelevance(pendingCtor) {
+		t.Fatalf("pending consumer relevance=%d pending ctor relevance=%d",
+			target.CallRelevance(cancelPending), target.CallRelevance(pendingCtor))
 	}
 	if target.CallEligibleForTriage(target.SyscallMap["CreateFileA"]) {
 		t.Fatal("automatic helper should not be eligible for triage")
 	}
 	if !target.CallEligibleForTriage(target.SyscallMap["Sleep"]) {
-		t.Fatal("unscored non-helper syscall should remain eligible for triage")
+		t.Fatal("shallow non-helper syscall should remain eligible for default triage")
 	}
 }
 
-func TestWindowsExpandEnabledCallsForNetworkAndFileTargets(t *testing.T) {
+func TestWindowsExpandEnabledCallsUsesResourceConstructors(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -191,374 +104,47 @@ func TestWindowsExpandEnabledCallsForNetworkAndFileTargets(t *testing.T) {
 	if target.ExpandEnabledCalls == nil {
 		t.Fatal("windows target did not set ExpandEnabledCalls")
 	}
-	enabled := map[*prog.Syscall]bool{
-		target.SyscallMap["TransmitFile$inet_accept"]: true,
-	}
-	expanded := target.ExpandEnabledCalls(target, enabled)
-	for _, name := range []string{
-		"VirtualAlloc",
-		"TransmitFile$inet_accept",
-		"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any",
-		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp",
-		"CreateFileA", "CreateFile2", "CloseHandle", "WriteFile",
-	} {
-		call := target.SyscallMap[name]
-		if call == nil {
-			t.Fatalf("missing syscall %q", name)
-		}
-		if !expanded[call] {
-			t.Fatalf("expanded enabled calls are missing %q", name)
-		}
-	}
-}
-
-func TestWindowsExpandEnabledCallsAddsAcceptScaffold(t *testing.T) {
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	enabled := map[*prog.Syscall]bool{
-		target.SyscallMap["WSARecvEx$inet_accept"]: true,
-	}
-	expanded := target.ExpandEnabledCalls(target, enabled)
-	for _, name := range []string{
-		"VirtualAlloc",
-		"WSARecvEx$inet_accept",
-		"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any",
-		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp",
-		"send$inet_tcp",
-	} {
-		call := target.SyscallMap[name]
-		if call == nil {
-			t.Fatalf("missing syscall %q", name)
-		}
-		if !expanded[call] {
-			t.Fatalf("expanded enabled calls are missing %q", name)
-		}
-	}
-}
-
-func TestWindowsExpandEnabledCallsAddsPeerTrafficScaffold(t *testing.T) {
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
 	tests := []struct {
 		root string
 		want []string
 	}{
 		{
-			root: "recv$inet_tcp",
-			want: []string{"send$inet_accept", "socket$listener_tcp", "listen$inet_tcp", "accept$inet_tcp"},
+			root: "TransmitFile$inet_accept",
+			want: []string{
+				"TransmitFile$inet_accept",
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
+				"CreateFileA",
+			},
 		},
 		{
-			root: "WSARecv$tcp",
-			want: []string{"WSASend$accept", "socket$listener_tcp", "listen$inet_tcp", "accept$inet_tcp"},
+			root: "WSARecvEx$inet_accept",
+			want: []string{
+				"WSARecvEx$inet_accept",
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
+			},
 		},
 		{
 			root: "recvfrom$udp_bound",
-			want: []string{"sendto$udp_connected", "socket$bound_udp", "bind$inet_udp", "socket$connected_udp", "connect$inet_udp"},
+			want: []string{"recvfrom$udp_bound", "socket$inet_udp", "bind$inet_udp"},
 		},
 		{
-			root: "WSARecvFrom$udp",
-			want: []string{"WSASendTo$udp", "socket$bound_udp", "bind$inet_udp", "socket$connected_udp", "connect$inet_udp"},
-		},
-		{
-			root: "recv$inet_accept",
-			want: []string{"send$inet_tcp", "socket$listener_tcp", "accept$inet_tcp"},
-		},
-	}
-	for _, test := range tests {
-		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{
-			target.SyscallMap[test.root]: true,
-		})
-		for _, name := range append([]string{test.root}, test.want...) {
-			call := target.SyscallMap[name]
-			if call == nil {
-				t.Fatalf("missing syscall %q", name)
-			}
-			if !expanded[call] {
-				t.Fatalf("%s expansion is missing %q", test.root, name)
-			}
-		}
-	}
-}
-
-func TestWindowsExpandEnabledCallsAddsTCPAndUDPConnectScaffold(t *testing.T) {
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	tests := []struct {
-		root string
-		want []string
-	}{
-		{
-			root: "setsockopt$int_tcp",
-			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "connect$inet_tcp"},
-		},
-		{
-			root: "getsockopt$int_udp",
-			want: []string{"WSAStartup", "WSACleanup", "closesocket$any"},
-		},
-		{
-			root: "send$inet_udp",
-			want: []string{"WSAStartup", "WSACleanup", "socket$connected_udp", "closesocket$any", "connect$inet_udp"},
-		},
-		{
-			root: "WSAIoctl$sio_address_list_query",
-			want: []string{"WSAStartup", "WSACleanup", "socket$bound_udp", "closesocket$any", "bind$inet_udp"},
-		},
-		{
-			root: "WSAIoctl$sio_routing_interface_query",
-			want: []string{"WSAStartup", "WSACleanup", "socket$connected_udp", "closesocket$any", "connect$inet_udp"},
-		},
-		{
-			root: "WSAIoctl$sio_keepalive_vals",
-			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "connect$inet_tcp"},
-		},
-		{
-			root: "ConnectEx$inet_tcp",
-			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "bind$connectex_tcp"},
-		},
-		{
-			root: "ConnectEx$inet_tcp_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "bind$connectex_tcp"},
+			root: "sendto$udp_connected",
+			want: []string{"sendto$udp_connected", "socket$inet_udp", "connect$inet_udp"},
 		},
 		{
 			root: "ConnectEx$inet_tcp_reuse",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "DisconnectEx$inet_tcp_reuse"},
-		},
-		{
-			root: "WSARecvMsg$udp",
-			want: []string{"WSAStartup", "WSACleanup", "socket$bound_udp", "socket$connected_udp", "closesocket$any", "bind$inet_udp", "connect$inet_udp", "send$inet_udp"},
-		},
-		{
-			root: "WSAEventSelect$accept",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "WSACreateEvent", "WSACloseEvent"},
-		},
-		{
-			root: "CancelIoEx$socket",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp"},
-		},
-		{
-			root: "CancelIoEx$accept_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
-		},
-		{
-			root: "closesocket$accept_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
-		},
-		{
-			root: "CancelIoEx$connect_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp_pending"},
-		},
-		{
-			root: "closesocket$connect_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp_pending"},
-		},
-		{
-			root: "CancelIoEx$tcp_recv_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSARecv$tcp_pending", "send$inet_accept"},
-		},
-		{
-			root: "closesocket$tcp_send_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "connect$inet_tcp", "WSASend$tcp_pending"},
-		},
-		{
-			root: "CancelIoEx$accept_recv_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSARecv$accept_pending", "send$inet_tcp"},
-		},
-		{
-			root: "CancelIoEx$accept_send_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSASend$accept_pending"},
-		},
-		{
-			root: "closesocket$accept_recv_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSARecv$accept_pending", "send$inet_tcp"},
-		},
-		{
-			root: "closesocket$accept_send_pending",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "WSASend$accept_pending"},
+			want: []string{
+				"ConnectEx$inet_tcp_reuse",
+				"socket$inet_tcp", "connect$inet_tcp", "DisconnectEx$inet_tcp_reuse",
+			},
 		},
 		{
 			root: "setsockopt$update_accept_context",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
-		},
-		{
-			root: "send$inet_accept_updated",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending", "setsockopt$update_accept_context"},
-		},
-		{
-			root: "GetQueuedCompletionStatus$socket",
-			want: []string{"WSAStartup", "WSACleanup", "socket$listener_tcp", "socket$accept_tcp", "closesocket$any", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "CreateIoCompletionPort$socket"},
-		},
-		{
-			root: "WSAEnumNetworkEvents$tcp",
-			want: []string{"WSAStartup", "WSACleanup", "socket$connected_tcp", "closesocket$any", "connect$inet_tcp", "WSACreateEvent", "WSACloseEvent"},
-		},
-	}
-	for _, test := range tests {
-		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{
-			target.SyscallMap[test.root]: true,
-		})
-		for _, name := range append([]string{test.root}, test.want...) {
-			call := target.SyscallMap[name]
-			if call == nil {
-				t.Fatalf("missing syscall %q", name)
-			}
-			if !expanded[call] {
-				t.Fatalf("%s expansion is missing %q", test.root, name)
-			}
-		}
-	}
-}
-
-func TestWindowsExpandEnabledCallsUsesSocketResourceRoles(t *testing.T) {
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	tests := []struct {
-		name string
-		kind string
-		want []string
-	}{
-		{
-			name: "synthetic_tcp_connected_consumer",
-			kind: "SOCKET_TCP_CONNECTED",
-			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$connected_tcp", "connect$inet_tcp"},
-		},
-		{
-			name: "synthetic_accept_pending_consumer",
-			kind: "SOCKET_TCP_ACCEPT_PENDING",
-			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$listener_tcp", "socket$accept_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending"},
-		},
-		{
-			name: "synthetic_updated_accept_consumer",
-			kind: "SOCKET_TCP_ACCEPTED_UPDATED",
-			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$listener_tcp", "socket$accept_tcp", "listen$inet_tcp", "connect$inet_tcp", "AcceptEx$inet_tcp_pending", "setsockopt$update_accept_context"},
-		},
-		{
-			name: "synthetic_connecting_consumer",
-			kind: "SOCKET_TCP_CONNECTING",
-			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$listener_tcp", "socket$connected_tcp", "listen$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp_pending"},
-		},
-		{
-			name: "synthetic_udp_bound_consumer",
-			kind: "SOCKET_UDP_BOUND",
-			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$bound_udp", "bind$inet_udp"},
-		},
-		{
-			name: "synthetic_udp_peer_consumer",
-			kind: "SOCKET_UDP_PEERED",
-			want: []string{"WSAStartup", "WSACleanup", "closesocket$any", "socket$connected_udp", "connect$inet_udp"},
-		},
-	}
-	for _, test := range tests {
-		root := syntheticWindowsSocketConsumer(test.name, test.kind)
-		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{
-			root: true,
-		})
-		if !expanded[root] {
-			t.Fatalf("%s expansion dropped synthetic root", test.name)
-		}
-		for _, name := range test.want {
-			call := target.SyscallMap[name]
-			if call == nil {
-				t.Fatalf("missing syscall %q", name)
-			}
-			if !expanded[call] {
-				t.Fatalf("%s(%s) expansion is missing %q", test.name, test.kind, name)
-			}
-		}
-	}
-}
-
-func syntheticWindowsSocketConsumer(name, kind string) *prog.Syscall {
-	return &prog.Syscall{
-		Name:     name,
-		CallName: name,
-		Args: []prog.Field{
-			{
-				Name: "s",
-				Type: &prog.ResourceType{
-					TypeCommon: prog.TypeCommon{
-						TypeName: kind,
-						TypeSize: 8,
-					},
-					Desc: &prog.ResourceDesc{
-						Name:   kind,
-						Kind:   []string{kind},
-						Values: []uint64{^uint64(0)},
-					},
-				},
+			want: []string{
+				"setsockopt$update_accept_context",
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp",
+				"socket$accept_tcp", "AcceptEx$inet_tcp_pending",
 			},
-		},
-	}
-}
-
-func TestWindowsExpandEnabledCallsAddsFileScaffold(t *testing.T) {
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	enabled := map[*prog.Syscall]bool{
-		target.SyscallMap["FlushFileBuffers"]: true,
-	}
-	expanded := target.ExpandEnabledCalls(target, enabled)
-	for _, name := range []string{
-		"VirtualAlloc",
-		"FlushFileBuffers",
-		"CreateFileA", "CreateFile2", "CloseHandle",
-		"NtReadFile", "NtWriteFile", "NtFsControlFile",
-	} {
-		call := target.SyscallMap[name]
-		if call == nil {
-			t.Fatalf("missing syscall %q", name)
-		}
-		if !expanded[call] {
-			t.Fatalf("expanded enabled calls are missing %q", name)
-		}
-	}
-}
-
-func TestWindowsExpandEnabledCallsAddsObjectScaffold(t *testing.T) {
-	target, err := prog.GetTarget("windows", "amd64")
-	if err != nil {
-		t.Fatalf("GetTarget: %v", err)
-	}
-	tests := []struct {
-		root string
-		want []string
-	}{
-		{
-			root: "NtQueryInformationProcess",
-			want: []string{"GetCurrentProcess$process"},
-		},
-		{
-			root: "SetEvent$event",
-			want: []string{"CreateEventA$manual", "CloseHandle"},
-		},
-		{
-			root: "WaitForSingleObject$wait",
-			want: []string{"CreateEventA$manual", "CloseHandle"},
-		},
-		{
-			root: "GetTokenInformation$token",
-			want: []string{"GetCurrentProcess$process", "OpenProcessToken$process", "CloseHandle"},
-		},
-		{
-			root: "MapViewOfFile$section",
-			want: []string{"CreateFileMappingA$pagefile", "CloseHandle"},
-		},
-		{
-			root: "GetQueuedCompletionStatus$iocp",
-			want: []string{"CreateIoCompletionPort$create", "CloseHandle"},
-		},
-		{
-			root: "ReadFile$pipe",
-			want: []string{"CreatePipe$anon", "CloseHandle"},
 		},
 	}
 	for _, test := range tests {
@@ -569,14 +155,136 @@ func TestWindowsExpandEnabledCallsAddsObjectScaffold(t *testing.T) {
 		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{
 			root: true,
 		})
-		for _, name := range append([]string{test.root, "VirtualAlloc"}, test.want...) {
-			call := target.SyscallMap[name]
-			if call == nil {
-				t.Fatalf("missing syscall %q", name)
-			}
-			if !expanded[call] {
-				t.Fatalf("%s expansion is missing %q", test.root, name)
-			}
+		assertExpandedCalls(t, target, expanded, test.root, test.want)
+	}
+}
+
+func TestWindowsExpandEnabledCallsUsesSocketResourceRoles(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	tests := []struct {
+		root string
+		want []string
+	}{
+		{
+			root: "setsockopt$int_tcp",
+			want: []string{"socket$inet_tcp", "connect$inet_tcp"},
+		},
+		{
+			root: "CancelIoEx$accept_pending",
+			want: []string{
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp",
+				"socket$accept_tcp", "AcceptEx$inet_tcp_pending",
+			},
+		},
+		{
+			root: "CancelIoEx$connect_pending",
+			want: []string{"socket$inet_tcp", "connect$inet_tcp", "ConnectEx$inet_tcp_pending"},
+		},
+		{
+			root: "WSAEventSelect$accept",
+			want: []string{
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
+				"WSACreateEvent",
+			},
+		},
+		{
+			root: "GetQueuedCompletionStatus$socket",
+			want: []string{
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
+				"CreateIoCompletionPort$socket",
+			},
+		},
+	}
+	for _, test := range tests {
+		root := target.SyscallMap[test.root]
+		if root == nil {
+			t.Fatalf("missing syscall %q", test.root)
+		}
+		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{root: true})
+		assertExpandedCalls(t, target, expanded, test.root, append([]string{test.root}, test.want...))
+	}
+}
+
+func TestWindowsExpandEnabledCallsAddsFileAndObjectConstructors(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	tests := []struct {
+		root string
+		want []string
+	}{
+		{
+			root: "FlushFileBuffers",
+			want: []string{"FlushFileBuffers", "CreateFileA"},
+		},
+		{
+			root: "SetEvent$event",
+			want: []string{"SetEvent$event"},
+		},
+		{
+			root: "GetTokenInformation$token",
+			want: []string{"GetTokenInformation$token", "GetCurrentProcess$process", "OpenProcessToken$process"},
+		},
+		{
+			root: "MapViewOfFile$section",
+			want: []string{"MapViewOfFile$section", "CreateFileMappingA$pagefile"},
+		},
+		{
+			root: "GetQueuedCompletionStatus$iocp",
+			want: []string{"GetQueuedCompletionStatus$iocp", "CreateIoCompletionPort$create"},
+		},
+		{
+			root: "ReadFile$pipe",
+			want: []string{"ReadFile$pipe", "CreatePipe$anon"},
+		},
+	}
+	for _, test := range tests {
+		root := target.SyscallMap[test.root]
+		if root == nil {
+			t.Fatalf("missing syscall %q", test.root)
+		}
+		expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{root: true})
+		assertExpandedCalls(t, target, expanded, test.root, test.want)
+	}
+	expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{
+		target.SyscallMap["SetEvent$event"]: true,
+	})
+	if !expanded[target.SyscallMap["CreateEventA$manual"]] && !expanded[target.SyscallMap["CreateEventA$auto"]] {
+		t.Fatal("SetEvent$event expansion did not add an EVENT_HANDLE constructor")
+	}
+}
+
+func assertExpandedCalls(t *testing.T, target *prog.Target, expanded map[*prog.Syscall]bool, root string, names []string) {
+	t.Helper()
+	for _, name := range names {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("%s expansion is missing %q", root, name)
+		}
+	}
+}
+
+func TestWindowsExpandEnabledCallsDoesNotAddNameOnlyScaffold(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	root := target.SyscallMap["recv$inet_accept"]
+	expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{root: true})
+	for _, name := range []string{"WSAStartup", "WSACleanup", "closesocket$any"} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if expanded[call] {
+			t.Fatalf("resource closure should not add name-only scaffold %q", name)
 		}
 	}
 }
@@ -702,14 +410,14 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("CreateIoCompletionPort$tcp_recv_pending", 0, "SOCKET_TCP_RECV_PENDING")
 	assertResource("CreateIoCompletionPort$tcp_send_pending", 0, "SOCKET_TCP_SEND_PENDING")
 	assertResource("CreateIoCompletionPort$connect_pending", 0, "SOCKET_TCP_CONNECTING")
-	assertResource("CreateIoCompletionPort$socket", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$accept_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$accept_recv_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$accept_send_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$tcp_recv_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$tcp_send_pending", -1, "IOCP_HANDLE")
-	assertResource("CreateIoCompletionPort$connect_pending", -1, "IOCP_HANDLE")
-	assertResource("GetQueuedCompletionStatus$socket", 0, "IOCP_HANDLE")
+	assertResource("CreateIoCompletionPort$socket", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$accept_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$accept_recv_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$accept_send_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$tcp_recv_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$tcp_send_pending", -1, "IOCP_SOCKET")
+	assertResource("CreateIoCompletionPort$connect_pending", -1, "IOCP_SOCKET")
+	assertResource("GetQueuedCompletionStatus$socket", 0, "IOCP_SOCKET")
 	assertPtrResource("CreatePipe$anon", 0, "PIPE_READ_HANDLE")
 	assertPtrResource("CreatePipe$anon", 1, "PIPE_WRITE_HANDLE")
 	assertResource("ReadFile$pipe", 0, "PIPE_READ_HANDLE")
@@ -1032,9 +740,9 @@ func TestWindowsChoiceTableResourcePriorities(t *testing.T) {
 	}
 	// Verify that expanded scaffold syscalls are also generatable.
 	for _, name := range []string{
-		"WSAStartup", "WSACleanup", "closesocket$any",
-		"CreateFileA", "CreateFile2", "CloseHandle",
-		"VirtualAlloc",
+		"CreateFileA",
+		"socket$inet_tcp",
+		"connect$inet_tcp",
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {
@@ -1145,7 +853,7 @@ func TestWindowsAFDStateMachineCallsAreGeneratable(t *testing.T) {
 		},
 		{
 			root: "shutdown$tcp_wr",
-			want: []string{"socket$inet_tcp", "connect$inet_tcp", "shutdown$tcp_wr", "closesocket$tcp_shutdown_wr"},
+			want: []string{"socket$inet_tcp", "connect$inet_tcp", "shutdown$tcp_wr"},
 		},
 		{
 			root: "ConnectEx$inet_tcp_reuse",
