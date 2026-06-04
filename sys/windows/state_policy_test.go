@@ -2,6 +2,7 @@ package windows_test
 
 import (
 	"math/rand"
+	"os"
 	"testing"
 
 	"github.com/google/syzkaller/prog"
@@ -299,6 +300,28 @@ func TestWindowsAFDTargetProfileSkipsSeedOnlyTriagePrograms(t *testing.T) {
 	creatorProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: creator}}}
 	if profiled.RuntimePolicy.ShouldSkipTriageProgram("candidate", creatorProg) {
 		t.Fatal("focused profile should triage regular public resource calls")
+	}
+}
+
+func TestWindowsAFDTargetProfileKeepsVNetReceiveSeedForTriage(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("test/nyx_afd_accept_vnet_recv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if profiled.RuntimePolicy.ShouldSkipTriageProgram("candidate", p) {
+		t.Fatal("focused profile should not skip vnet receive seeds with deep corpus owners")
 	}
 }
 

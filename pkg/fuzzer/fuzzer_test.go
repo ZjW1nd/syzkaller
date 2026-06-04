@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"math/rand"
+	"os"
 	"regexp"
 	"runtime"
 	"strings"
@@ -553,6 +554,351 @@ func TestWindowsAFDTriageKeepsDeepOwnerOverScaffold(t *testing.T) {
 	}
 	if _, ok := triage[deepCall]; !ok {
 		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(deepCall))
+	}
+}
+
+func TestWindowsAFDTriageKeepsVNetReceiveSeedOwner(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	if !profiled.CallEligibleForTriage(p.Calls[recvCall].Meta) {
+		t.Fatal("recv$inet_accept should be eligible for AFD triage")
+	}
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	var triage map[int]*triageCall
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{0x100, 0x200},
+	}, recvCall, &triage)
+	if len(triage) != 1 {
+		t.Fatalf("triage owners=%v, want vnet receive owner", triage)
+	}
+	if _, ok := triage[recvCall]; !ok {
+		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(recvCall))
+	}
+}
+
+func TestWindowsAFDTriageKeepsVNetReceiveOwnerWhenScaffoldSignalOverlaps(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	scaffoldCall := windowsFuzzerTestCallIndex(t, p, "WSAStartup")
+	if profiled.CallEligibleForTriage(p.Calls[scaffoldCall].Meta) {
+		t.Fatal("WSAStartup should be an ineligible AFD triage scaffold")
+	}
+	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	if !profiled.CallEligibleForTriage(p.Calls[recvCall].Meta) {
+		t.Fatal("recv$inet_accept should be eligible for AFD triage")
+	}
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	var triage map[int]*triageCall
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{0x100, 0x200},
+	}, scaffoldCall, &triage)
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{0x100, 0x200},
+	}, recvCall, &triage)
+	if len(triage) != 1 {
+		t.Fatalf("triage owners=%v, want vnet receive owner despite scaffold overlap", triage)
+	}
+	if _, ok := triage[recvCall]; !ok {
+		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(recvCall))
+	}
+}
+
+func TestWindowsAFDTriageDoesNotLetFilteredOwnerConsumeVNetReceiveSignal(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$accept_tcp(0x2, 0x1, 0x6)\n"+
+			"send$inet_accept(r0, &(0x7f0000000000)='ping', 0x4, 0x0)\n"+
+			"recv$inet_accept(r0, &(0x7f0000000100)='\\x00'/64, 0x40, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	filteredCall := windowsFuzzerTestCallIndex(t, p, "send$inet_accept")
+	if !profiled.CallEligibleForTriage(p.Calls[filteredCall].Meta) {
+		t.Fatal("send$inet_accept should be eligible enough to test NewInputFilter ordering")
+	}
+	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	if !profiled.CallEligibleForTriage(p.Calls[recvCall].Meta) {
+		t.Fatal("recv$inet_accept should be eligible for AFD triage")
+	}
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			NewInputFilter: func(call string) bool {
+				return call == "recv$inet_accept"
+			},
+		},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	var triage map[int]*triageCall
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{0x100, 0x200},
+	}, filteredCall, &triage)
+	if len(triage) != 0 {
+		t.Fatalf("filtered owner should not produce triage, got %v", triage)
+	}
+	if got := fuzzer.Cover.CopyMaxSignal().Len(); got != 0 {
+		t.Fatalf("filtered owner consumed max signal=%d, want 0", got)
+	}
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{0x100, 0x200},
+	}, recvCall, &triage)
+	if len(triage) != 1 {
+		t.Fatalf("triage owners=%v, want vnet receive owner despite filtered overlap", triage)
+	}
+	if _, ok := triage[recvCall]; !ok {
+		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(recvCall))
+	}
+}
+
+func TestWindowsAFDProcessResultQueuesCandidateTriageWhenScaffoldSignalOverlaps(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	scaffoldCall := windowsFuzzerTestCallIndex(t, p, "WSAStartup")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		NewInputFilter: func(string) bool {
+			return true
+		},
+	}, rand.New(rand.NewSource(0)), profiled)
+	fuzzer.statCandidates.Add(1)
+	calls := make([]*flatrpc.CallInfo, len(p.Calls))
+	calls[scaffoldCall] = &flatrpc.CallInfo{Signal: []uint64{0x100, 0x200}}
+	calls[recvCall] = &flatrpc.CallInfo{Signal: []uint64{0x100, 0x200}}
+	ok := fuzzer.processResult(&queue.Request{
+		Prog:     p,
+		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
+		Origin:   "candidate",
+	}, &queue.Result{
+		Status: queue.Success,
+		Info:   &flatrpc.ProgInfo{Calls: calls},
+	}, progCandidate, 0)
+	if !ok {
+		t.Fatal("processResult should complete candidate processing")
+	}
+	req := fuzzer.triageCandidateQueue.Next()
+	if req == nil {
+		t.Fatal("candidate result did not queue a triage request")
+	}
+	cancel()
+	if len(req.ReturnAllSignal) != 1 || req.ReturnAllSignal[0] != recvCall {
+		t.Fatalf("triage ReturnAllSignal=%v, want only %s", req.ReturnAllSignal, p.CallName(recvCall))
+	}
+}
+
+func TestWindowsAFDProcessResultQueuesCandidateTriageWhenFilteredOwnerSignalOverlaps(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	filteredCall := windowsFuzzerTestCallIndex(t, p, "accept$inet_tcp")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		NewInputFilter: func(call string) bool {
+			return call == "recv$inet_accept"
+		},
+	}, rand.New(rand.NewSource(0)), profiled)
+	fuzzer.statCandidates.Add(1)
+	calls := make([]*flatrpc.CallInfo, len(p.Calls))
+	calls[filteredCall] = &flatrpc.CallInfo{Signal: []uint64{0x100, 0x200}}
+	calls[recvCall] = &flatrpc.CallInfo{Signal: []uint64{0x100, 0x200}}
+	ok := fuzzer.processResult(&queue.Request{
+		Prog:     p,
+		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
+		Origin:   "candidate",
+	}, &queue.Result{
+		Status: queue.Success,
+		Info:   &flatrpc.ProgInfo{Calls: calls},
+	}, progCandidate, 0)
+	if !ok {
+		t.Fatal("processResult should complete candidate processing")
+	}
+	req := fuzzer.triageCandidateQueue.Next()
+	if req == nil {
+		t.Fatal("candidate result did not queue a triage request")
+	}
+	cancel()
+	if len(req.ReturnAllSignal) != 1 || req.ReturnAllSignal[0] != recvCall {
+		t.Fatalf("triage ReturnAllSignal=%v, want only %s", req.ReturnAllSignal, p.CallName(recvCall))
+	}
+}
+
+func TestWindowsAFDProcessResultForcesCandidateTriageForStableDeepOwner(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_wsarecv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	recvCall := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:         corpus.NewCorpus(ctx),
+		NewInputFilter: func(string) bool { return true },
+	}, rand.New(rand.NewSource(0)), profiled)
+	fuzzer.Cover.addRawMaxSignal([]uint64{0x100, 0x200}, 3)
+	fuzzer.statCandidates.Add(1)
+	calls := make([]*flatrpc.CallInfo, len(p.Calls))
+	calls[recvCall] = &flatrpc.CallInfo{Signal: []uint64{0x100, 0x200}}
+	ok := fuzzer.processResult(&queue.Request{
+		Prog:     p,
+		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
+		Origin:   "candidate",
+	}, &queue.Result{
+		Status: queue.Success,
+		Info:   &flatrpc.ProgInfo{Calls: calls},
+	}, progCandidate, 0)
+	if !ok {
+		t.Fatal("processResult should complete candidate processing")
+	}
+	req := fuzzer.triageCandidateQueue.Next()
+	if req == nil {
+		t.Fatal("stable deep candidate result did not queue a triage request")
+	}
+	cancel()
+	if len(req.ReturnAllSignal) != 1 || req.ReturnAllSignal[0] != recvCall {
+		t.Fatalf("triage ReturnAllSignal=%v, want only %s", req.ReturnAllSignal, p.CallName(recvCall))
+	}
+}
+
+func TestWindowsAFDProcessResultKeepsNonEmptyOwnerOverZeroSignalDeepOwner(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_wsarecv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	nonblockCall := windowsFuzzerTestCallIndex(t, p, "ioctlsocket$fionbio_accept")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:         corpus.NewCorpus(ctx),
+		NewInputFilter: func(string) bool { return true },
+	}, rand.New(rand.NewSource(0)), profiled)
+	fuzzer.statCandidates.Add(1)
+	calls := make([]*flatrpc.CallInfo, len(p.Calls))
+	calls[nonblockCall] = &flatrpc.CallInfo{Signal: []uint64{0x300, 0x400}}
+	calls[recvCall] = &flatrpc.CallInfo{}
+	ok := fuzzer.processResult(&queue.Request{
+		Prog:     p,
+		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
+		Origin:   "candidate",
+	}, &queue.Result{
+		Status: queue.Success,
+		Info:   &flatrpc.ProgInfo{Calls: calls},
+	}, progCandidate, 0)
+	if !ok {
+		t.Fatal("processResult should complete candidate processing")
+	}
+	req := fuzzer.triageCandidateQueue.Next()
+	if req == nil {
+		t.Fatal("candidate result did not queue a triage request")
+	}
+	cancel()
+	if len(req.ReturnAllSignal) != 1 || req.ReturnAllSignal[0] != nonblockCall {
+		t.Fatalf("triage ReturnAllSignal=%v, want only %s", req.ReturnAllSignal, p.CallName(nonblockCall))
 	}
 }
 

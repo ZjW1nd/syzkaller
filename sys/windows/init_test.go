@@ -1,6 +1,7 @@
 package windows_test
 
 import (
+	"encoding/binary"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -822,6 +823,1070 @@ func TestWindowsAFDAsyncSeedOnlyCallsAreNotGeneratedStandalone(t *testing.T) {
 		})
 		if ct.Generatable(meta.ID) {
 			t.Fatalf("%s should not be chosen as a standalone generated call", name)
+		}
+	}
+}
+
+func TestWindowsVNetPseudoSyscallsAreSeedOnly(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	helper := target.SyscallMap["socket$listener_tcp"]
+	if helper == nil {
+		t.Fatal("socket$listener_tcp missing from windows/amd64 target")
+	}
+	for _, name := range []string{
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows",
+		"syz_extract_tcp_res$windows_synack",
+	} {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("%s missing from windows/amd64 target", name)
+		}
+		if !meta.Attrs.NoGenerate || !meta.Attrs.NoMinimize {
+			t.Fatalf("%s should stay seed-only until the Windows injection model is generation-ready", name)
+		}
+		ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{
+			meta:   true,
+			helper: true,
+		})
+		if ct.Generatable(meta.ID) {
+			t.Fatalf("%s should not be chosen as a standalone generated call", name)
+		}
+	}
+}
+
+func TestWindowsVNetSeedsCoverTCPAndUDPPayloads(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, file := range []string{
+		"test/nyx_vnet_ipv4_tcp_syn.txt",
+		"test/nyx_vnet_ipv4_udp_payload.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", file, err)
+		}
+		if _, err := p.SerializeForExec(); err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", file, err)
+		}
+		if len(p.Calls) == 0 || p.Calls[0].Meta.Name != "syz_emit_ethernet$windows" {
+			t.Fatalf("%s should start with syz_emit_ethernet$windows", file)
+		}
+	}
+}
+
+func TestWindowsVNetTCPSeedsUseStructuredPackets(t *testing.T) {
+	for _, file := range []string{
+		"test/nyx_vnet_ipv4_tcp_syn.txt",
+		"test/nyx_afd_acceptex_vnet_iocp.txt",
+		"test/nyx_afd_acceptex_vnet_sockaddrs.txt",
+		"test/nyx_afd_accept_vnet_syn.txt",
+		"test/nyx_afd_listener_vnet_synack_tapmac_any.txt",
+		"test/nyx_afd_listener_vnet_synack_tapmac_any_retry.txt",
+		"test/nyx_afd_listener_vnet_syn_tapmac_any_stage1.txt",
+		"test/nyx_afd_listener_vnet_arp_syn_tapmac_any_bind_any_stage1.txt",
+		"test/nyx_afd_accept_vnet_syn_tapmac.txt",
+		"test/nyx_afd_accept_vnet_syn_tapmac_any.txt",
+		"test/nyx_afd_accept_vnet_recv.txt",
+		"test/nyx_afd_accept_vnet_recv_nonblock.txt",
+		"test/nyx_afd_accept_vnet_wsarecv_pending_iocp.txt",
+		"test/nyx_afd_accept_vnet_wsarecv.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		text := string(data)
+		if strings.Contains(text, "vnet-ipv4-tcp-") || strings.Contains(text, "@raw=") {
+			t.Fatalf("%s should use structured IPv4/TCP packets, not raw placeholders", file)
+		}
+		if !strings.Contains(text, "@ipv4={0x800, @tcp=") || !strings.Contains(text, "0x6") {
+			t.Fatalf("%s should describe an IPv4 TCP packet", file)
+		}
+	}
+	data, err := os.ReadFile("test/nyx_afd_accept_vnet_wsarecv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "{{0x9c40, 0x4e20, r2, r1, 0x0, 0x0, 0x5, 0x18") || !strings.Contains(text, "'afd-vnet'") {
+		t.Fatal("WSARecv vnet seed should inject structured TCP payload using extracted seq/ack resources")
+	}
+	for _, file := range []string{
+		"test/nyx_afd_accept_vnet_syn.txt",
+		"test/nyx_afd_accept_vnet_syn_tapmac.txt",
+		"test/nyx_afd_accept_vnet_recv.txt",
+		"test/nyx_afd_accept_vnet_recv_nonblock.txt",
+		"test/nyx_afd_accept_vnet_wsarecv_pending_iocp.txt",
+		"test/nyx_afd_accept_vnet_wsarecv.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		text := string(data)
+		if !strings.Contains(text, "{{0x4e20, 0x4e20, r2, r1, 0x0, 0x0, 0x5, 0x10") &&
+			!strings.Contains(text, "{{0x9c40, 0x4e20, r2, r1, 0x0, 0x0, 0x5, 0x10") {
+			t.Fatalf("%s should inject a structured TCP ACK using extracted seq/ack before accept", file)
+		}
+	}
+}
+
+func TestWindowsVNetTAPSynSeedExecPacketBytes(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	packet := windowsVNetExecPacketBytes(t, target, "test/nyx_afd_listener_vnet_syn_tapmac_any_stage1.txt")
+	if len(packet) != 54 {
+		t.Fatalf("unexpected packet length: got %d want 54", len(packet))
+	}
+	wantPrefix := []byte{
+		0x00, 0xff, 0xa3, 0x87, 0x5e, 0x0b,
+		0x02, 0xbb, 0xcc, 0xdd, 0xee, 0x02,
+		0x08, 0x00, 0x45, 0x00,
+	}
+	if string(packet[:len(wantPrefix)]) != string(wantPrefix) {
+		t.Fatalf("unexpected L2/IP prefix: got % x want % x", packet[:len(wantPrefix)], wantPrefix)
+	}
+	if packet[23] != 6 {
+		t.Fatalf("unexpected IPv4 protocol: got 0x%x want TCP", packet[23])
+	}
+	if src := packet[26:30]; string(src) != string([]byte{172, 20, 0, 187}) {
+		t.Fatalf("unexpected IPv4 src: got %v", src)
+	}
+	if dst := packet[30:34]; string(dst) != string([]byte{172, 20, 0, 170}) {
+		t.Fatalf("unexpected IPv4 dst: got %v", dst)
+	}
+	if port := binary.BigEndian.Uint16(packet[34:36]); port != 0x9c40 {
+		t.Fatalf("unexpected TCP src port: got 0x%x", port)
+	}
+	if port := binary.BigEndian.Uint16(packet[36:38]); port != 0x4e20 {
+		t.Fatalf("unexpected TCP dst port: got 0x%x", port)
+	}
+	if packet[46] != 0x50 || packet[47] != 0x02 {
+		t.Fatalf("unexpected TCP data offset/flags: got %02x %02x want 50 02", packet[46], packet[47])
+	}
+}
+
+func TestWindowsVNetARPSeedExecPacketBytes(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	packet := windowsVNetExecPacketBytes(t, target, "test/nyx_afd_listener_vnet_arp_syn_tapmac_any_bind_any_stage1.txt")
+	if len(packet) != 42 {
+		t.Fatalf("unexpected packet length: got %d want 42", len(packet))
+	}
+	wantPrefix := []byte{
+		0x00, 0xff, 0xa3, 0x87, 0x5e, 0x0b,
+		0x02, 0xbb, 0xcc, 0xdd, 0xee, 0x02,
+		0x08, 0x06,
+	}
+	if string(packet[:len(wantPrefix)]) != string(wantPrefix) {
+		t.Fatalf("unexpected ARP L2 prefix: got % x want % x", packet[:len(wantPrefix)], wantPrefix)
+	}
+	if binary.BigEndian.Uint16(packet[14:16]) != 0x1 || binary.BigEndian.Uint16(packet[16:18]) != 0x0800 {
+		t.Fatalf("unexpected ARP hardware/protocol: got % x", packet[14:18])
+	}
+	if packet[18] != 6 || packet[19] != 4 {
+		t.Fatalf("unexpected ARP address sizes: got hlen=%d plen=%d", packet[18], packet[19])
+	}
+	if op := binary.BigEndian.Uint16(packet[20:22]); op != 0x2 {
+		t.Fatalf("unexpected ARP op: got 0x%x want reply", op)
+	}
+	if sha := packet[22:28]; string(sha) != string([]byte{0x02, 0xbb, 0xcc, 0xdd, 0xee, 0x02}) {
+		t.Fatalf("unexpected ARP sender MAC: got % x", sha)
+	}
+	if spa := packet[28:32]; string(spa) != string([]byte{172, 20, 0, 187}) {
+		t.Fatalf("unexpected ARP sender IP: got %v", spa)
+	}
+	if tha := packet[32:38]; string(tha) != string([]byte{0x00, 0xff, 0xa3, 0x87, 0x5e, 0x0b}) {
+		t.Fatalf("unexpected ARP target MAC: got % x", tha)
+	}
+	if tpa := packet[38:42]; string(tpa) != string([]byte{172, 20, 0, 170}) {
+		t.Fatalf("unexpected ARP target IP: got %v", tpa)
+	}
+}
+
+func windowsVNetExecPacketBytes(t *testing.T, target *prog.Target, file string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", file, err)
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize(%s): %v", file, err)
+	}
+	exec, err := p.SerializeForExec()
+	if err != nil {
+		t.Fatalf("SerializeForExec(%s): %v", file, err)
+	}
+	decoded, err := target.DeserializeExec(exec, nil)
+	if err != nil {
+		t.Fatalf("DeserializeExec(%s): %v", file, err)
+	}
+	var emit *prog.ExecCall
+	for i := range decoded.Calls {
+		if decoded.Calls[i].Meta != nil && decoded.Calls[i].Meta.Name == "syz_emit_ethernet$windows" {
+			emit = &decoded.Calls[i]
+			break
+		}
+	}
+	if emit == nil {
+		t.Fatalf("%s is missing syz_emit_ethernet$windows", file)
+	}
+	if len(emit.Args) != 2 {
+		t.Fatalf("unexpected syz_emit_ethernet arg count: %d", len(emit.Args))
+	}
+	lenArg, ok := emit.Args[0].(prog.ExecArgConst)
+	if !ok || lenArg.Value == 0 {
+		t.Fatalf("unexpected packet length arg: %#v", emit.Args[0])
+	}
+	packetArg, ok := emit.Args[1].(prog.ExecArgConst)
+	if !ok {
+		t.Fatalf("unexpected packet pointer arg: %#v", emit.Args[1])
+	}
+	packet := make([]byte, lenArg.Value)
+	base := packetArg.Value
+	for _, copyin := range emit.Copyin {
+		if copyin.Addr < base || copyin.Addr >= base+uint64(len(packet)) {
+			continue
+		}
+		off := copyin.Addr - base
+		applyWindowsVNetExecCopyin(t, packet, off, copyin.Arg)
+	}
+	return packet
+}
+
+func applyWindowsVNetExecCopyin(t *testing.T, packet []byte, off uint64, arg prog.ExecArg) {
+	t.Helper()
+	switch arg := arg.(type) {
+	case prog.ExecArgConst:
+		if off+arg.Size > uint64(len(packet)) {
+			t.Fatalf("copyin const outside packet: off=%d size=%d packet=%d", off, arg.Size, len(packet))
+		}
+		applyWindowsVNetExecConst(t, packet[off:off+arg.Size], arg)
+	case prog.ExecArgData:
+		if off+uint64(len(arg.Data)) > uint64(len(packet)) {
+			t.Fatalf("copyin data outside packet: off=%d size=%d packet=%d", off, len(arg.Data), len(packet))
+		}
+		copy(packet[off:], arg.Data)
+	case prog.ExecArgCsum:
+		// Runtime checksum calculation is validated by executor-side logging; this
+		// seed-shape test only needs the fixed header bytes that select the packet.
+	case prog.ExecArgResult:
+		// This seed does not use result-backed packet fields.
+	default:
+		t.Fatalf("unsupported exec copyin arg: %#v", arg)
+	}
+}
+
+func applyWindowsVNetExecConst(t *testing.T, dst []byte, arg prog.ExecArgConst) {
+	t.Helper()
+	if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
+		t.Fatalf("unsupported const format: %v", arg.Format)
+	}
+	if arg.BitfieldLength != 0 {
+		if len(dst) != 1 {
+			t.Fatalf("unsupported bitfield size: %d", len(dst))
+		}
+		mask := byte((uint64(1)<<arg.BitfieldLength - 1) << arg.BitfieldOffset)
+		dst[0] = (dst[0] &^ mask) | (byte(arg.Value<<arg.BitfieldOffset) & mask)
+		return
+	}
+	switch len(dst) {
+	case 1:
+		dst[0] = byte(arg.Value)
+	case 2:
+		if arg.Format == prog.FormatBigEndian {
+			binary.BigEndian.PutUint16(dst, uint16(arg.Value))
+		} else {
+			binary.LittleEndian.PutUint16(dst, uint16(arg.Value))
+		}
+	case 4:
+		if arg.Format == prog.FormatBigEndian {
+			binary.BigEndian.PutUint32(dst, uint32(arg.Value))
+		} else {
+			binary.LittleEndian.PutUint32(dst, uint32(arg.Value))
+		}
+	case 8:
+		if arg.Format == prog.FormatBigEndian {
+			binary.BigEndian.PutUint64(dst, arg.Value)
+		} else {
+			binary.LittleEndian.PutUint64(dst, arg.Value)
+		}
+	default:
+		t.Fatalf("unsupported const size: %d", len(dst))
+	}
+}
+
+func TestWindowsAFDVNetSeedsBindToVNetLocalIPv4(t *testing.T) {
+	for _, file := range []string{
+		"test/nyx_afd_acceptex_vnet_iocp.txt",
+		"test/nyx_afd_acceptex_vnet_sockaddrs.txt",
+		"test/nyx_afd_accept_vnet_syn.txt",
+		"test/nyx_afd_accept_vnet_syn_tapmac.txt",
+		"test/nyx_afd_accept_vnet_syn_tapmac_any.txt",
+		"test/nyx_afd_accept_vnet_recv.txt",
+		"test/nyx_afd_accept_vnet_recv_nonblock.txt",
+		"test/nyx_afd_accept_vnet_wsarecv_pending_iocp.txt",
+		"test/nyx_afd_accept_vnet_wsarecv.txt",
+		"test/nyx_afd_listener_vnet_synack_tapmac_any.txt",
+		"test/nyx_afd_listener_vnet_synack_tapmac_any_retry.txt",
+		"test/nyx_afd_listener_vnet_syn_tapmac_any_stage1.txt",
+		"test/nyx_afd_udp_vnet_recvfrom.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		text := string(data)
+		if !strings.Contains(text, "0xac1400aa") {
+			t.Fatalf("%s should bind the local socket to the Windows vnet IPv4 172.20.0.170", file)
+		}
+		if strings.Contains(text, "0x7f000001") {
+			t.Fatalf("%s should not bind vnet-driven receive/accept seeds to loopback", file)
+		}
+		if !strings.Contains(text, "@remote, @local") {
+			t.Fatalf("%s should inject packets from the vnet peer to the vnet local address", file)
+		}
+	}
+}
+
+func TestWindowsAFDListenerSynAckSeedIsBounded(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, file := range []string{
+		"test/nyx_afd_listener_vnet_synack_tapmac_any.txt",
+		"test/nyx_afd_listener_vnet_synack_tapmac_any_retry.txt",
+		"test/nyx_afd_listener_vnet_syn_tapmac_any_stage1.txt",
+		"test/nyx_afd_listener_vnet_syn_tapmac_any_bind_any_stage1.txt",
+		"test/nyx_afd_listener_vnet_arp_syn_tapmac_any_bind_any_stage1.txt",
+		"test/nyx_vnet_extract_tcp_cache_stage2.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", file, err)
+		}
+		if _, err := p.SerializeForExec(); err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", file, err)
+		}
+		listen := -1
+		inject := -1
+		extract := -1
+		extractCount := 0
+		for i, call := range p.Calls {
+			if call.Meta == nil {
+				continue
+			}
+			switch call.Meta.Name {
+			case "listen$inet_tcp":
+				listen = i
+			case "syz_emit_ethernet$windows":
+				inject = i
+			case "syz_extract_tcp_res$windows_synack":
+				if extract == -1 {
+					extract = i
+				}
+				extractCount++
+			case "accept$inet_tcp", "recv$inet_accept", "WSARecv$accept":
+				t.Fatalf("%s should not contain blocking %s", file, call.Meta.Name)
+			}
+		}
+		if strings.Contains(file, "stage1") {
+			if listen == -1 || inject == -1 || !(listen < inject) {
+				t.Fatalf("%s should listen, then emit SYN", file)
+			}
+			if extractCount != 0 {
+				t.Fatalf("%s should only listen and emit SYN; extract belongs to stage2", file)
+			}
+			continue
+		}
+		if strings.Contains(file, "stage2") {
+			if listen != -1 || inject != -1 || extractCount != 1 {
+				t.Fatalf("%s should only perform a single cache/extract call", file)
+			}
+			continue
+		}
+		if listen == -1 {
+			t.Fatalf("%s is missing listen$inet_tcp", file)
+		}
+		if inject == -1 {
+			t.Fatalf("%s is missing syz_emit_ethernet$windows", file)
+		}
+		if extract == -1 {
+			t.Fatalf("%s is missing syz_extract_tcp_res$windows_synack", file)
+		}
+		if !(listen < inject && inject < extract) {
+			t.Fatalf("%s should listen, inject SYN, then bounded extract SYN/ACK", file)
+		}
+		if strings.Contains(file, "retry") && extractCount < 3 {
+			t.Fatalf("%s should retry bounded extract calls without blocking socket calls", file)
+		}
+	}
+}
+
+func TestWindowsAFDUDPSeedInjectsBeforeReceive(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, file := range []string{
+		"test/nyx_afd_udp_vnet_recvfrom.txt",
+		"test/nyx_afd_udp_vnet_recvfrom_tapmac_any.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", file, err)
+		}
+		if _, err := p.SerializeForExec(); err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", file, err)
+		}
+		inject := -1
+		nonblock := -1
+		receive := -1
+		for i, call := range p.Calls {
+			if call.Meta == nil {
+				continue
+			}
+			switch call.Meta.Name {
+			case "syz_emit_ethernet$windows":
+				inject = i
+			case "ioctlsocket$fionbio_udp":
+				nonblock = i
+			case "recvfrom$udp_bound":
+				receive = i
+			}
+		}
+		if inject == -1 {
+			t.Fatalf("%s is missing syz_emit_ethernet$windows", file)
+		}
+		if nonblock == -1 {
+			t.Fatalf("%s should set the UDP socket nonblocking before recvfrom$udp_bound", file)
+		}
+		if receive == -1 {
+			t.Fatalf("%s is missing recvfrom$udp_bound", file)
+		}
+		if receive < nonblock {
+			t.Fatalf("%s should set ioctlsocket$fionbio_udp before recvfrom$udp_bound", file)
+		}
+		if receive < inject {
+			t.Fatalf("%s should inject payload before recvfrom$udp_bound", file)
+		}
+	}
+}
+
+func TestWindowsAFDAcceptSeedInjectsBeforeAccept(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, file := range []string{
+		"test/nyx_afd_accept_vnet_syn.txt",
+		"test/nyx_afd_accept_vnet_recv.txt",
+		"test/nyx_afd_accept_vnet_recv_nonblock.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		text := string(data)
+		for _, want := range []string{
+			"@tap_openvpn, @peer_openvpn",
+			"@arp={0x806",
+			"{{0x9c40, 0x4e20",
+			"'afd-vnet'",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s should use the proven OpenVPN TAP payload template, missing %q", file, want)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", file, err)
+		}
+		if _, err := p.SerializeForExec(); err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", file, err)
+		}
+		arp := -1
+		syn := -1
+		ack := -1
+		payload := -1
+		extract := -1
+		accept := -1
+		receive := -1
+		for i, call := range p.Calls {
+			if call.Meta == nil {
+				continue
+			}
+			switch call.Meta.Name {
+			case "syz_emit_ethernet$windows":
+				if arp == -1 {
+					arp = i
+				} else if syn == -1 {
+					syn = i
+				} else if ack == -1 {
+					ack = i
+				} else if payload == -1 {
+					payload = i
+				}
+			case "syz_extract_tcp_res$windows_synack":
+				extract = i
+			case "accept$inet_tcp":
+				accept = i
+			case "recv$inet_accept":
+				receive = i
+			}
+		}
+		if arp == -1 {
+			t.Fatal("TCP accept vnet seed is missing ARP syz_emit_ethernet$windows")
+		}
+		if syn == -1 {
+			t.Fatal("TCP accept vnet seed is missing SYN syz_emit_ethernet$windows")
+		}
+		if ack == -1 {
+			t.Fatal("TCP accept vnet seed is missing ACK syz_emit_ethernet$windows")
+		}
+		if payload == -1 {
+			t.Fatal("TCP accept vnet seed is missing payload syz_emit_ethernet$windows")
+		}
+		if extract == -1 {
+			t.Fatal("TCP accept vnet seed is missing syz_extract_tcp_res$windows_synack")
+		}
+		if accept == -1 {
+			t.Fatal("TCP accept vnet seed is missing accept$inet_tcp")
+		}
+		if receive == -1 {
+			t.Fatal("TCP accept vnet seed is missing recv$inet_accept")
+		}
+		if !(arp < syn && syn < extract && extract < ack && ack < accept && accept < payload && payload < receive) {
+			t.Fatalf("%s should inject ARP, inject SYN, extract SYN/ACK, inject ACK, accept, inject payload, then recv$inet_accept", file)
+		}
+	}
+}
+
+func TestWindowsAFDAcceptNonblockRecvSeedSetsNonblockingBeforeReceive(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	data, err := os.ReadFile("test/nyx_afd_accept_vnet_recv_nonblock.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"@tap_openvpn, @peer_openvpn",
+		"@arp={0x806",
+		"{{0x9c40, 0x4e20",
+		"'afd-vnet'",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("TCP nonblocking recv vnet seed should use the proven OpenVPN TAP template, missing %q", want)
+		}
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if _, err := p.SerializeForExec(); err != nil {
+		t.Fatalf("SerializeForExec: %v", err)
+	}
+	accept := -1
+	nonblock := -1
+	payload := -1
+	receive := -1
+	for i, call := range p.Calls {
+		if call.Meta == nil {
+			continue
+		}
+		switch call.Meta.Name {
+		case "accept$inet_tcp":
+			accept = i
+		case "ioctlsocket$fionbio_accept":
+			nonblock = i
+		case "syz_emit_ethernet$windows":
+			if accept != -1 {
+				payload = i
+			}
+		case "recv$inet_accept":
+			receive = i
+		}
+	}
+	if accept == -1 {
+		t.Fatal("TCP nonblocking recv vnet seed is missing accept$inet_tcp")
+	}
+	if nonblock == -1 {
+		t.Fatal("TCP nonblocking recv vnet seed should set ioctlsocket$fionbio_accept before recv$inet_accept")
+	}
+	if payload == -1 {
+		t.Fatal("TCP nonblocking recv vnet seed is missing payload syz_emit_ethernet$windows after accept")
+	}
+	if receive == -1 {
+		t.Fatal("TCP nonblocking recv vnet seed is missing recv$inet_accept")
+	}
+	if !(accept < nonblock && nonblock < payload && payload < receive) {
+		t.Fatal("TCP nonblocking recv vnet seed should accept, set nonblocking, inject payload, then recv$inet_accept")
+	}
+}
+
+func TestWindowsAFDWSARecvSeedInjectsBeforeReceive(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, test := range []struct {
+		file    string
+		receive string
+	}{
+		{file: "test/nyx_afd_accept_vnet_wsarecv.txt", receive: "WSARecv$accept"},
+		{file: "test/nyx_afd_accept_vnet_wsarecv_pending_iocp.txt", receive: "WSARecv$accept_pending"},
+	} {
+		data, err := os.ReadFile(test.file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", test.file, err)
+		}
+		text := string(data)
+		for _, want := range []string{
+			"@tap_openvpn, @peer_openvpn",
+			"@arp={0x806",
+			"{{0x9c40, 0x4e20",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s should use the proven OpenVPN TAP template, missing %q", test.file, want)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", test.file, err)
+		}
+		if _, err := p.SerializeForExec(); err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", test.file, err)
+		}
+		accept := -1
+		ack := -1
+		nonblock := -1
+		payload := -1
+		receive := -1
+		for i, call := range p.Calls {
+			if call.Meta == nil {
+				continue
+			}
+			switch call.Meta.Name {
+			case "syz_emit_ethernet$windows":
+				if accept == -1 {
+					ack = i
+				} else {
+					payload = i
+				}
+			case "accept$inet_tcp":
+				accept = i
+			case "ioctlsocket$fionbio_accept":
+				nonblock = i
+			case test.receive:
+				receive = i
+			}
+		}
+		if accept == -1 {
+			t.Fatalf("%s is missing accept$inet_tcp", test.file)
+		}
+		if ack == -1 {
+			t.Fatalf("%s is missing ACK syz_emit_ethernet$windows before accept", test.file)
+		}
+		if payload == -1 {
+			t.Fatalf("%s is missing payload syz_emit_ethernet$windows after accept", test.file)
+		}
+		if receive == -1 {
+			t.Fatalf("%s is missing %s", test.file, test.receive)
+		}
+		if test.receive == "WSARecv$accept" {
+			if nonblock == -1 {
+				t.Fatalf("%s should set ioctlsocket$fionbio_accept before WSARecv$accept", test.file)
+			}
+			if !(ack < accept && accept < nonblock && nonblock < payload && payload < receive) {
+				t.Fatalf("%s should inject ACK, accept, set nonblocking, inject payload, then WSARecv$accept", test.file)
+			}
+		}
+		if test.receive == "WSARecv$accept_pending" && !(ack < accept && accept < receive && receive < payload) {
+			t.Fatalf("%s should inject ACK, accept, issue WSARecv$accept_pending, then inject payload", test.file)
+		}
+	}
+}
+
+func TestWindowsAFDWSARecvPendingIOCPSeedCompletesAfterPayload(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	data, err := os.ReadFile("test/nyx_afd_accept_vnet_wsarecv_pending_iocp.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "CancelIo") {
+		t.Fatal("WSARecv pending IOCP vnet seed should be completion-driven, not cancel-driven")
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if _, err := p.SerializeForExec(); err != nil {
+		t.Fatalf("SerializeForExec: %v", err)
+	}
+	accept := -1
+	iocp := -1
+	pending := -1
+	payload := -1
+	result := -1
+	gqcs := -1
+	for i, call := range p.Calls {
+		if call.Meta == nil {
+			continue
+		}
+		switch call.Meta.Name {
+		case "accept$inet_tcp":
+			accept = i
+		case "CreateIoCompletionPort$socket":
+			iocp = i
+		case "WSARecv$accept_pending":
+			pending = i
+		case "syz_emit_ethernet$windows":
+			if pending != -1 {
+				payload = i
+			}
+		case "WSAGetOverlappedResult$accept_recv_pending":
+			result = i
+		case "GetQueuedCompletionStatus$socket":
+			gqcs = i
+		case "CancelIoEx$accept_recv_pending", "CancelIo$accept_recv_pending":
+			t.Fatalf("completion seed should not contain %s", call.Meta.Name)
+		}
+	}
+	for name, index := range map[string]int{
+		"accept$inet_tcp":                            accept,
+		"CreateIoCompletionPort$socket":              iocp,
+		"WSARecv$accept_pending":                     pending,
+		"payload syz_emit_ethernet$windows":          payload,
+		"WSAGetOverlappedResult$accept_recv_pending": result,
+		"GetQueuedCompletionStatus$socket":           gqcs,
+	} {
+		if index == -1 {
+			t.Fatalf("WSARecv pending IOCP vnet seed is missing %s", name)
+		}
+	}
+	if !(accept < iocp && iocp < pending && pending < payload && payload < result && result < gqcs) {
+		t.Fatal("WSARecv pending IOCP vnet seed should accept, associate IOCP, issue pending receive, inject payload, check overlapped result, then poll IOCP")
+	}
+}
+
+func TestWindowsAFDAcceptExVNetIOCPSeedCompletesBeforeUpdatedReceive(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, test := range []struct {
+		file          string
+		wantSockaddrs bool
+	}{
+		{file: "test/nyx_afd_acceptex_vnet_iocp.txt"},
+		{file: "test/nyx_afd_acceptex_vnet_sockaddrs.txt", wantSockaddrs: true},
+	} {
+		data, err := os.ReadFile(test.file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", test.file, err)
+		}
+		text := string(data)
+		for _, want := range []string{
+			"@tap_openvpn, @peer_openvpn",
+			"@arp={0x806",
+			"{{0x9c40, 0x4e20",
+			"'afd-vnet'",
+		} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("%s should use the proven OpenVPN TAP template, missing %q", test.file, want)
+			}
+		}
+		if strings.Contains(text, "CancelIo") {
+			t.Fatalf("%s should be completion-driven, not cancel-driven", test.file)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", test.file, err)
+		}
+		if _, err := p.SerializeForExec(); err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", test.file, err)
+		}
+		acceptex := -1
+		iocp := -1
+		arp := -1
+		syn := -1
+		extract := -1
+		ack := -1
+		result := -1
+		gqcs := -1
+		sockaddrs := -1
+		update := -1
+		payload := -1
+		receive := -1
+		for i, call := range p.Calls {
+			if call.Meta == nil {
+				continue
+			}
+			switch call.Meta.Name {
+			case "AcceptEx$inet_tcp_pending":
+				acceptex = i
+			case "CreateIoCompletionPort$accept_pending":
+				iocp = i
+			case "syz_extract_tcp_res$windows_synack":
+				extract = i
+			case "syz_emit_ethernet$windows":
+				if arp == -1 {
+					arp = i
+				} else if syn == -1 {
+					syn = i
+				} else if ack == -1 {
+					ack = i
+				} else if payload == -1 {
+					payload = i
+				}
+			case "WSAGetOverlappedResult$accept_pending":
+				result = i
+			case "GetQueuedCompletionStatus$socket":
+				gqcs = i
+			case "GetAcceptExSockaddrs$inet_tcp":
+				sockaddrs = i
+			case "setsockopt$update_accept_context":
+				update = i
+			case "recv$inet_accept_updated":
+				receive = i
+			case "CancelIoEx$accept_pending", "CancelIo$accept_pending":
+				t.Fatalf("completion seed should not contain %s", call.Meta.Name)
+			}
+		}
+		for name, index := range map[string]int{
+			"AcceptEx$inet_tcp_pending":             acceptex,
+			"CreateIoCompletionPort$accept_pending": iocp,
+			"ARP syz_emit_ethernet$windows":         arp,
+			"SYN syz_emit_ethernet$windows":         syn,
+			"syz_extract_tcp_res$windows_synack":    extract,
+			"ACK syz_emit_ethernet$windows":         ack,
+			"WSAGetOverlappedResult$accept_pending": result,
+			"GetQueuedCompletionStatus$socket":      gqcs,
+			"setsockopt$update_accept_context":      update,
+			"payload syz_emit_ethernet$windows":     payload,
+			"recv$inet_accept_updated":              receive,
+		} {
+			if index == -1 {
+				t.Fatalf("%s is missing %s", test.file, name)
+			}
+		}
+		if test.wantSockaddrs && sockaddrs == -1 {
+			t.Fatalf("%s is missing GetAcceptExSockaddrs$inet_tcp", test.file)
+		}
+		if !test.wantSockaddrs && sockaddrs != -1 {
+			t.Fatalf("%s should leave GetAcceptExSockaddrs$inet_tcp to the dedicated sockaddrs seed", test.file)
+		}
+		if !(acceptex < iocp && iocp < arp && arp < syn && syn < extract && extract < ack && ack < result &&
+			result < gqcs && gqcs < update && update < payload && payload < receive) {
+			t.Fatalf("%s should post AcceptEx, associate IOCP, complete TCP handshake, observe completion, update accept context, inject payload, then recv on updated accept socket", test.file)
+		}
+		if test.wantSockaddrs && !(gqcs < sockaddrs && sockaddrs < update) {
+			t.Fatalf("%s should parse AcceptEx sockaddrs after completion and before update accept context", test.file)
+		}
+	}
+}
+
+func TestWindowsAFDAcceptExVNetCancelSeedCancelsBeforeHandshake(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	data, err := os.ReadFile("test/nyx_afd_acceptex_vnet_cancel.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"@tap_openvpn, @peer_openvpn",
+		"@arp={0x806",
+		"0xac1400aa",
+		"CancelIoEx$accept_pending",
+		"CancelIo$accept_pending",
+		"closesocket$accept_pending",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("AcceptEx cancel vnet seed is missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"0x7f000001",
+		"@ipv4={0x800, @tcp=",
+		"syz_extract_tcp_res$windows_synack",
+		"setsockopt$update_accept_context",
+		"recv$inet_accept_updated",
+		"GetAcceptExSockaddrs$inet_tcp",
+		"'afd-vnet'",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("AcceptEx cancel vnet seed should not complete/update/receive the accept path, found %q", forbidden)
+		}
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if _, err := p.SerializeForExec(); err != nil {
+		t.Fatalf("SerializeForExec: %v", err)
+	}
+	acceptex := -1
+	iocp := -1
+	arp := -1
+	syn := -1
+	cancelEx := -1
+	result := -1
+	gqcs := -1
+	cancel := -1
+	closePending := -1
+	for i, call := range p.Calls {
+		if call.Meta == nil {
+			continue
+		}
+		switch call.Meta.Name {
+		case "AcceptEx$inet_tcp_pending":
+			acceptex = i
+		case "CreateIoCompletionPort$accept_pending":
+			iocp = i
+		case "syz_emit_ethernet$windows":
+			if arp == -1 {
+				arp = i
+			} else if syn == -1 {
+				syn = i
+			}
+		case "CancelIoEx$accept_pending":
+			cancelEx = i
+		case "WSAGetOverlappedResult$accept_pending":
+			result = i
+		case "GetQueuedCompletionStatus$socket":
+			gqcs = i
+		case "CancelIo$accept_pending":
+			cancel = i
+		case "closesocket$accept_pending":
+			closePending = i
+		case "setsockopt$update_accept_context", "recv$inet_accept_updated",
+			"GetAcceptExSockaddrs$inet_tcp", "syz_extract_tcp_res$windows_synack":
+			t.Fatalf("AcceptEx cancel vnet seed should not contain %s", call.Meta.Name)
+		}
+	}
+	for name, index := range map[string]int{
+		"AcceptEx$inet_tcp_pending":             acceptex,
+		"CreateIoCompletionPort$accept_pending": iocp,
+		"ARP syz_emit_ethernet$windows":         arp,
+		"CancelIoEx$accept_pending":             cancelEx,
+		"WSAGetOverlappedResult$accept_pending": result,
+		"GetQueuedCompletionStatus$socket":      gqcs,
+		"CancelIo$accept_pending":               cancel,
+		"closesocket$accept_pending":            closePending,
+	} {
+		if index == -1 {
+			t.Fatalf("AcceptEx cancel vnet seed is missing %s", name)
+		}
+	}
+	if syn != -1 {
+		t.Fatal("AcceptEx cancel vnet seed should not inject TCP SYN before cancel")
+	}
+	if !(acceptex < iocp && iocp < arp && arp < cancelEx && cancelEx < result &&
+		result < gqcs && gqcs < cancel && cancel < closePending) {
+		t.Fatal("AcceptEx cancel vnet seed should post AcceptEx, associate IOCP, initialize TAP with ARP, cancel pending accept, inspect result/IOCP, then cleanup")
+	}
+}
+
+func TestWindowsAFDVNetSeedsUseNativeResultSeqAck(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, file := range []string{
+		"test/nyx_afd_acceptex_vnet_iocp.txt",
+		"test/nyx_afd_acceptex_vnet_sockaddrs.txt",
+		"test/nyx_afd_accept_vnet_recv.txt",
+		"test/nyx_afd_accept_vnet_recv_nonblock.txt",
+		"test/nyx_afd_accept_vnet_wsarecv_pending_iocp.txt",
+		"test/nyx_afd_accept_vnet_wsarecv.txt",
+	} {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", file, err)
+		}
+		exec, err := p.SerializeForExec()
+		if err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", file, err)
+		}
+		decoded, err := target.DeserializeExec(exec, nil)
+		if err != nil {
+			t.Fatalf("DeserializeExec(%s): %v", file, err)
+		}
+		emitIndex := 0
+		var resultFields []prog.ExecArgResult
+		for i := range decoded.Calls {
+			call := &decoded.Calls[i]
+			if call.Meta == nil || call.Meta.Name != "syz_emit_ethernet$windows" {
+				continue
+			}
+			emitIndex++
+			if emitIndex < 3 {
+				continue
+			}
+			if len(call.Args) != 2 {
+				t.Fatalf("%s unexpected syz_emit_ethernet arg count: %d", file, len(call.Args))
+			}
+			packetArg, ok := call.Args[1].(prog.ExecArgConst)
+			if !ok {
+				t.Fatalf("%s unexpected packet pointer arg: %#v", file, call.Args[1])
+			}
+			tcpBase := packetArg.Value + 14 + 20
+			for _, copyin := range call.Copyin {
+				if copyin.Addr != tcpBase+4 && copyin.Addr != tcpBase+8 {
+					continue
+				}
+				result, ok := copyin.Arg.(prog.ExecArgResult)
+				if !ok {
+					t.Fatalf("%s TCP seq/ack copyin at 0x%x should be result-backed, got %#v", file, copyin.Addr, copyin.Arg)
+				}
+				resultFields = append(resultFields, result)
+			}
+		}
+		if len(resultFields) != 4 {
+			t.Fatalf("%s expected result-backed seq/ack in ACK and payload packets, got %d fields", file, len(resultFields))
+		}
+		for _, result := range resultFields {
+			if result.Format != prog.FormatNative {
+				t.Fatalf("%s TCP seq/ack resource copyin should use native format and rely on executor-side htonl, got %v", file, result.Format)
+			}
 		}
 	}
 }

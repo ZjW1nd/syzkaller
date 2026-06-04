@@ -1,0 +1,140 @@
+# Copyright 2026 syzkaller project authors. All rights reserved.
+# Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+
+# Windows/Nyx virtual network injection. Keep the pseudo syscalls seed-only
+# until the Windows injection model is stable enough for standalone generation.
+
+syz_emit_ethernet$windows(len len[packet], packet ptr[in, win_vnet_eth_packet]) (no_generate, no_minimize)
+
+resource win_vnet_tcp_seq_num[int32]: 0x41424344
+
+win_vnet_tcp_resources {
+	seq	win_vnet_tcp_seq_num
+	ack	win_vnet_tcp_seq_num
+}
+
+syz_extract_tcp_res$windows(res ptr[out, win_vnet_tcp_resources], seq_inc int32, ack_inc int32) (no_generate, no_minimize)
+syz_extract_tcp_res$windows_synack(res ptr[out, win_vnet_tcp_resources], seq_inc const[1], ack_inc const[0]) (no_generate, no_minimize)
+
+win_vnet_openvpn_tap_mac_addr {
+	a0	const[0x00, int8]
+	a1	const[0xff, int8]
+	a2	const[0xa3, int8]
+	a3	const[0x87, int8]
+	a4	const[0x5e, int8]
+	a5	const[0x0b, int8]
+} [packed]
+
+win_vnet_openvpn_peer_mac_addr {
+	a0	const[0x02, int8]
+	a1	const[0xbb, int8]
+	a2	const[0xcc, int8]
+	a3	const[0xdd, int8]
+	a4	const[0xee, int8]
+	a5	const[0x02, int8]
+} [packed]
+
+win_vnet_mac_addr [
+	empty		array[const[0x0, int8], 6]
+	local		array[const[0xaa, int8], 6]
+	remote		array[const[0xbb, int8], 6]
+	tap_openvpn	win_vnet_openvpn_tap_mac_addr
+	peer_openvpn	win_vnet_openvpn_peer_mac_addr
+	broadcast	array[const[0xff, int8], 6]
+	random		array[int8, 6]
+]
+
+win_vnet_eth_packet {
+	dst_mac	win_vnet_mac_addr
+	src_mac	win_vnet_mac_addr
+	payload	win_vnet_eth_payload
+} [packed]
+
+win_vnet_eth_payload [
+	raw	array[int8]
+	arp	win_vnet_eth2_packet_t[const[0x0806, int16be], win_vnet_arp_packet]
+	ipv4	win_vnet_eth2_packet_t[const[0x0800, int16be], win_vnet_ipv4_packet]
+] [varlen]
+
+type win_vnet_eth2_packet_t[TYPE, PAYLOAD] {
+	etype	TYPE
+	payload	PAYLOAD
+} [packed]
+
+win_vnet_arp_ops = 0x1, 0x2
+
+win_vnet_arp_packet [
+	ether_ipv4	win_vnet_arp_packet_t[const[0x1, int16be], const[0x0800, int16be], win_vnet_ipv4_addr]
+] [varlen]
+
+type win_vnet_arp_packet_t[HTYPE, PTYPE, ADDR] {
+	ar_hrd	HTYPE
+	ar_pro	PTYPE
+	ar_hln	const[6, int8]
+	ar_pln	const[4, int8]
+	ar_op	flags[win_vnet_arp_ops, int16be]
+	ar_sha	win_vnet_mac_addr
+	ar_spa	ADDR
+	ar_tha	win_vnet_mac_addr
+	ar_tpa	ADDR
+} [packed]
+
+win_vnet_ipv4_addr [
+	local	const[0xac1400aa, int32be]
+	remote	const[0xac1400bb, int32be]
+	random	int32be
+]
+
+type ipv4_header[PROTO] {
+	ihl		bytesize4[parent, int8:4]
+	version		const[4, int8:4]
+	ecn		int8:2
+	dscp		int8:6
+	total_len	len[win_vnet_ipv4_packet_t, int16be]
+	id		int16be[100:104]
+	frag_off	int16be[0:0]
+	ttl		int8[1:255]
+	protocol	PROTO
+	csum		csum[parent, inet, int16be]
+	src_ip		win_vnet_ipv4_addr
+	dst_ip		win_vnet_ipv4_addr
+} [packed]
+
+type win_vnet_ipv4_packet_t[PROTO, PAYLOAD] {
+	header	ipv4_header[PROTO]
+	payload	PAYLOAD
+} [packed]
+
+win_vnet_ipv4_packet [
+	tcp	win_vnet_ipv4_packet_t[const[6, int8], win_vnet_tcp_packet]
+	udp	win_vnet_ipv4_packet_t[const[17, int8], win_vnet_udp_packet]
+] [varlen]
+
+win_vnet_tcp_flags = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
+
+win_vnet_tcp_header {
+	src_port	sock_port
+	dst_port	sock_port
+	seq_num		win_vnet_tcp_seq_num
+	ack_num		win_vnet_tcp_seq_num
+	ns		int8:1
+	reserved	const[0, int8:3]
+	data_off	bytesize4[parent, int8:4]
+	flags		flags[win_vnet_tcp_flags, int8]
+	window_size	int16be
+	csum		csum[win_vnet_tcp_packet, pseudo, 6, int16be]
+	urg_ptr		int16be
+} [packed]
+
+win_vnet_tcp_packet {
+	header	win_vnet_tcp_header
+	payload	array[int8]
+} [packed]
+
+win_vnet_udp_packet {
+	src_port	sock_port
+	dst_port	sock_port
+	length		len[parent, int16be]
+	csum		csum[parent, pseudo, 17, int16be]
+	payload	array[int8]
+} [packed]

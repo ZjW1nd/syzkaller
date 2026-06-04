@@ -1,0 +1,1 @@
+syz_extract_tcp_res$windows_synack(&(0x7f0000000300)={<r0=>0x41424344, <r1=>0x41424344})
