@@ -50,6 +50,9 @@ type Request struct {
 
 	// Important requests will be retried even from crashed VMs.
 	Important bool
+	// NoPrefetch requests should not have follow-up requests queued behind them
+	// on the same runner before their result is processed.
+	NoPrefetch bool
 
 	// Avoid specifies set of executors that are preferable to avoid when executing this request.
 	// The restriction is soft since there can be only one executor at all or available right now.

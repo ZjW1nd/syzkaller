@@ -380,3 +380,39 @@ func TestRunnerInflightLimitDoesNotSpecialCaseReturnAllSignal(t *testing.T) {
 		t.Fatalf("runner queued %d requests, want %d", got, limit)
 	}
 }
+
+func TestRunnerInflightLimitStopsBehindNoPrefetch(t *testing.T) {
+	reqs := []*queue.Request{
+		{Prog: &prog.Prog{}, NoPrefetch: true},
+		{Prog: &prog.Prog{}},
+		{Prog: &prog.Prog{}},
+	}
+	src := &countingSource{reqs: reqs}
+	runner := &Runner{
+		source: queue.Distribute(queue.Callback(func() *queue.Request {
+			return src.Next(0)
+		})),
+		procs:     4,
+		requests:  map[int64]*queue.Request{},
+		executing: map[int64]bool{},
+		hanged:    map[int64]bool{},
+	}
+
+	for len(runner.requests) < runner.inflightLimit() {
+		req := runner.source.Next(runner.id)
+		if req == nil {
+			break
+		}
+		runner.nextRequestID++
+		runner.requests[runner.nextRequestID] = req
+	}
+	if got := len(runner.requests); got != 1 {
+		t.Fatalf("runner queued %d requests behind no-prefetch request, want 1", got)
+	}
+	if got := src.next; got != 1 {
+		t.Fatalf("source served %d requests, want only the no-prefetch request", got)
+	}
+	if got := runner.inflightLimit(); got != 1 {
+		t.Fatalf("inflight limit with no-prefetch request = %d, want 1", got)
+	}
+}

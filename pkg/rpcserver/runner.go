@@ -180,8 +180,7 @@ func (runner *Runner) ConnectionLoop() error {
 		// already-issued requests. That defeats fuzzer-side priority queues
 		// (notably triage/deflake) because new high-priority requests cannot
 		// preempt the long tail until it fully drains.
-		limit := runner.inflightLimit()
-		for len(runner.requests) < limit {
+		for len(runner.requests) < runner.inflightLimit() {
 			req := runner.source.Next(runner.id)
 			if req == nil {
 				break
@@ -235,6 +234,11 @@ func (runner *Runner) ConnectionLoop() error {
 }
 
 func (runner *Runner) inflightLimit() int {
+	for _, req := range runner.requests {
+		if req.NoPrefetch {
+			return 1
+		}
+	}
 	limit := 2 * runner.procs
 	if limit < 1 {
 		return 1

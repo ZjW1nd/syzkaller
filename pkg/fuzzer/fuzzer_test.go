@@ -237,6 +237,92 @@ func TestForceGenerateEveryNDoesNotPreemptTriageCandidateQueue(t *testing.T) {
 	}
 }
 
+func TestForceGenerateEveryNInterleavesCorpusTriageQueue(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:              corpus.NewCorpus(ctx),
+		EnabledCalls:        map[*prog.Syscall]bool{target.SyscallMap["test$length11"]: true},
+		ForceGenerateEveryN: 2,
+	}, rand.New(rand.NewSource(0)), target)
+
+	triage := &queue.Request{Origin: "triage"}
+	fuzzer.triageQueue.Append().Submit(triage)
+
+	first := fuzzer.source.Next()
+	if first != triage {
+		t.Fatalf("first request = %#v, want triage", first)
+	}
+	second := fuzzer.source.Next()
+	if second == nil || second.Stat != fuzzer.statExecGenerate {
+		t.Fatalf("second request = %#v, want generated request", second)
+	}
+}
+
+func TestCandidateTriageActivePausesRegularWork(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		EnabledCalls: map[*prog.Syscall]bool{
+			target.SyscallMap["test$length11"]: true,
+		},
+	}, rand.New(rand.NewSource(0)), target)
+
+	regular := &queue.Request{Origin: "candidate"}
+	fuzzer.candidateQueue.Submit(regular)
+	fuzzer.statJobsTriageCandidate.Add(1)
+	if got := fuzzer.source.Next(); got != nil {
+		t.Fatalf("regular work was not paused during candidate triage: %q", got.Origin)
+	}
+
+	triage := &queue.Request{Origin: "triage-candidate"}
+	fuzzer.triageCandidateQueue.Append().Submit(triage)
+	if got := fuzzer.source.Next(); got != triage {
+		t.Fatalf("high-priority triage request = %#v, want triage request", got)
+	}
+
+	fuzzer.statJobsTriageCandidate.Add(-1)
+	if got := fuzzer.source.Next(); got != regular {
+		t.Fatalf("regular work did not resume after candidate triage: %#v", got)
+	}
+}
+
+func TestAddCandidatesMarksRequestsNoPrefetch(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		EnabledCalls: map[*prog.Syscall]bool{
+			target.SyscallMap["test$length11"]: true,
+		},
+	}, rand.New(rand.NewSource(0)), target)
+	candidateProg, err := target.Deserialize([]byte("test$manual(0x1)"), prog.Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fuzzer.AddCandidates([]Candidate{{Prog: candidateProg}})
+	req := fuzzer.source.Next()
+	if req == nil {
+		t.Fatal("candidate request was not queued")
+	}
+	if !req.NoPrefetch {
+		t.Fatal("candidate request should not be prefetched behind")
+	}
+}
+
 func TestFuzzerNextFallsBackToFreshGenerationWhenSourceIsEmpty(t *testing.T) {
 	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
 	if err != nil {
@@ -257,6 +343,26 @@ func TestFuzzerNextFallsBackToFreshGenerationWhenSourceIsEmpty(t *testing.T) {
 	}
 	if req.Stat != fuzzer.statExecGenerate {
 		t.Fatalf("fallback request stat=%v, want generate stat", req.Stat)
+	}
+}
+
+func TestFuzzerNextPausesFallbackGenerationDuringCandidateTriage(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		EnabledCalls: map[*prog.Syscall]bool{
+			target.SyscallMap["test$length11"]: true,
+		},
+	}, rand.New(rand.NewSource(0)), target)
+	fuzzer.source = queue.Callback(func() *queue.Request { return nil })
+	fuzzer.statJobsTriageCandidate.Add(1)
+	if got := fuzzer.Next(); got != nil {
+		t.Fatalf("fallback generation was not paused during candidate triage: %#v", got)
 	}
 }
 
@@ -562,6 +668,9 @@ func (f *testFuzzer) Next() *queue.Request {
 		return nil
 	}
 	req := f.fuzzer.Next()
+	if req == nil {
+		return nil
+	}
 	req.ExecOpts.EnvFlags |= flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone
 	req.ReturnOutput = true
 	req.ReturnError = true

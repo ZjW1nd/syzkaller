@@ -170,11 +170,15 @@ func newExecQueues(fuzzer *Fuzzer) execQueues {
 	)
 	generate := queue.Callback(fuzzer.genFuzz)
 	regularWithGenerate := queue.Order(regularPriority, generate)
-	ret.source = queue.Order(highPriority, regularWithGenerate)
 	if fuzzer.Config.ForceGenerateEveryN > 0 {
 		regularWithGenerate = queue.Interleave(regularPriority, generate, fuzzer.Config.ForceGenerateEveryN)
-		ret.source = queue.Order(highPriority, regularWithGenerate)
 	}
+	ret.source = queue.Order(highPriority, queue.Callback(func() *queue.Request {
+		if fuzzer.statJobsTriageCandidate.Val() > 0 {
+			return nil
+		}
+		return regularWithGenerate.Next()
+	}))
 	return ret
 }
 
@@ -474,6 +478,9 @@ func (fuzzer *Fuzzer) Next() *queue.Request {
 		if req != nil {
 			return req
 		}
+		if fuzzer.statJobsTriageCandidate.Val() > 0 {
+			return nil
+		}
 		// Some focused modes can temporarily exhaust candidate/corpus-driven sources,
 		// especially when mutation has no available base program. Fall back to a fresh
 		// generation request instead of panicking the whole manager.
@@ -555,12 +562,13 @@ func (fuzzer *Fuzzer) AddCandidates(candidates []Candidate) {
 	fuzzer.statCandidates.Add(len(candidates))
 	for _, candidate := range candidates {
 		req := &queue.Request{
-			Prog:      candidate.Prog,
-			ExecOpts:  setFlags(flatrpc.ExecFlagCollectSignal),
-			Stat:      fuzzer.statExecCandidate,
-			Origin:    "candidate",
-			TraceID:   fuzzer.nextTraceID("candidate"),
-			Important: true,
+			Prog:       candidate.Prog,
+			ExecOpts:   setFlags(flatrpc.ExecFlagCollectSignal),
+			Stat:       fuzzer.statExecCandidate,
+			Origin:     "candidate",
+			TraceID:    fuzzer.nextTraceID("candidate"),
+			Important:  true,
+			NoPrefetch: true,
 		}
 		fuzzer.enqueue(fuzzer.candidateQueue, req, candidate.Flags|progCandidate, 0)
 	}
