@@ -1905,6 +1905,393 @@ func TestWindowsExecutorPrefaultsDataSegment(t *testing.T) {
 	}
 }
 
+func TestWindowsNetInjectionStubsFailFast(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "common_windows.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read common_windows.h: %v", err)
+	}
+	src := string(data)
+	for _, needle := range []string{
+		"#include <winioctl.h>",
+		"initialize_windows_net_injection",
+		"SYZ_WINDOWS_NET_INJECTION_DEVICE",
+		"SYZ_WINDOWS_NET_INJECTION_BACKGROUND_READER",
+		"SYZ_WINDOWS_NET_INJECTION_REFRESH_UNICAST",
+		"SYZ_WINDOWS_NET_INJECTION_STATIC_NEIGHBOR",
+		"SYZ_WINDOWS_NET_INJECTION_FIREWALL_ALLOW",
+		"SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS",
+		"SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS",
+		"SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS",
+		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_DEVICE_ENV",
+		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_BACKGROUND_READER_ENV",
+		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_REFRESH_UNICAST_ENV",
+		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_STATIC_NEIGHBOR_ENV",
+		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_FIREWALL_ALLOW_ENV",
+		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS_ENV, 30000)",
+		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV, 30000)",
+		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS_ENV",
+		"CreateFileA(device_path, GENERIC_READ | GENERIC_WRITE",
+		"FILE_FLAG_OVERLAPPED",
+		"SYZ_WINDOWS_TAP_IOCTL_SET_MEDIA_STATUS",
+		"DeviceIoControl(windows_net_injection, SYZ_WINDOWS_TAP_IOCTL_SET_MEDIA_STATUS",
+		"set windows TAP media status connected",
+		"failed to set windows TAP media status",
+		"SYZ_WINDOWS_NET_INJECTION_IO_TIMEOUT_MS",
+		"SYZ_WINDOWS_NET_INJECTION_READ_POLL_MS",
+		"SYZ_WINDOWS_NET_INJECTION_BACKGROUND_READ_POLL_MS",
+		"SYZ_WINDOWS_NET_INJECTION_MAX_FRAME_SIZE",
+		"SYZ_WINDOWS_NET_INJECTION_MAX_READ_ATTEMPTS",
+		"SYZ_WINDOWS_NET_INJECTION_READ_TIMEOUT",
+		"#include <winsock2.h>",
+		"#include <ws2tcpip.h>",
+		"#include <netioapi.h>",
+		"static char windows_net_injection_write_buffer[4096]",
+		"static volatile LONG windows_net_injection_background_reader_enabled",
+		"static volatile LONG windows_net_injection_refresh_unicast_enabled",
+		"static volatile LONG windows_net_injection_static_neighbor_enabled",
+		"static volatile LONG windows_net_injection_cached_tcp_valid",
+		"static DWORD windows_net_injection_target_ifindex_cache",
+		"static char windows_net_injection_target_adapter_name[64]",
+		"windows_net_injection_parse_device_adapter_name(device_path, windows_net_injection_target_adapter_name",
+		"windows_net_injection_target_ifindex",
+		"windows_net_injection_adapter_name_matches",
+		"_stricmp(adapter->AdapterName, windows_net_injection_target_adapter_name)",
+		"windows_net_injection_log_neighbor_ipv4_table_for_index",
+		"GetIpNetTable2(AF_INET",
+		"CreateIpNetEntry2(&row)",
+		"SetIpNetEntry2(&row)",
+		"row.State = NlnsPermanent",
+		"windows net injection static neighbor enabled",
+		"windows net injection static-neighbor",
+		"windows net state %s neighbor ifindex=%lu addr=172.20.0.187",
+		"static long windows_net_injection_write",
+		"static DWORD WINAPI windows_net_injection_background_reader",
+		"static bool windows_net_injection_parse_tcp_frame",
+		"memcpy(windows_net_injection_write_buffer, data, length)",
+		"WriteFile(windows_net_injection, windows_net_injection_write_buffer",
+		"WriteFile(windows_net_injection",
+		"ReadFile(windows_net_injection",
+		"WaitForSingleObject(ov.hEvent, SYZ_WINDOWS_NET_INJECTION_IO_TIMEOUT_MS)",
+		"SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS",
+		"CancelIoEx(windows_net_injection, &ov)",
+		"GetOverlappedResult(windows_net_injection, &ov, &written, FALSE)",
+		"GetOverlappedResult(windows_net_injection, &ov, &read, FALSE)",
+		"windows net injection write begin handle=0x%p event=0x%p length=%u buffer=0x%p",
+		"windows net injection write issued ok=%u err=%u written=%u",
+		"windows net injection write overlapped result ok=%u err=%u written=%u",
+		"windows net injection post-write settle begin ms=%lu",
+		"windows net injection post-write settle end ms=%lu",
+		"windows_net_injection_log_frame_summary",
+		"windows net injection %s eth dst=%02x:%02x:%02x:%02x:%02x:%02x src=%02x:%02x:%02x:%02x:%02x:%02x type=0x%04x length=%zu",
+		"windows net injection %s ipv4 src=%u.%u.%u.%u dst=%u.%u.%u.%u proto=%u total_len=%u ihl=%u csum=0x%04x verify=0x%04x",
+		"windows net injection %s tcp src_port=%u dst_port=%u flags=0x%02x seq=0x%x ack=0x%x data_off=%u csum=0x%04x verify=0x%04x",
+		"windows_net_checksum_finish",
+		"windows net injection wrote frame length=%u",
+		"windows net injection extracted tcp seq=0x%x ack=0x%x",
+		"windows net injection extracted cached tcp seq=0x%x ack=0x%x",
+		"windows net injection extract complete source=%s",
+		"windows net injection cached tcp frame seq=0x%x ack=0x%x length=%ld",
+		"windows net injection tcp cache miss",
+		"windows net injection read begin handle=0x%p event=0x%p length=%u buffer=0x%p",
+		"windows net injection read issued ok=%u err=%u read=%u",
+		"windows net injection read overlapped result ok=%u err=%u read=%u",
+		"windows net injection read cancel issued ok=%u err=%u",
+		"windows net injection read post-cancel result ok=%u err=%u read=%u",
+		"windows net injection write timed out",
+		"windows net injection read timed out",
+		"windows net injection read found no tcp response after attempts=%d",
+		"windows net injection %s non-tcp ipv4 frame",
+		"windows_net_load_be16",
+		"windows_net_load_be32",
+		"SYZ_WINDOWS_NET_INJECTION_ETH_P_IP",
+		"SYZ_WINDOWS_NET_INJECTION_IPPROTO_TCP",
+		"SYZ_WINDOWS_NET_INJECTION_LOCAL_IPV4",
+		"SYZ_WINDOWS_NET_INJECTION_PEER_IPV4",
+		"SYZ_WINDOWS_NET_INJECTION_LOCAL_IPV4_MASK",
+		"SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT",
+		"SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT",
+		"SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN",
+		"SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK",
+		"windows_net_injection_try_configure_local_ipv4",
+		"windows_net_injection_local_ipv4_present",
+		"windows_net_injection_log_ip_interface_for_index",
+		"windows_net_injection_log_unicast_ipv4_table",
+		"windows_net_injection_log_adapter_addresses",
+		"windows_net_injection_log_unicast_ipv4_entry",
+		"windows_net_injection_refresh_unicast_ipv4_entry",
+		"ConvertInterfaceIndexToLuid((NET_IFINDEX)ifindex, &luid)",
+		"GetIpInterfaceEntry(&row)",
+		"GetUnicastIpAddressTable(AF_INET, &table)",
+		"GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX",
+		"GetUnicastIpAddressEntry(&row)",
+		"InitializeUnicastIpAddressEntry(&row)",
+		"SetUnicastIpAddressEntry(&row)",
+		"windows_net_injection_log_ip_tcp_statistics",
+		"GetTcpStatisticsEx(&tcp_stats, AF_INET)",
+		"GetIpStatisticsEx(&ip_stats, AF_INET)",
+		"windows net state %s tcp-stats active=%lu passive=%lu attemptfails=%lu estabresets=%lu insegs=%lu outsegs=%lu retrans=%lu inerrs=%lu outrsts=%lu numconns=%lu",
+		"windows net state %s ip-stats inrecv=%lu hdrerrs=%lu addrerrs=%lu unknownproto=%lu discarded=%lu delivered=%lu outreq=%lu routingdisc=%lu outdisc=%lu outerrs=%lu noreasm=%lu",
+		"CoCreateInstance(__uuidof(NetFwPolicy2)",
+		"CoCreateInstance(__uuidof(NetFwRule)",
+		"windows_net_injection_allow_firewall_tcp_inbound",
+		"windows net injection firewall allow enabled",
+		"windows net injection firewall-allow rule name=",
+		"scope=local-port-only",
+		"rule->put_Protocol(NET_FW_IP_PROTOCOL_TCP)",
+		"rule->put_LocalPorts(ports)",
+		"rule->put_Direction(NET_FW_RULE_DIR_IN)",
+		"rule->put_Action(NET_FW_ACTION_ALLOW)",
+		"rules->Add(rule)",
+		"windows_net_injection_log_peer_route",
+		"windows_net_injection_ipv4_prefix_contains",
+		"GetIpForwardTable2(AF_INET, &table)",
+		"windows net state %s peer-route-row ifindex=%lu route-ifindex=%lu dest=%u.%u.%u.%u/%u peer-match=%u on-ifindex=%u default=%u",
+		"FreeMibTable(table)",
+		"AddIPAddress(local_addr, local_mask, ifindex",
+		"windows net injection local ipv4 add ifindex=%lu status=%lu nte_context=%lu nte_instance=%lu",
+		"windows net state %s adapter ifindex=%lu luid=0x%llx",
+		"windows net state %s adapter-unicast ifindex=%lu addr=%u.%u.%u.%u prefix=%u",
+		"windows net state %s unicast-entry ifindex=%lu addr=172.20.0.170",
+		"windows net injection refresh unicast enabled",
+		"windows net injection refresh-unicast %s ifindex=%lu set-status=%lu",
+		"windows net injection pre-snapshot settle begin ms=%lu",
+		"windows net injection pre-snapshot settle end ms=%lu",
+		"windows_net_injection_log_guest_net_state(\"after-settle\")",
+		"windows net state %s ip-interface ifindex=%lu connected=%u mtu=%lu metric=%lu",
+		"windows net state %s unicast ifindex=%lu addr=%u.%u.%u.%u prefix=%u",
+		"windows net state %s unicast 172.20.0.0/24 not found",
+		"if (windows_net_injection_local_ipv4_present())",
+		"windows net injection local ipv4 already present",
+		"windows net injection local ipv4 target adapter not found name=%s",
+		"GetIfTable(NULL, &if_table_size, TRUE)",
+		"GetIpAddrTable(NULL, &ip_table_size, TRUE)",
+		"windows_net_injection_log_extended_tcp_table",
+		"GetExtendedTcpTable(NULL, &owner_table_size, TRUE, AF_INET",
+		"TCP_TABLE_OWNER_PID_ALL",
+		"PMIB_TCPTABLE_OWNER_PID",
+		"MIB_TCPROW_OWNER_PID* row",
+		"windows_net_injection_tcp_state_name",
+		"MIB_TCP_STATE_SYN_RCVD",
+		"windows net state %s extended-tcp local=%u.%u.%u.%u:%u remote=%u.%u.%u.%u:%u state=%lu(%s) pid=%lu target=%u listener=%u",
+		"windows net state %s extended-tcp target 172.20.0.170:20000->172.20.0.187:40000 state=%lu(%s) pid=%lu",
+		"windows net state %s extended-tcp target 172.20.0.170:20000->172.20.0.187:40000 not found",
+		"GetTcpTable(NULL, &table_size, TRUE)",
+		"windows_net_injection_log_guest_net_state",
+		"windows net state %s tap ifindex=%lu oper=%lu admin=%lu in_octets=%lu in_ucast=%lu out_octets=%lu out_ucast=%lu",
+		"windows net state %s ip ifindex=%lu addr=%u.%u.%u.%u mask=%u.%u.%u.%u type=0x%x",
+		"windows net state %s ip 172.20.0.0/24 not found",
+		"windows net state %s tcp local=%u.%u.%u.%u:%u remote=%u.%u.%u.%u:%u state=%lu pid=%lu",
+		"windows net state %s tcp local-port=%u not found",
+		"FILE_SHARE_READ | FILE_SHARE_WRITE",
+		"#define windows_nyx_log(...) nyx_hprintf(__VA_ARGS__)",
+		"windows net injection backend is not configured",
+		"windows net injection device path is too long",
+		"windows net injection background reader enabled",
+		"windows net injection background reader started handle=0x%p",
+		"failed to open windows net injection device",
+		"windows_net_injection_try_configure_local_ipv4();",
+		"static intptr_t SYSCALLAPI syz_emit_ethernet",
+		"static intptr_t SYSCALLAPI syz_extract_tcp_res",
+		"windows_net_injection == INVALID_HANDLE_VALUE",
+		"initialize_windows_net_injection();",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("common_windows.h is missing %q", needle)
+		}
+	}
+	sandbox := extractFunctionBody(t, src, "static int do_sandbox_none(void)")
+	initCall := strings.Index(sandbox, "initialize_windows_net_injection();")
+	loopCall := strings.Index(sandbox, "loop();")
+	if initCall == -1 || loopCall == -1 {
+		t.Fatal("do_sandbox_none should initialize Windows net injection before entering loop")
+	}
+	if loopCall < initCall {
+		t.Fatal("Windows net injection initialization appears after executor loop")
+	}
+	executorPath, err := os.ReadFile(filepath.Join("..", "..", "executor", "executor.cc"))
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	nyxLoop := extractFunctionBody(t, string(executorPath), "static int nyx_mode_loop")
+	initCall = strings.Index(nyxLoop, "initialize_windows_net_injection();")
+	payloadLoop := strings.Index(nyxLoop, "for (;;) {")
+	if initCall == -1 {
+		t.Fatal("Windows Nyx executor should initialize net injection before entering the payload loop")
+	}
+	if payloadLoop == -1 || payloadLoop < initCall {
+		t.Fatal("Windows Nyx net injection initialization appears after the payload loop")
+	}
+	configure := extractFunctionBody(t, src, "static void windows_net_injection_try_configure_local_ipv4()")
+	if !strings.Contains(configure, "DWORD ifindex = windows_net_injection_target_ifindex();") {
+		t.Fatal("Windows net injection should configure IPv4 only on the adapter selected from the opened TAP device GUID")
+	}
+	if strings.Contains(configure, "GetIfTable(") ||
+		strings.Contains(configure, "windows_net_injection_is_target_mac(row->bPhysAddr") {
+		t.Fatal("Windows net injection must not configure every GetIfTable row that reuses the TAP MAC")
+	}
+	netState := extractFunctionBody(t, src, "static void windows_net_injection_log_guest_net_state")
+	if !strings.Contains(netState, "DWORD target_ifindex = windows_net_injection_target_ifindex();") ||
+		!strings.Contains(netState, "row->dwIndex != target_ifindex") {
+		t.Fatal("Windows net state diagnostics should scope per-ifindex checks to the opened TAP adapter")
+	}
+	if strings.Contains(netState, "windows_net_injection_log_firewall_policy(label)") ||
+		strings.Contains(netState, "windows_net_injection_log_firewall_policy2(label)") {
+		t.Fatal("per-write Windows net state diagnostics should not run heavyweight firewall policy probes")
+	}
+	backendStart := strings.Index(src, "#if SYZ_NET_INJECTION && (SYZ_EXECUTOR || __NR_syz_emit_ethernet || __NR_syz_extract_tcp_res || SYZ_REPEAT)")
+	if backendStart == -1 {
+		t.Fatal("Windows net injection backend must be gated by SYZ_NET_INJECTION")
+	}
+	stubMarker := "\n#else\n\n#if SYZ_EXECUTOR || __NR_syz_emit_ethernet"
+	stubStartRel := strings.Index(src[backendStart:], stubMarker)
+	if stubStartRel == -1 {
+		t.Fatal("Windows net injection backend should have non-injection fail-fast stubs")
+	}
+	backendSrc := src[backendStart : backendStart+stubStartRel]
+	stubSrc := src[backendStart+stubStartRel:]
+	emit := extractFunctionBody(t, backendSrc, "intptr_t SYSCALLAPI syz_emit_ethernet")
+	extract := extractFunctionBody(t, backendSrc, "intptr_t SYSCALLAPI syz_extract_tcp_res")
+	parseTCP := extractFunctionBody(t, src, "static bool windows_net_injection_parse_tcp_frame")
+	if strings.Contains(src, "static long syz_emit_ethernet(volatile long") ||
+		strings.Contains(src, "static long syz_extract_tcp_res(volatile long") {
+		t.Fatal("Windows vnet pseudo-syscalls must use intptr_t syscall_t-compatible arguments")
+	}
+	if strings.Contains(emit+extract, "Sleep(") &&
+		!strings.Contains(src, "SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV") {
+		t.Fatal("Windows net injection stubs must not block waiting for backend traffic unless a gated diagnostic settle is enabled")
+	}
+	if !strings.Contains(emit, "a0 <= 0 || a0 > SYZ_WINDOWS_NET_INJECTION_MAX_FRAME_SIZE") {
+		t.Fatal("syz_emit_ethernet should reject invalid or oversized frames")
+	}
+	if strings.Contains(emit, "debug_dump_data(") {
+		t.Fatal("syz_emit_ethernet should not dump the guest frame before writing it to TAP")
+	}
+	if !strings.Contains(emit, "return windows_net_injection_write((const void*)(uintptr_t)a1, (DWORD)a0)") {
+		t.Fatal("syz_emit_ethernet should write frames through the configured backend")
+	}
+	stubEmit := extractFunctionBody(t, stubSrc, "intptr_t SYSCALLAPI syz_emit_ethernet")
+	stubExtract := extractFunctionBody(t, stubSrc, "intptr_t SYSCALLAPI syz_extract_tcp_res")
+	if strings.Contains(stubEmit+stubExtract, "windows_net_injection_write") ||
+		strings.Contains(stubEmit+stubExtract, "windows_net_injection_read") ||
+		strings.Contains(stubEmit+stubExtract, "Sleep(") {
+		t.Fatal("non-injection Windows vnet stubs must fail fast without backend I/O")
+	}
+	if !strings.Contains(stubEmit, "return -1;") {
+		t.Fatal("non-injection syz_emit_ethernet stub should fail fast")
+	}
+	if !strings.Contains(stubExtract, "NONFAILING(memset((void*)(uintptr_t)a0, 0, sizeof(windows_tcp_resources)))") ||
+		!strings.Contains(stubExtract, "return -1;") {
+		t.Fatal("non-injection syz_extract_tcp_res stub should clear output resources and fail fast")
+	}
+	if !strings.Contains(extract, "windows_net_injection_read(data, sizeof(data))") {
+		t.Fatal("syz_extract_tcp_res should read a bounded frame from the configured backend")
+	}
+	if !strings.Contains(extract, "rv == SYZ_WINDOWS_NET_INJECTION_READ_TIMEOUT") {
+		t.Fatal("syz_extract_tcp_res should continue bounded reads after an empty TAP poll")
+	}
+	if !strings.Contains(extract, "InterlockedCompareExchange(&windows_net_injection_cached_tcp_valid, 0, 1)") {
+		t.Fatal("syz_extract_tcp_res should consume cached TCP results without waiting when the background reader is enabled")
+	}
+	if strings.Contains(extract, `windows_net_injection_log_guest_net_state("after-extract-read")`) ||
+		strings.Contains(extract, `windows_net_injection_log_guest_net_state("after-extract-cached")`) {
+		t.Fatal("syz_extract_tcp_res should not run full guest net-state diagnostics after successful TCP extraction")
+	}
+	for _, needle := range []string{
+		"read_attempts = SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS",
+		"attempt < read_attempts",
+		"SYZ_WINDOWS_NET_INJECTION_MAX_READ_ATTEMPTS",
+	} {
+		if !strings.Contains(extract, needle) {
+			t.Fatalf("syz_extract_tcp_res should filter non-target frames across bounded read attempts, missing %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		`windows_nyx_log("opened windows net injection device %s\n"`,
+		`windows_nyx_log("set windows TAP media status connected\n")`,
+		`windows_net_injection_log_guest_net_state("after-open")`,
+		`windows_net_injection_log_guest_net_state("before-write")`,
+		`windows_nyx_log("windows net injection write begin handle=0x%p event=0x%p length=%u buffer=0x%p\n"`,
+		`windows_nyx_log("windows net injection write issued ok=%u err=%u written=%u\n"`,
+		`windows_net_injection_log_frame_summary("tx", windows_net_injection_write_buffer, length)`,
+		`windows_nyx_log("windows net injection wrote frame length=%u\n"`,
+		`windows_net_injection_log_guest_net_state("after-write")`,
+		`windows_net_injection_log_guest_net_state("before-extract")`,
+		`windows_nyx_log("windows net injection read begin handle=0x%p event=0x%p length=%u buffer=0x%p\n"`,
+		`windows_nyx_log("windows net injection read issued ok=%u err=%u read=%u\n"`,
+		`windows_nyx_log("windows net injection read cancel issued ok=%u err=%u\n"`,
+		`windows_nyx_log("windows net injection read post-cancel result ok=%u err=%u read=%u\n"`,
+		`windows_nyx_log("windows net injection read frame length=%u\n"`,
+		`windows_net_injection_log_frame_summary("rx", (const char*)data, read)`,
+		`windows_nyx_log("windows net injection extracted tcp seq=0x%x ack=0x%x\n"`,
+		`windows_nyx_log("windows net injection extracted cached tcp seq=0x%x ack=0x%x\n"`,
+		`windows_net_injection_log_extract_complete("read")`,
+		`windows_net_injection_log_extract_complete("cached")`,
+		`windows_nyx_log("windows net injection read timed out\n")`,
+		`windows_nyx_log("windows net injection read found no tcp response after attempts=%d\n"`,
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Windows net injection should mirror proof-critical status to Nyx hprintf: missing %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		"eth_type != SYZ_WINDOWS_NET_INJECTION_ETH_P_IP",
+		"version != 4",
+		"ip[9] != SYZ_WINDOWS_NET_INJECTION_IPPROTO_TCP",
+		"src_ip != SYZ_WINDOWS_NET_INJECTION_LOCAL_IPV4",
+		"dst_ip != SYZ_WINDOWS_NET_INJECTION_PEER_IPV4",
+		"src_port != SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT",
+		"dst_port != SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT",
+		"SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK",
+		"windows net injection %s non-target tcp",
+		"windows_net_load_be32(tcp + 4)",
+		"windows_net_load_be32(tcp + 8)",
+	} {
+		if !strings.Contains(parseTCP, needle) {
+			t.Fatalf("windows_net_injection_parse_tcp_frame is missing %q", needle)
+		}
+	}
+	for _, needle := range []string{
+		"((windows_tcp_resources*)(uintptr_t)a0)->seq = windows_net_host_to_be32(seq)",
+		"((windows_tcp_resources*)(uintptr_t)a0)->ack = windows_net_host_to_be32(ack)",
+	} {
+		if !strings.Contains(extract, needle) {
+			t.Fatalf("syz_extract_tcp_res is missing %q", needle)
+		}
+	}
+	zeroOut := strings.Index(extract, "memset((void*)(uintptr_t)a0, 0, sizeof(windows_tcp_resources))")
+	missingBackend := strings.Index(extract, "windows_net_injection == INVALID_HANDLE_VALUE")
+	if zeroOut == -1 {
+		t.Fatal("syz_extract_tcp_res should clear output resources before returning")
+	}
+	if missingBackend == -1 {
+		t.Fatal("syz_extract_tcp_res should check for a configured backend")
+	}
+	if missingBackend < zeroOut {
+		t.Fatal("syz_extract_tcp_res should clear output resources before the missing-backend return")
+	}
+}
+
+func TestWindowsNyxExecutorBuildEnablesNetInjection(t *testing.T) {
+	path := filepath.Join("..", "build-nyx-windows-executor.sh")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read build-nyx-windows-executor.sh: %v", err)
+	}
+	for _, needle := range []string{
+		"-DSYZ_NET_INJECTION=1",
+		"-liphlpapi",
+		"-ladvapi32",
+		"-lole32",
+		"-loleaut32",
+		"-luuid",
+	} {
+		if !strings.Contains(string(data), needle) {
+			t.Fatalf("Windows Nyx executor build should include %q for vnet pseudo-syscalls", needle)
+		}
+	}
+}
+
 func TestWindowsSocketStateWrappersLogWinsockErrors(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
