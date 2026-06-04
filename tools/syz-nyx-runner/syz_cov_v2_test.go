@@ -182,7 +182,7 @@ func TestInjectCompsFromRecords(t *testing.T) {
 		},
 	}
 
-	err := injectCoverage(req, execMsg, false, true, nil, compRecords)
+	err := injectCoverage(req, execMsg, false, true, moduleRangeCanonicalizer{}, nil, compRecords)
 	if err != nil {
 		t.Fatalf("injectCoverage: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestInjectCompsRejectsOutOfRangeCall(t *testing.T) {
 		},
 	}
 
-	err := injectCoverage(req, execMsg, false, true, nil, []nyxCovCompRecord{
+	err := injectCoverage(req, execMsg, false, true, moduleRangeCanonicalizer{}, nil, []nyxCovCompRecord{
 		{CallIndex: 1, Comps: []nyxCompEntry{{Pc: 0x100}}},
 	})
 	if err == nil {

@@ -62,6 +62,8 @@ const (
 	nyxMsgVersion    = 1
 	nyxKindHandshake = 1
 	nyxKindExec      = 2
+	nyxKindIdle      = 3
+	nyxExecKeepState = 1 << 0
 
 	nyxHandshakeAck = "syz_nyx_handshake.ok"
 	nyxExecResult   = "syz_nyx_result.bin"
@@ -72,6 +74,7 @@ const (
 	nyxModuleRangePatternSize   = 64
 	nyxMaxModuleRangeTargets    = 16
 	nyxModuleRangeConfigFile    = "syz_nyx_module_ranges.bin"
+	nyxInitMinTimeout           = 2 * time.Minute
 )
 
 type multiFlag []string
@@ -102,7 +105,11 @@ func reorderArgsForFlags(args []string) []string {
 		"-windows-minidump-timeout":       true,
 		"-standalone-syscall":             true,
 		"-standalone-seed":                true,
+		"-standalone-program":             true,
+		"-standalone-staged-program":      true,
 		"-standalone-rounds":              true,
+		"-standalone-stage-delay-ms":      true,
+		"-standalone-stage-idle-ms":       true,
 		"-standalone-syscall-timeout-ms":  true,
 		"-standalone-program-timeout-ms":  true,
 		"-module-ranges":                  true,
@@ -118,7 +125,11 @@ func reorderArgsForFlags(args []string) []string {
 		"--windows-minidump-timeout":      true,
 		"--standalone-syscall":            true,
 		"--standalone-seed":               true,
+		"--standalone-program":            true,
+		"--standalone-staged-program":     true,
 		"--standalone-rounds":             true,
+		"--standalone-stage-delay-ms":     true,
+		"--standalone-stage-idle-ms":      true,
 		"--standalone-syscall-timeout-ms": true,
 		"--standalone-program-timeout-ms": true,
 		"--module-ranges":                 true,
@@ -325,7 +336,12 @@ type nyxMsgHeader struct {
 type nyxExecMeta struct {
 	RequestID int64
 	ProcID    int32
-	Reserved  int32
+	Flags     int32
+}
+
+type nyxIdleMeta struct {
+	SleepMS  uint32
+	Reserved uint32
 }
 
 type nyxCovHeader struct {
@@ -379,6 +395,11 @@ type moduleRuntimeRange struct {
 	Name   string
 	Base   uint64
 	End    uint64
+}
+
+type moduleRangeCanonicalizer struct {
+	canonical map[string]moduleRuntimeRange
+	current   []moduleRuntimeRange
 }
 
 type nyxCompEntry struct {
@@ -444,6 +465,14 @@ func (a *qemuAux) execCode() uint8 {
 	return a.data[nyxResultExecCodeOffset]
 }
 
+// reloaded reports whether nyx restored the root snapshot during the last
+// execution (set by qemu-nyx perform_reload on timeout/crash/asan). When true
+// the VM is already back at the primed root snapshot, so no full VM restart is
+// needed to recover from a hanged request.
+func (a *qemuAux) reloaded() bool {
+	return a.data[nyxResultReloadedOffset] != 0
+}
+
 func (a *qemuAux) pageFault() bool {
 	return a.data[nyxResultPageFaultOff] != 0
 }
@@ -502,6 +531,16 @@ func deriveHardTimeout(programTimeoutMs int32, fallback time.Duration) time.Dura
 	return hardTimeout
 }
 
+func applyStandaloneHardTimeout(vm *nyxVM, programTimeoutMs int) time.Duration {
+	derivedTimeout := deriveHardTimeout(int32(programTimeoutMs), vm.hardTimeout)
+	if derivedTimeout != vm.hardTimeout {
+		log.Logf(0, "standalone using derived hard timeout %s (fallback=%s program_timeout_ms=%d)",
+			derivedTimeout, vm.hardTimeout, programTimeoutMs)
+		vm.hardTimeout = derivedTimeout
+	}
+	return vm.hardTimeout
+}
+
 type nyxVM struct {
 	index       int
 	workdir     string
@@ -528,6 +567,7 @@ type nyxVM struct {
 	windowsMinidump        bool
 	windowsMinidumpTimeout int
 	runtimeModuleRanges    []moduleRuntimeRange
+	moduleCanonicalizer    moduleRangeCanonicalizer
 
 	ctx         context.Context
 	payloadFile *os.File
@@ -707,10 +747,48 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open aux buffer: %w", err)
 	}
+	initTimeout := vm.initWaitTimeout()
+	initDeadline := time.Now().Add(initTimeout)
+	initTimedOut := make(chan struct{}, 1)
+	initDone := make(chan struct{})
+	go func(process *os.Process) {
+		timer := time.NewTimer(initTimeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			if process != nil {
+				_ = process.Kill()
+			}
+			initTimedOut <- struct{}{}
+		case <-initDone:
+		}
+	}(vm.process.Process)
+	defer close(initDone)
 	lastState := vm.aux.state()
 	lastReport := time.Now()
 	for vm.aux.state() != 3 {
-		if err := vm.stepUntilReady(); err != nil {
+		select {
+		case <-initTimedOut:
+			return fmt.Errorf("timed out waiting for nyx init state=3: state=%d exec_code=%d misc=%q",
+				vm.aux.state(), vm.aux.execCode(), strings.TrimSpace(string(vm.aux.misc())))
+		default:
+		}
+		if time.Now().After(initDeadline) {
+			return fmt.Errorf("timed out waiting for nyx init state=3: state=%d exec_code=%d misc=%q",
+				vm.aux.state(), vm.aux.execCode(), strings.TrimSpace(string(vm.aux.misc())))
+		}
+		remaining := time.Until(initDeadline)
+		if err := vm.stepUntilReady(remaining); err != nil {
+			select {
+			case <-initTimedOut:
+				return fmt.Errorf("timed out waiting for nyx init state=3: state=%d exec_code=%d misc=%q",
+					vm.aux.state(), vm.aux.execCode(), strings.TrimSpace(string(vm.aux.misc())))
+			default:
+			}
+			if isTimeoutError(err) {
+				return fmt.Errorf("timed out stepping qemu during nyx init: state=%d exec_code=%d misc=%q",
+					vm.aux.state(), vm.aux.execCode(), strings.TrimSpace(string(vm.aux.misc())))
+			}
 			return err
 		}
 		if vm.aux.state() != lastState || time.Since(lastReport) > 10*time.Second {
@@ -767,8 +845,8 @@ func qemuImageDriveArg(image string) string {
 	return strings.Join(opts, ",")
 }
 
-func (vm *nyxVM) stepUntilReady() error {
-	if err := vm.runQemu(); err != nil {
+func (vm *nyxVM) stepUntilReady(timeout time.Duration) error {
+	if err := vm.runQemuWithTimeout(timeout); err != nil {
 		return err
 	}
 	switch vm.aux.execCode() {
@@ -782,19 +860,90 @@ func (vm *nyxVM) stepUntilReady() error {
 }
 
 func (vm *nyxVM) recordModuleRangesFromAux() {
-	for _, row := range parseModuleRangesFromAux(string(vm.aux.misc())) {
+	vm.moduleCanonicalizer.Record(parseModuleRangesFromAux(string(vm.aux.misc())))
+	vm.runtimeModuleRanges = vm.moduleCanonicalizer.Current()
+}
+
+func (can *moduleRangeCanonicalizer) Record(rows []moduleRuntimeRange) {
+	for _, row := range rows {
+		if can.canonical == nil {
+			can.canonical = make(map[string]moduleRuntimeRange)
+		}
+		if _, ok := can.canonical[moduleRangeKey(row)]; !ok {
+			can.canonical[moduleRangeKey(row)] = row
+		}
 		replaced := false
-		for i := range vm.runtimeModuleRanges {
-			if vm.runtimeModuleRanges[i].SlotID == row.SlotID {
-				vm.runtimeModuleRanges[i] = row
+		for i := range can.current {
+			if can.current[i].SlotID == row.SlotID {
+				can.current[i] = row
 				replaced = true
 				break
 			}
 		}
 		if !replaced {
-			vm.runtimeModuleRanges = append(vm.runtimeModuleRanges, row)
+			can.current = append(can.current, row)
 		}
 	}
+}
+
+func (can moduleRangeCanonicalizer) Current() []moduleRuntimeRange {
+	return slicesCloneModuleRanges(can.current)
+}
+
+func (can moduleRangeCanonicalizer) CanonicalRanges() []moduleRuntimeRange {
+	ret := make([]moduleRuntimeRange, 0, len(can.canonical))
+	for _, rng := range can.canonical {
+		ret = append(ret, rng)
+	}
+	sort.Slice(ret, func(i, j int) bool {
+		if ret[i].SlotID != ret[j].SlotID {
+			return ret[i].SlotID < ret[j].SlotID
+		}
+		return moduleRangeKey(ret[i]) < moduleRangeKey(ret[j])
+	})
+	return ret
+}
+
+func (can moduleRangeCanonicalizer) CanonicalizePCs(pcs []uint64) []uint64 {
+	if len(pcs) == 0 || len(can.current) == 0 || len(can.canonical) == 0 {
+		return pcs
+	}
+	ret := pcs[:0]
+	for _, pc := range pcs {
+		ret = append(ret, can.CanonicalizePC(pc))
+	}
+	return ret
+}
+
+func (can moduleRangeCanonicalizer) CanonicalizePC(pc uint64) uint64 {
+	for _, current := range can.current {
+		if pc < current.Base || pc >= current.End {
+			continue
+		}
+		canonical, ok := can.canonical[moduleRangeKey(current)]
+		if !ok || canonical.End <= canonical.Base {
+			return pc
+		}
+		off := pc - current.Base
+		if off >= canonical.End-canonical.Base {
+			return pc
+		}
+		return canonical.Base + off
+	}
+	return pc
+}
+
+func moduleRangeKey(rng moduleRuntimeRange) string {
+	return strings.ToLower(rng.Target) + "\x00" + strings.ToLower(rng.Name)
+}
+
+func slicesCloneModuleRanges(ranges []moduleRuntimeRange) []moduleRuntimeRange {
+	if len(ranges) == 0 {
+		return nil
+	}
+	ret := make([]moduleRuntimeRange, len(ranges))
+	copy(ret, ranges)
+	return ret
 }
 
 func parseModuleRangesFromAux(text string) []moduleRuntimeRange {
@@ -993,8 +1142,38 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	}
 }
 
+func (vm *nyxVM) executeIdle(sleepMs int) (*flatrpc.ExecutorMessage, error) {
+	if sleepMs < 0 {
+		return nil, fmt.Errorf("bad idle sleep: %d", sleepMs)
+	}
+	if sleepMs > 10000 {
+		return nil, fmt.Errorf("idle sleep too large: %d", sleepMs)
+	}
+	body := new(bytes.Buffer)
+	_ = binary.Write(body, binary.LittleEndian, &nyxIdleMeta{SleepMS: uint32(sleepMs)})
+	req := &flatrpc.ExecRequest{
+		Id:   0,
+		Type: flatrpc.RequestTypeProgram,
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags: 0,
+		},
+	}
+	return vm.executeRequest(packNyxPayload(nyxKindIdle, nil, body.Bytes()), req)
+}
+
 func (vm *nyxVM) execWaitTimeout() time.Duration {
-	timeout := vm.hardTimeout
+	return hardTimeoutWithSlack(vm.hardTimeout)
+}
+
+func (vm *nyxVM) initWaitTimeout() time.Duration {
+	timeout := hardTimeoutWithSlack(vm.hardTimeout)
+	if timeout < nyxInitMinTimeout+5*time.Second {
+		return nyxInitMinTimeout + 5*time.Second
+	}
+	return timeout
+}
+
+func hardTimeoutWithSlack(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -1224,6 +1403,7 @@ func normalizeWindowsNyxEnvFlags(env flatrpc.ExecEnv) flatrpc.ExecEnv {
 
 func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 	coverEdges, kernel64Bit bool,
+	canonicalizer moduleRangeCanonicalizer,
 	covRecords []nyxCovDumpRecord, compRecords []nyxCovCompRecord) error {
 	res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
 	if !ok || res.Info == nil || len(res.Info.Calls) == 0 {
@@ -1235,7 +1415,7 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 			return fmt.Errorf("coverage record for call %d out of range (%d calls)",
 				rec.CallIndex, len(res.Info.Calls))
 		}
-		pcs := filterCoveragePCs(rec.PCs, kernel64Bit)
+		pcs := filterCoveragePCs(canonicalizer.CanonicalizePCs(rec.PCs), kernel64Bit)
 		if len(pcs) == 0 {
 			continue
 		}
@@ -1260,7 +1440,7 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 			call := res.Info.Calls[crec.CallIndex]
 			for _, comp := range crec.Comps {
 				call.Comps = append(call.Comps, &flatrpc.ComparisonRawT{
-					Pc:      comp.Pc,
+					Pc:      canonicalizer.CanonicalizePC(comp.Pc),
 					Op1:     comp.Op2,
 					Op2:     comp.Op1,
 					IsConst: comp.IsImm != 0,
@@ -1453,6 +1633,9 @@ func describeExecProgram(data []byte) string {
 	if deep := firstDeepAFDCallName(decoded.Calls); deep != "" {
 		parts = append(parts, fmt.Sprintf("deep0=%s", deep))
 	}
+	if programUsesWindowsVNet(decoded.Calls) {
+		parts = append(parts, "vnet=1")
+	}
 	for i, arg := range call.Args {
 		if i >= 4 {
 			break
@@ -1467,6 +1650,23 @@ func describeExecProgram(data []byte) string {
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+func programUsesWindowsVNet(calls []prog.ExecCall) bool {
+	for _, call := range calls {
+		if call.Meta == nil {
+			continue
+		}
+		switch call.Meta.Name {
+		case "syz_emit_ethernet$windows", "syz_extract_tcp_res$windows", "syz_extract_tcp_res$windows_synack":
+			return true
+		}
+	}
+	return false
+}
+
+func requestLeavesGuestStateDirty(keepState bool) bool {
+	return keepState
 }
 
 func firstDeepAFDCallName(calls []prog.ExecCall) string {
@@ -1538,17 +1738,19 @@ func execCallNames(data []byte) []string {
 }
 
 type runner struct {
-	id             int
-	addr           string
-	port           string
-	vm             *nyxVM
-	conn           *flatrpc.Conn
-	connectReply   *flatrpc.ConnectReply
-	handshakeReady bool
-	coveragePrimed bool
-	lastEnvFlags   flatrpc.ExecEnv
-	lastSandboxArg int64
-	needRestart    bool
+	id              int
+	addr            string
+	port            string
+	vm              *nyxVM
+	conn            *flatrpc.Conn
+	connectReply    *flatrpc.ConnectReply
+	handshakeReady  bool
+	coveragePrimed  bool
+	lastEnvFlags    flatrpc.ExecEnv
+	lastSandboxArg  int64
+	needRestart     bool
+	keepState       bool
+	dirtyGuestState bool
 }
 
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
@@ -1565,6 +1767,7 @@ func (r *runner) resetForReconnect() {
 	r.coveragePrimed = false
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
+	r.dirtyGuestState = false
 }
 
 func (r *runner) connect() error {
@@ -1648,6 +1851,19 @@ func (r *runner) markForRestart(reason string) {
 	r.needRestart = true
 }
 
+func (r *runner) handleHangedRequest(reqID int64) {
+	// qemu-nyx restores the root snapshot itself when its watchdog fires
+	// (nyxRCTimeout -> perform_reload). In that case the VM is already
+	// clean, so a full QEMU reboot (~tens of seconds) is wasted work and
+	// just burns the fuzzing budget. Only force a restart when nyx did NOT
+	// reload (genuine wedge: runner deadline / qemu ping timeout).
+	if r.vm.aux.reloaded() {
+		log.Logf(0, "request %d hanged but nyx already restored root snapshot; skipping VM restart", reqID)
+		return
+	}
+	r.markForRestart(fmt.Sprintf("request %d hanged without nyx reload", reqID))
+}
+
 func (r *runner) restartVM(reason string) error {
 	log.Logf(0, "runner restarting VM: %s", reason)
 	if err := r.vm.restart(); err != nil {
@@ -1658,6 +1874,7 @@ func (r *runner) restartVM(reason string) error {
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
 	r.needRestart = false
+	r.dirtyGuestState = false
 	return nil
 }
 
@@ -1714,6 +1931,9 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	}
 	r.vm.applyHardTimeout()
 	meta := &nyxExecMeta{RequestID: req.Id, ProcID: 0}
+	if r.keepState {
+		meta.Flags |= nyxExecKeepState
+	}
 	body := &flatrpc.SnapshotRequestT{
 		ExecFlags:      execFlags,
 		NumCalls:       int32(progExecCallCountOrPanic(req.Data)),
@@ -1729,9 +1949,10 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	covRecords, compRecords, covErr := parseCoverageDump(r.vm.coverPath)
 	if covErr == nil {
 		covErr = injectCoverage(req, execMsg, r.connectReply.CoverEdges,
-			r.connectReply.Kernel64Bit, covRecords, compRecords)
+			r.connectReply.Kernel64Bit, r.vm.moduleCanonicalizer, covRecords, compRecords)
 		if covErr == nil {
-			logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit, r.vm.runtimeModuleRanges)
+			logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit,
+				r.vm.moduleCanonicalizer.CanonicalRanges())
 		}
 	}
 	if covErr != nil {
@@ -1743,7 +1964,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		}
 	}
 	if execResultHanged(execMsg) {
-		r.markForRestart(fmt.Sprintf("request %d hanged", req.Id))
+		r.handleHangedRequest(req.Id)
 	}
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
 		logCallFeedback(req.Id, req.Data, res.Info.Calls)
@@ -1901,6 +2122,11 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return nil, err
 		}
 	}
+	if r.keepState && r.dirtyGuestState {
+		if err := r.restartVM(fmt.Sprintf("fresh root before keep-state request id=%d", req.Id)); err != nil {
+			return nil, err
+		}
+	}
 	if err := r.ensureHandshake(req); err != nil {
 		return nil, err
 	}
@@ -1910,20 +2136,25 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return nil, err
 		}
 		r.coveragePrimed = true
-		if !primeResultNeedsReplay(primeMsg) {
+		if primeResultCanReturn(primeMsg) {
+			r.dirtyGuestState = requestLeavesGuestStateDirty(r.keepState)
 			return primeMsg, nil
 		}
 		log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
-		return r.executeRequestOnce(req, false)
+		msg, err := r.executeRequestOnce(req, false)
+		r.dirtyGuestState = requestLeavesGuestStateDirty(r.keepState)
+		return msg, err
 	}
 	if requestNeedsCoveragePriming(req) {
 		r.coveragePrimed = true
 	}
-	return r.executeRequestOnce(req, false)
+	msg, err := r.executeRequestOnce(req, false)
+	r.dirtyGuestState = requestLeavesGuestStateDirty(r.keepState)
+	return msg, err
 }
 
-func primeResultNeedsReplay(msg *flatrpc.ExecutorMessage) bool {
-	return !execResultHasCoverage(msg) && !execResultHanged(msg)
+func primeResultCanReturn(msg *flatrpc.ExecutorMessage) bool {
+	return execResultHasCoverage(msg) || execResultHanged(msg)
 }
 
 func execResultHanged(msg *flatrpc.ExecutorMessage) bool {
@@ -2093,21 +2324,17 @@ func connectWithRetry(r *runner, retryFor time.Duration) error {
 	}
 }
 
-func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threaded bool,
+func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, programPath string, threaded bool,
 	syscallTimeoutMs, programTimeoutMs, rounds int) error {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		return fmt.Errorf("get target: %w", err)
 	}
-	meta := target.SyscallMap[syscallName]
-	if meta == nil {
-		return fmt.Errorf("unknown syscall %q", syscallName)
-	}
-	p, bootstrap, err := standaloneProgram(target, meta, seed)
+	p, bootstrap, label, err := standaloneBaseProgram(target, syscallName, seed, programPath)
 	if err != nil {
 		return err
 	}
-	enabled := standaloneEnabledCalls(target, meta)
+	enabled := standaloneEnabledCallsForProgram(target, p)
 	ct := target.BuildChoiceTable(nil, enabled)
 	connectReply := &flatrpc.ConnectReply{
 		Cover:            true,
@@ -2135,6 +2362,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 		id:           index,
 		vm:           vm,
 		connectReply: connectReply,
+		keepState:    true,
 	}
 	if rounds <= 0 {
 		rounds = 1
@@ -2147,9 +2375,11 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 		if round == 0 {
 			cur = p.Clone()
 			if bootstrap {
-				log.Logf(0, "standalone bootstrap program for %s:\n%s", syscallName, string(cur.Serialize()))
+				log.Logf(0, "standalone bootstrap program for %s:\n%s", label, string(cur.Serialize()))
+			} else if programPath != "" {
+				log.Logf(0, "standalone file program for %s:\n%s", label, string(cur.Serialize()))
 			} else {
-				log.Logf(0, "standalone seed program for %s (seed=%d):\n%s", syscallName, seed, string(cur.Serialize()))
+				log.Logf(0, "standalone seed program for %s (seed=%d):\n%s", label, seed, string(cur.Serialize()))
 			}
 		} else {
 			base := corpus[mrand.New(mrand.NewSource(roundSeed)).Intn(len(corpus))].Clone()
@@ -2195,6 +2425,148 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, threade
 		}
 	}
 	return nil
+}
+
+func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath string, threaded bool,
+	syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int) error {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return fmt.Errorf("get target: %w", err)
+	}
+	first, _, firstLabel, err := standaloneBaseProgram(target, "", 0, firstProgramPath)
+	if err != nil {
+		return fmt.Errorf("load standalone stage1 program: %w", err)
+	}
+	second, _, secondLabel, err := standaloneBaseProgram(target, "", 0, secondProgramPath)
+	if err != nil {
+		return fmt.Errorf("load standalone stage2 program: %w", err)
+	}
+	connectReply := &flatrpc.ConnectReply{
+		Cover:            true,
+		CoverEdges:       true,
+		Kernel64Bit:      true,
+		Procs:            1,
+		Slowdown:         1,
+		SyscallTimeoutMs: int32(syscallTimeoutMs),
+		ProgramTimeoutMs: int32(programTimeoutMs),
+	}
+	execFlags := flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagDedupCover
+	if threaded {
+		execFlags |= flatrpc.ExecFlagThreaded
+	}
+	r := &runner{
+		id:           index,
+		vm:           vm,
+		connectReply: connectReply,
+		keepState:    true,
+	}
+	stages := []struct {
+		id    int64
+		name  string
+		label string
+		prog  *prog.Prog
+	}{
+		{id: 1, name: "stage1", label: firstLabel, prog: first},
+		{id: 2, name: "stage2", label: secondLabel, prog: second},
+	}
+	for i, stage := range stages {
+		log.Logf(0, "standalone staged %s file program for %s:\n%s", stage.name, stage.label, string(stage.prog.Serialize()))
+		execData, err := stage.prog.SerializeForExec()
+		if err != nil {
+			return fmt.Errorf("serialize standalone staged %s program for exec: %w", stage.name, err)
+		}
+		execCalls, err := prog.ExecCallCount(execData)
+		if err != nil {
+			return fmt.Errorf("count standalone staged %s exec calls: %w", stage.name, err)
+		}
+		log.Logf(0, "standalone staged exec encoding %s: bytes=%d calls=%d", stage.name, len(execData), execCalls)
+		log.Logf(0, "standalone staged exec program %s: %s", stage.name, describeExecProgram(execData))
+		req := &flatrpc.ExecRequest{
+			Id:   stage.id,
+			Type: flatrpc.RequestTypeProgram,
+			ExecOpts: &flatrpc.ExecOpts{
+				EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
+				ExecFlags:  execFlags,
+				SandboxArg: 0,
+			},
+			Data: execData,
+		}
+		execMsg, err := r.runRequest(req)
+		if err != nil {
+			return err
+		}
+		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
+		if !ok || res.Info == nil {
+			return fmt.Errorf("unexpected executor message type %T", execMsg.Msg.Value)
+		}
+		log.Logf(0, "standalone staged exec finished %s: calls=%d cover_records=%d",
+			stage.name, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
+		for callIndex, call := range res.Info.Calls {
+			if call == nil {
+				log.Logf(0, "staged %s call[%d]: <nil>", stage.name, callIndex)
+				continue
+			}
+			log.Logf(0, "staged %s call[%d]: errno=%d flags=0x%x cover=%d signal=%d comps=%d",
+				stage.name, callIndex, call.Error, call.Flags, len(call.Cover), len(call.Signal), len(call.Comps))
+		}
+		if i == 0 && stageDelayMs > 0 {
+			log.Logf(0, "standalone staged host sleep before stage2: %dms (guest is not stepped)", stageDelayMs)
+			time.Sleep(time.Duration(stageDelayMs) * time.Millisecond)
+		}
+		if i == 0 && stageIdleMs > 0 {
+			log.Logf(0, "standalone staged guest idle before stage2: %d yield payloads", stageIdleMs)
+			for idle := 0; idle < stageIdleMs; idle++ {
+				idleMsg, err := vm.executeIdle(0)
+				if err != nil {
+					return fmt.Errorf("standalone staged guest idle %d failed: %w", idle+1, err)
+				}
+				res, ok := idleMsg.Msg.Value.(*flatrpc.ExecResult)
+				if !ok || res.Info == nil {
+					return fmt.Errorf("unexpected idle executor message type %T", idleMsg.Msg.Value)
+				}
+				if idle == 0 || idle+1 == stageIdleMs || (idle+1)%100 == 0 {
+					log.Logf(0, "standalone staged guest idle progress: %d/%d calls=%d hanged=%v error=%q",
+						idle+1, stageIdleMs, len(res.Info.Calls), res.Hanged, res.Error)
+				}
+			}
+			log.Logf(0, "standalone staged guest idle finished: yields=%d", stageIdleMs)
+		}
+	}
+	return nil
+}
+
+func standaloneBaseProgram(target *prog.Target, syscallName string, seed int64, programPath string) (*prog.Prog, bool, string, error) {
+	if programPath != "" {
+		data, err := os.ReadFile(programPath)
+		if err != nil {
+			return nil, false, "", fmt.Errorf("read standalone program %q: %w", programPath, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			return nil, false, "", fmt.Errorf("deserialize standalone program %q: %w", programPath, err)
+		}
+		return p, false, programPath, nil
+	}
+	meta := target.SyscallMap[syscallName]
+	if meta == nil {
+		return nil, false, "", fmt.Errorf("unknown syscall %q", syscallName)
+	}
+	p, bootstrap, err := standaloneProgram(target, meta, seed)
+	if err != nil {
+		return nil, false, "", err
+	}
+	return p, bootstrap, syscallName, nil
+}
+
+func standaloneEnabledCallsForProgram(target *prog.Target, p *prog.Prog) map[*prog.Syscall]bool {
+	enabled := make(map[*prog.Syscall]bool)
+	for _, call := range p.Calls {
+		if call != nil && call.Meta != nil {
+			enabled[call.Meta] = true
+		}
+	}
+	enabled, _ = target.TransitivelyEnabledCalls(enabled)
+	return enabled
 }
 
 func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*prog.Prog, bool, error) {
@@ -2689,7 +3061,11 @@ func main() {
 		standalone                 = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
 		standaloneSyscall          = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
 		standaloneSeed             = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
+		standaloneProgramPath      = flag.String("standalone-program", "", "path to a serialized syzkaller program to execute in standalone mode")
+		standaloneStagedProgram    = flag.String("standalone-staged-program", "", "optional second serialized syzkaller program for staged standalone mode")
 		standaloneRounds           = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
+		standaloneStageDelayMs     = flag.Int("standalone-stage-delay-ms", 0, "host-side delay between standalone staged programs")
+		standaloneStageIdleMs      = flag.Int("standalone-stage-idle-ms", 0, "guest-side Nyx yield payload count between standalone staged programs")
 		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
 		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
 		standaloneThreaded         = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
@@ -2715,18 +3091,37 @@ func main() {
 	if *standaloneSyscallTimeoutMs <= 0 || *standaloneProgramTimeoutMs <= *standaloneSyscallTimeoutMs {
 		log.Fatalf("bad standalone timeouts: syscall=%d program=%d", *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs)
 	}
+	if *standaloneStageDelayMs < 0 {
+		log.Fatalf("bad standalone stage delay: %d", *standaloneStageDelayMs)
+	}
+	if *standaloneStageIdleMs < 0 {
+		log.Fatalf("bad standalone stage idle: %d", *standaloneStageIdleMs)
+	}
+	if *standaloneStagedProgram != "" && *standaloneProgramPath == "" {
+		log.Fatalf("--standalone-staged-program requires --standalone-program")
+	}
 	moduleRanges, err := parseModuleRanges(*moduleRangesRaw)
 	if err != nil {
 		log.Fatalf("bad module range config: %v", err)
 	}
 	vm := newNyxVM(index, *workdir, *qemuPath, qemuArgs, *image, *memoryMB, *payloadSize, *bitmapSize, *debug, *hardTimeout, moduleRanges, *windowsMinidump, *windowsMinidumpTimeout)
 	defer vm.close()
+	if *standalone {
+		applyStandaloneHardTimeout(vm, *standaloneProgramTimeoutMs)
+	}
 	ctx := context.Background()
 	if err := vm.start(ctx); err != nil {
 		log.Fatalf("failed to start Nyx VM: %v", err)
 	}
 	if *standalone {
-		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneThreaded,
+		if *standaloneStagedProgram != "" {
+			if err := runStandaloneStaged(index, vm, *standaloneProgramPath, *standaloneStagedProgram, *standaloneThreaded,
+				*standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
+				log.Fatalf("standalone staged Nyx request failed: %v", err)
+			}
+			return
+		}
+		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneProgramPath, *standaloneThreaded,
 			*standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
 			log.Fatalf("standalone Nyx request failed: %v", err)
 		}

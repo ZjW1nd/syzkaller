@@ -2172,6 +2172,18 @@ static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
 }
 #endif
 
+static void nyx_finish_exec_payload(const nyx_exec_meta_t* meta, uint32 calls)
+{
+	if (meta->flags & SYZ_NYX_EXEC_KEEP_STATE) {
+		nyx_hprintf("nyx result kept guest state request=%lld calls=%u flags=0x%x\n",
+			    (long long)meta->request_id, calls, (unsigned)meta->flags);
+		return;
+	}
+	nyx_hprintf("nyx result requesting reload request=%lld calls=%u flags=0x%x\n",
+		    (long long)meta->request_id, calls, (unsigned)meta->flags);
+	nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);
+}
+
 static int nyx_mode_loop(int argc, char** argv)
 {
 	(void)argc;
@@ -2274,6 +2286,44 @@ static int nyx_mode_loop(int argc, char** argv)
 			continue;
 		}
 
+		if (header->kind == SYZ_NYX_KIND_IDLE) {
+			if (!have_handshake)
+				fail("received idle payload before handshake");
+			if (header->body_size < sizeof(nyx_idle_meta_t))
+				fail("Nyx idle payload too small");
+			auto* idle = reinterpret_cast<const nyx_idle_meta_t*>(body);
+			uint32 sleep_ms = idle->sleep_ms;
+			if (sleep_ms > 10000)
+				fail("Nyx idle payload sleep too large");
+			if (sleep_ms != 0)
+				nyx_hprintf("nyx idle begin sleep_ms=%u\n", (unsigned)sleep_ms);
+#if GOOS_windows
+			Sleep(sleep_ms);
+#else
+			struct timespec ts = {
+			    .tv_sec = sleep_ms / 1000,
+			    .tv_nsec = (long)(sleep_ms % 1000) * 1000000L,
+			};
+			nanosleep(&ts, nullptr);
+#endif
+			if (output_mem.empty()) {
+				output_mem.resize(kMaxOutput);
+				output_data = reinterpret_cast<OutputData*>(output_mem.data());
+				output_size = output_mem.size();
+			}
+			output_data->Reset();
+			output_data->size.store(output_size, std::memory_order_relaxed);
+			output_data->num_calls.store(0, std::memory_order_relaxed);
+			auto result = finish_output(output_data, 0, 0, 0, (uint64)sleep_ms * 1000 * 1000,
+						    freshness++, 0, false, nullptr);
+			nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+			nyx_hprintf("nyx idle kept guest state sleep_ms=%u\n", (unsigned)sleep_ms);
+			if (sleep_ms != 0)
+				nyx_hprintf("nyx idle result dumped sleep_ms=%u bytes=%u\n",
+					    (unsigned)sleep_ms, (unsigned)result.size());
+			continue;
+		}
+
 		if (header->kind != SYZ_NYX_KIND_EXEC)
 			fail("unknown Nyx payload kind");
 		if (!have_handshake)
@@ -2322,7 +2372,7 @@ static int nyx_mode_loop(int argc, char** argv)
 							    meta->request_id, freshness++,
 							    msg, &cov_cmd);
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
-		nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);
+		nyx_finish_exec_payload(meta, msg->num_calls());
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)demo_result.size());
 		continue;
@@ -2345,7 +2395,7 @@ static int nyx_mode_loop(int argc, char** argv)
 					    (current_time_ms() - exec_start) * 1000 * 1000,
 					    freshness++, 0, false, nullptr);
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
-		nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);
+		nyx_finish_exec_payload(meta, msg->num_calls());
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)result.size());
 	}

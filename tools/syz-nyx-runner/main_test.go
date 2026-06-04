@@ -49,6 +49,18 @@ func writeCoverageDump(t *testing.T, path string, records []nyxCovDumpRecord) {
 	}
 }
 
+func uint64SlicesEqual(left, right []uint64) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestParseCoverageDumpMultipleRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syz_cov.bin")
 	want := []nyxCovDumpRecord{
@@ -143,7 +155,7 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCoverageDump failed: %v", err)
 	}
-	if err := injectCoverage(req, execMsg, false, false, covRecords, nil); err != nil {
+	if err := injectCoverage(req, execMsg, false, false, moduleRangeCanonicalizer{}, covRecords, nil); err != nil {
 		t.Fatalf("injectCoverage failed: %v", err)
 	}
 	if got := res.Info.Calls[0].Cover; len(got) != 2 || got[0] != 0x10 || got[1] != 0x20 {
@@ -160,6 +172,43 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 	}
 	if got := res.Info.Calls[2].Signal; len(got) != 2 || got[0] != 0x30 || got[1] != 0x40 {
 		t.Fatalf("call 2 signal mismatch: %#v", got)
+	}
+}
+
+func TestInjectCoverageCanonicalizesRestartedModuleRanges(t *testing.T) {
+	var canonicalizer moduleRangeCanonicalizer
+	canonicalizer.Record([]moduleRuntimeRange{
+		{SlotID: 2, Target: "afd.sys", Name: "afd.sys", Base: 0xfffff80600000000, End: 0xfffff80600002000},
+	})
+	canonicalizer.Record([]moduleRuntimeRange{
+		{SlotID: 2, Target: "afd.sys", Name: "afd.sys", Base: 0xfffff80f10000000, End: 0xfffff80f10002000},
+	})
+	req := &flatrpc.ExecRequest{
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags: flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagCollectSignal,
+		},
+	}
+	res := &flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(1),
+	}
+	execMsg := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type:  flatrpc.ExecutorMessagesRawExecResult,
+			Value: res,
+		},
+	}
+	covRecords := []nyxCovDumpRecord{
+		{CallIndex: 0, SlotID: 2, PCs: []uint64{0xfffff80f10000100, 0xfffff80f10000120}},
+	}
+	if err := injectCoverage(req, execMsg, false, true, canonicalizer, covRecords, nil); err != nil {
+		t.Fatalf("injectCoverage failed: %v", err)
+	}
+	want := []uint64{0xfffff80600000100, 0xfffff80600000120}
+	if got := res.Info.Calls[0].Cover; !uint64SlicesEqual(got, want) {
+		t.Fatalf("cover mismatch: got %#v want %#v", got, want)
+	}
+	if got := res.Info.Calls[0].Signal; !uint64SlicesEqual(got, want) {
+		t.Fatalf("signal mismatch: got %#v want %#v", got, want)
 	}
 }
 
@@ -334,7 +383,25 @@ func TestRequestNeedsCoveragePriming(t *testing.T) {
 	}
 }
 
-func TestPrimeResultNeedsReplay(t *testing.T) {
+func TestRequestLeavesGuestStateDirty(t *testing.T) {
+	tests := []struct {
+		name      string
+		keepState bool
+		want      bool
+	}{
+		{name: "default reload", want: false},
+		{name: "keep state", keepState: true, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := requestLeavesGuestStateDirty(test.keepState); got != test.want {
+				t.Fatalf("requestLeavesGuestStateDirty()=%v want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPrimeResultCanReturn(t *testing.T) {
 	tests := []struct {
 		name string
 		msg  *flatrpc.ExecutorMessage
@@ -349,7 +416,18 @@ func TestPrimeResultNeedsReplay(t *testing.T) {
 					},
 				},
 			}),
-			want: false,
+			want: true,
+		},
+		{
+			name: "signal only",
+			msg: execResultMessage(&flatrpc.ExecResult{
+				Info: &flatrpc.ProgInfo{
+					Calls: []*flatrpc.CallInfo{
+						{Signal: []uint64{0x10}},
+					},
+				},
+			}),
+			want: true,
 		},
 		{
 			name: "hanged",
@@ -357,18 +435,18 @@ func TestPrimeResultNeedsReplay(t *testing.T) {
 				Hanged: true,
 				Info:   flatrpc.EmptyProgInfo(1),
 			}),
-			want: false,
+			want: true,
 		},
 		{
 			name: "no coverage",
 			msg: execResultMessage(&flatrpc.ExecResult{
 				Info: flatrpc.EmptyProgInfo(1),
 			}),
-			want: true,
+			want: false,
 		},
 	}
 	for _, test := range tests {
-		if got := primeResultNeedsReplay(test.msg); got != test.want {
+		if got := primeResultCanReturn(test.msg); got != test.want {
 			t.Fatalf("%s: got %v, want %v", test.name, got, test.want)
 		}
 	}
@@ -586,6 +664,56 @@ func TestDeriveHardTimeoutFallsBackWithoutProgramTimeout(t *testing.T) {
 	}
 }
 
+func TestApplyStandaloneHardTimeoutUsesProgramTimeout(t *testing.T) {
+	vm := &nyxVM{hardTimeout: 3 * time.Minute}
+	got := applyStandaloneHardTimeout(vm, 60000)
+	want := 2 * time.Minute
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	if vm.hardTimeout != want {
+		t.Fatalf("vm hard timeout = %s, want %s", vm.hardTimeout, want)
+	}
+}
+
+func TestApplyStandaloneHardTimeoutHonorsSmallerFallback(t *testing.T) {
+	vm := &nyxVM{hardTimeout: 45 * time.Second}
+	got := applyStandaloneHardTimeout(vm, 60000)
+	want := 45 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+	if vm.hardTimeout != want {
+		t.Fatalf("vm hard timeout = %s, want %s", vm.hardTimeout, want)
+	}
+}
+
+func TestHardTimeoutWithSlackUsesMinimum(t *testing.T) {
+	got := hardTimeoutWithSlack(5 * time.Second)
+	want := 35 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestInitWaitTimeoutKeepsSlowNyxShadowInitBudget(t *testing.T) {
+	vm := &nyxVM{hardTimeout: 45 * time.Second}
+	got := vm.initWaitTimeout()
+	want := 125 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestInitWaitTimeoutHonorsLongerHardTimeout(t *testing.T) {
+	vm := &nyxVM{hardTimeout: 3 * time.Minute}
+	got := vm.initWaitTimeout()
+	want := 185 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
 func TestExecResultHanged(t *testing.T) {
 	hanged := &flatrpc.ExecutorMessage{
 		Msg: &flatrpc.ExecutorMessages{
@@ -611,5 +739,28 @@ func TestExecResultHanged(t *testing.T) {
 	}
 	if execResultHanged(nil) {
 		t.Fatal("nil message must not be treated as hanged")
+	}
+}
+
+func TestHandleHangedRequestSkipsRestartAfterNyxReload(t *testing.T) {
+	auxData := make([]byte, nyxResultReloadedOffset+1)
+	auxData[nyxResultReloadedOffset] = 1
+	r := &runner{vm: &nyxVM{aux: &qemuAux{data: auxData}}}
+
+	r.handleHangedRequest(123)
+
+	if r.needRestart {
+		t.Fatal("hanged request after nyx reload must not schedule full VM restart")
+	}
+}
+
+func TestHandleHangedRequestRestartsWithoutNyxReload(t *testing.T) {
+	auxData := make([]byte, nyxResultReloadedOffset+1)
+	r := &runner{vm: &nyxVM{aux: &qemuAux{data: auxData}}}
+
+	r.handleHangedRequest(123)
+
+	if !r.needRestart {
+		t.Fatal("hanged request without nyx reload must schedule full VM restart")
 	}
 }

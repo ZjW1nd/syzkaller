@@ -1148,6 +1148,226 @@ func TestDescribeExecProgramReportsFirstDeepAFDCall(t *testing.T) {
 	}
 }
 
+func TestDescribeExecProgramReportsWindowsVNetUse(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	serialized, err := os.ReadFile(filepath.Join("..", "..", "sys", "windows", "test", "nyx_vnet_ipv4_tcp_syn.txt"))
+	if err != nil {
+		t.Fatalf("read vnet seed: %v", err)
+	}
+	p, err := target.Deserialize(serialized, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	execData, err := p.SerializeForExec()
+	if err != nil {
+		t.Fatalf("SerializeForExec: %v", err)
+	}
+	got := describeExecProgram(execData)
+	if !strings.Contains(got, "call0=syz_emit_ethernet$windows") {
+		t.Fatalf("program summary missing vnet call0: %q", got)
+	}
+	if !strings.Contains(got, "vnet=1") {
+		t.Fatalf("program summary missing vnet marker: %q", got)
+	}
+}
+
+func TestStandaloneProgramFileLoadsWindowsVNetSeed(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	seedPath := filepath.Join("..", "..", "sys", "windows", "test", "nyx_vnet_ipv4_tcp_syn.txt")
+	p, bootstrap, label, err := standaloneBaseProgram(target, "NtQuerySystemInformation", 1, seedPath)
+	if err != nil {
+		t.Fatalf("standaloneBaseProgram: %v", err)
+	}
+	if bootstrap {
+		t.Fatal("standalone program file should not be treated as bootstrap")
+	}
+	if label != seedPath {
+		t.Fatalf("label=%q, want %q", label, seedPath)
+	}
+	serialized := string(p.Serialize())
+	for _, want := range []string{
+		"syz_emit_ethernet$windows(",
+		"syz_extract_tcp_res$windows_synack(",
+	} {
+		if !strings.Contains(serialized, want) {
+			t.Fatalf("standalone program file missing %q:\n%s", want, serialized)
+		}
+	}
+	execData, err := p.SerializeForExec()
+	if err != nil {
+		t.Fatalf("SerializeForExec: %v", err)
+	}
+	got := describeExecProgram(execData)
+	if !strings.Contains(got, "call0=syz_emit_ethernet$windows") ||
+		!strings.Contains(got, "vnet=1") {
+		t.Fatalf("vnet standalone program summary mismatch: %q", got)
+	}
+	enabled := standaloneEnabledCallsForProgram(target, p)
+	for _, name := range []string{
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows_synack",
+	} {
+		if !enabled[target.SyscallMap[name]] {
+			t.Fatalf("standalone program enabled calls missing %s", name)
+		}
+	}
+}
+
+func TestStandaloneStagedProgramFilesLoadWindowsVNetSeeds(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	tests := []struct {
+		path string
+		want []string
+	}{
+		{
+			path: filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_listener_vnet_syn_tapmac_any_stage1.txt"),
+			want: []string{
+				"listen$inet_tcp(",
+				"syz_emit_ethernet$windows(",
+			},
+		},
+		{
+			path: filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_listener_vnet_arp_syn_tapmac_any_bind_any_stage1.txt"),
+			want: []string{
+				"listen$inet_tcp(",
+				"@arp=",
+				"syz_emit_ethernet$windows(",
+			},
+		},
+		{
+			path: filepath.Join("..", "..", "sys", "windows", "test", "nyx_vnet_extract_tcp_cache_stage2.txt"),
+			want: []string{
+				"syz_extract_tcp_res$windows_synack(",
+			},
+		},
+	}
+	for _, test := range tests {
+		p, bootstrap, label, err := standaloneBaseProgram(target, "NtQuerySystemInformation", 1, test.path)
+		if err != nil {
+			t.Fatalf("standaloneBaseProgram(%s): %v", test.path, err)
+		}
+		if bootstrap {
+			t.Fatalf("%s should not be treated as bootstrap", test.path)
+		}
+		if label != test.path {
+			t.Fatalf("label=%q, want %q", label, test.path)
+		}
+		serialized := string(p.Serialize())
+		for _, want := range test.want {
+			if !strings.Contains(serialized, want) {
+				t.Fatalf("%s missing %q:\n%s", test.path, want, serialized)
+			}
+		}
+		execData, err := p.SerializeForExec()
+		if err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", test.path, err)
+		}
+		if !strings.Contains(describeExecProgram(execData), "vnet=1") {
+			t.Fatalf("%s should be marked as a vnet standalone program", test.path)
+		}
+	}
+}
+
+func TestStandaloneStagedVNetModeIsHostDelayed(t *testing.T) {
+	data, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(data)
+	for _, want := range []string{
+		"standalone-staged-program",
+		"standalone-stage-delay-ms",
+		"runStandaloneStaged",
+		"standalone staged host sleep before stage2",
+		"guest is not stepped",
+		"time.Sleep(time.Duration(stageDelayMs) * time.Millisecond)",
+		"--standalone-staged-program requires --standalone-program",
+		"standalone staged exec program %s",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("main.go is missing staged vnet standalone support %q", want)
+		}
+	}
+}
+
+func TestStandaloneStagedVNetModeSupportsGuestIdle(t *testing.T) {
+	data, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(data)
+	for _, want := range []string{
+		"nyxKindIdle",
+		"type nyxIdleMeta struct",
+		"func (vm *nyxVM) executeIdle",
+		"packNyxPayload(nyxKindIdle",
+		"standalone-stage-idle-ms",
+		"standalone staged guest idle before stage2",
+		"standalone staged guest idle finished",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("main.go is missing staged guest idle support %q", want)
+		}
+	}
+}
+
+func TestNyxModeLoopSupportsIdlePayload(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "executor", "executor.cc"))
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	src := string(data)
+	for _, want := range []string{
+		"SYZ_NYX_KIND_IDLE",
+		"nyx_idle_meta_t",
+		"if (sleep_ms != 0)",
+		"nyx idle begin sleep_ms=%u",
+		"Sleep(sleep_ms)",
+		"nyx idle kept guest state sleep_ms=%u",
+		"nyx idle result dumped sleep_ms=%u bytes=%u",
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("executor.cc is missing Nyx idle support %q", want)
+		}
+	}
+	body := extractFunctionBody(t, src, "int nyx_mode_loop")
+	idle := strings.Index(body, "if (header->kind == SYZ_NYX_KIND_IDLE)")
+	exec := strings.Index(body, "if (header->kind != SYZ_NYX_KIND_EXEC)")
+	if idle == -1 || exec == -1 || exec <= idle {
+		t.Fatal("failed to locate Nyx idle block")
+	}
+	idleBlock := body[idle:exec]
+	if strings.Contains(idleBlock, "HYPERCALL_KAFL_REQUEST_RELOAD") {
+		t.Fatal("Nyx idle payload must preserve guest state for staged standalone programs")
+	}
+}
+
+func TestStandaloneStagedVNetModeKeepsGuestState(t *testing.T) {
+	data, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(data)
+	body := extractFunctionBody(t, src, "func runStandaloneStaged")
+	for _, want := range []string{
+		"keepState:    true",
+		"standalone staged guest idle before stage2",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("runStandaloneStaged is missing keep-state support %q", want)
+		}
+	}
+}
+
 func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -1465,7 +1685,7 @@ func TestNyxModeLoopLogsBeforeHandshakeDecode(t *testing.T) {
 	}
 }
 
-func TestNyxModeLoopRequestsReloadAfterResultDump(t *testing.T) {
+func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1478,18 +1698,70 @@ func TestNyxModeLoopRequestsReloadAfterResultDump(t *testing.T) {
 		if dump == -1 {
 			t.Fatalf("%s: nyx_dump_exec_result not found", label)
 		}
-		reload := strings.Index(block, "nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);")
-		if reload == -1 {
-			t.Fatalf("%s: request-reload hypercall not found", label)
+		finish := strings.Index(block, "nyx_finish_exec_payload(meta, msg->num_calls())")
+		if finish == -1 {
+			t.Fatalf("%s: exec finish helper not found", label)
 		}
 		log := strings.Index(block, "nyx_hprintf(\"nyx result dumped request=%lld bytes=%u\\n\"")
 		if log == -1 {
 			t.Fatalf("%s: result-dumped log not found", label)
 		}
-		if !(dump < reload && reload < log) {
-			t.Fatalf("%s: expected dump < request-reload < result-log, got dump=%d reload=%d log=%d",
-				label, dump, reload, log)
+		if !(dump < finish && finish < log) {
+			t.Fatalf("%s: expected dump < finish < result-log, got dump=%d finish=%d log=%d",
+				label, dump, finish, log)
 		}
+	}
+	helper := extractFunctionBody(t, src, "static void nyx_finish_exec_payload")
+	for _, want := range []string{
+		"meta->flags & SYZ_NYX_EXEC_KEEP_STATE",
+		"nyx result kept guest state request=%lld calls=%u flags=0x%x",
+		"nyx result requesting reload request=%lld calls=%u flags=0x%x",
+		"nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);",
+	} {
+		if !strings.Contains(helper, want) {
+			t.Fatalf("exec finish helper missing %q", want)
+		}
+	}
+	keep := strings.Index(helper, "nyx result kept guest state")
+	reload := strings.Index(helper, "nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);")
+	if keep == -1 || reload == -1 || keep > reload {
+		t.Fatalf("keep-state branch must return before default reload, keep=%d reload=%d", keep, reload)
+	}
+
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	mainSrc := string(mainData)
+	for _, want := range []string{
+		"nyxExecKeepState",
+		"meta.Flags |= nyxExecKeepState",
+		"keepState:    true",
+	} {
+		if !strings.Contains(mainSrc, want) {
+			t.Fatalf("runner keep-state protocol missing %q", want)
+		}
+	}
+	if strings.Contains(mainSrc, "execProgramIsMultiCallWindowsVNet") &&
+		strings.Contains(mainSrc, "meta.Flags |= nyxExecKeepState") {
+		// The protocol is selected by runner mode, not by syscall names.
+		metaSet := strings.Index(mainSrc, "meta.Flags |= nyxExecKeepState")
+		vnetCheck := strings.LastIndex(mainSrc[:metaSet], "execProgramIsMultiCallWindowsVNet")
+		if vnetCheck != -1 && metaSet-vnetCheck < 400 {
+			t.Fatalf("keep-state protocol should not be selected by nearby vnet syscall-name checks")
+		}
+	}
+
+	if strings.Contains(src, "nyx result skipped request reload request=%lld calls=%u") {
+		t.Fatal("executor must use explicit keep-state/reload logs, not unconditional skip logs")
+	}
+	unconditionalReloads := strings.Count(src, "nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);")
+	if unconditionalReloads != 1 {
+		t.Fatalf("expected exactly one default exec reload path, got %d reload calls", unconditionalReloads)
+	}
+
+	if strings.Contains(src, "runner restarts between vnet requests") {
+		t.Fatal("executor tests must not encode a vnet-specific reload policy")
 	}
 
 	demoStart := strings.Index(src, "auto demo_result = nyx_demo_execute_request(")
@@ -1502,7 +1774,7 @@ func TestNyxModeLoopRequestsReloadAfterResultDump(t *testing.T) {
 	}
 	check("demo", src[demoStart:demoStart+demoEndRel])
 
-	genericStart := strings.Index(src, "auto result = finish_output(")
+	genericStart := strings.LastIndex(src, "auto result = finish_output(")
 	if genericStart == -1 {
 		t.Fatal("generic result block not found in executor.cc")
 	}

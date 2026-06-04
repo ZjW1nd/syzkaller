@@ -41,6 +41,8 @@
 #define SYZ_NYX_MSG_VERSION 1
 #define SYZ_NYX_KIND_HANDSHAKE 1
 #define SYZ_NYX_KIND_EXEC 2
+#define SYZ_NYX_KIND_IDLE 3
+#define SYZ_NYX_EXEC_KEEP_STATE (1 << 0)
 
 #define FINDCR3_DEVICE_PATH L"\\\\.\\findCR3"
 #define IOCTL_SEND_PID CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_NEITHER, FILE_ANY_ACCESS)
@@ -106,8 +108,13 @@ typedef struct {
 typedef struct {
 	int64_t request_id;
 	int32_t proc_id;
-	int32_t reserved;
+	int32_t flags;
 } __attribute__((packed)) nyx_exec_meta_t;
+
+typedef struct {
+	uint32_t sleep_ms;
+	uint32_t reserved;
+} __attribute__((packed)) nyx_idle_meta_t;
 
 typedef struct _RTL_PROCESS_MODULE_INFORMATION {
 	HANDLE Section;
