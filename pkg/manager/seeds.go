@@ -209,8 +209,9 @@ func readSeedInputs(cfg *mgrconfig.Config, seedPath, prefix string) ([]*input, e
 		return nil, fmt.Errorf("failed to read seeds dir: %w", err)
 	}
 	var inputs []*input
+	prefixes := splitSeedPrefixes(prefix)
 	for _, seed := range seeds {
-		if seed.IsDir() || prefix != "" && !strings.HasPrefix(seed.Name(), prefix) {
+		if seed.IsDir() || len(prefixes) != 0 && !seedMatchesAnyPrefix(seed.Name(), prefixes) {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(seedDir, seed.Name()))
@@ -224,6 +225,29 @@ func readSeedInputs(cfg *mgrconfig.Config, seedPath, prefix string) ([]*input, e
 		})
 	}
 	return inputs, nil
+}
+
+func splitSeedPrefixes(prefix string) []string {
+	if prefix == "" {
+		return nil
+	}
+	var prefixes []string
+	for _, item := range strings.Split(prefix, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			prefixes = append(prefixes, item)
+		}
+	}
+	return prefixes
+}
+
+func seedMatchesAnyPrefix(name string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 const CurrentDBVersion = 5
