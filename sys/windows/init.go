@@ -18,10 +18,15 @@ func InitTarget(target *prog.Target) {
 	target.ApplyTargetProfile = applyWindowsTargetProfile
 	target.CallRelevanceScore = windowsCallRelevanceScore
 	target.TriageCallScore = windowsCallRelevanceScore
-	target.ResourceUseScore = windowsResourceUseScore
-	target.ResourceReuseScore = windowsResourceReuseScore
-	target.SelectResourceCtor = windowsSelectResourceCtor
-	target.ExpandEnabledCalls = expandWindowsEnabledCalls
+	target.ResourceUseScore = prog.ResourceDepthUseScore
+	target.ResourceReuseScore = prog.ResourceLineageReuseScore
+	target.CorpusResourceScore = prog.CorpusResourceLineageScore
+	target.PreferResourceCentricBorrowing = prog.PreferResourceCentricByDepth
+	target.SelectResourceCtor = prog.SelectResourceCtorByDepth
+	target.SelectCollideCallIndices = func(calls []*prog.Call) ([]int, bool) {
+		return prog.SelectResourceLineageCollideCallIndices(target, calls)
+	}
+	target.ExpandEnabledCalls = prog.ExpandEnabledResourceCtors
 	target.MakeDataMmap = arch.makeMmap
 	target.Neutralize = arch.neutralize
 

@@ -28,6 +28,7 @@ resource SOCKET_LISTENER[SOCKET_TCP_LISTENING]
 resource SOCKET_CONNECTED[SOCKET_TCP_CONNECTED]
 resource SOCKET_ACCEPT[SOCKET_TCP_ACCEPTED]
 resource WSAEVENT_HANDLE[EVENT_HANDLE]: 0, INVALID_HANDLE_VALUE
+resource IOCP_SOCKET[IOCP_HANDLE]
 type sock_port int16be[20000:20004]
 
 sockaddr_in {
@@ -167,14 +168,14 @@ WSAEventSelect$tcp(s SOCKET_TCP_CONNECTED, hEventObject WSAEVENT_HANDLE, lNetwor
 WSAEventSelect$accept(s SOCKET_TCP_ACCEPTED, hEventObject WSAEVENT_HANDLE, lNetworkEvents flags[wsa_network_events]) (no_generate, no_minimize)
 WSAEnumNetworkEvents$tcp(s SOCKET_TCP_CONNECTED, hEventObject WSAEVENT_HANDLE, lpNetworkEvents ptr[out, WSANETWORKEVENTS]) (no_generate, no_minimize)
 WSAEnumNetworkEvents$accept(s SOCKET_TCP_ACCEPTED, hEventObject WSAEVENT_HANDLE, lpNetworkEvents ptr[out, WSANETWORKEVENTS]) (no_generate, no_minimize)
-CreateIoCompletionPort$socket(FileHandle SOCKET_TCP_ACCEPTED, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE
-CreateIoCompletionPort$accept_pending(FileHandle SOCKET_TCP_ACCEPT_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE (no_generate, no_minimize)
-CreateIoCompletionPort$accept_recv_pending(FileHandle SOCKET_TCP_ACCEPT_RECV_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE (no_generate, no_minimize)
-CreateIoCompletionPort$accept_send_pending(FileHandle SOCKET_TCP_ACCEPT_SEND_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE (no_generate, no_minimize)
-CreateIoCompletionPort$tcp_recv_pending(FileHandle SOCKET_TCP_RECV_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE (no_generate, no_minimize)
-CreateIoCompletionPort$tcp_send_pending(FileHandle SOCKET_TCP_SEND_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE (no_generate, no_minimize)
-CreateIoCompletionPort$connect_pending(FileHandle SOCKET_TCP_CONNECTING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_HANDLE (no_generate, no_minimize)
-GetQueuedCompletionStatus$socket(CompletionPort IOCP_HANDLE, lpNumberOfBytesTransferred ptr[out, int32], lpCompletionKey ptr[out, intptr], lpOverlapped ptr[out, ptr[inout, OVERLAPPED, opt]], dwMilliseconds int32[0:10]) (no_generate, no_minimize)
+CreateIoCompletionPort$socket(FileHandle SOCKET_TCP_ACCEPTED, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET
+CreateIoCompletionPort$accept_pending(FileHandle SOCKET_TCP_ACCEPT_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)
+CreateIoCompletionPort$accept_recv_pending(FileHandle SOCKET_TCP_ACCEPT_RECV_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)
+CreateIoCompletionPort$accept_send_pending(FileHandle SOCKET_TCP_ACCEPT_SEND_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)
+CreateIoCompletionPort$tcp_recv_pending(FileHandle SOCKET_TCP_RECV_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)
+CreateIoCompletionPort$tcp_send_pending(FileHandle SOCKET_TCP_SEND_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)
+CreateIoCompletionPort$connect_pending(FileHandle SOCKET_TCP_CONNECTING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)
+GetQueuedCompletionStatus$socket(CompletionPort IOCP_SOCKET, lpNumberOfBytesTransferred ptr[out, int32], lpCompletionKey ptr[out, intptr], lpOverlapped ptr[out, ptr[inout, OVERLAPPED, opt]], dwMilliseconds int32[0:10]) (no_generate, no_minimize)
 WSAGetOverlappedResult$socket(s SOCKET_TCP_ACCEPTED, lpOverlapped ptr[inout, OVERLAPPED], lpcbTransfer ptr[out, int32], fWait bool32, lpdwFlags ptr[inout, int32]) (no_generate, no_minimize)
 WSAGetOverlappedResult$accept_pending(s SOCKET_TCP_ACCEPT_PENDING, lpOverlapped ptr[inout, OVERLAPPED], lpcbTransfer ptr[out, int32], fWait bool32, lpdwFlags ptr[inout, int32]) (no_generate, no_minimize)
 WSAGetOverlappedResult$accept_recv_pending(s SOCKET_TCP_ACCEPT_RECV_PENDING, lpOverlapped ptr[inout, OVERLAPPED], lpcbTransfer ptr[out, int32], fWait bool32, lpdwFlags ptr[inout, int32]) (no_generate, no_minimize)
