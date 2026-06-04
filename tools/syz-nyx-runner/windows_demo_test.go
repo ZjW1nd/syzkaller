@@ -171,6 +171,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		SeedPrefix           string `json:"seed_prefix"`
 		BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
 		WindowsTargetProfile string `json:"windows_target_profile"`
+		ForceGenerateEveryN  int    `json:"force_generate_every_n"`
 	} `json:"experimental"`
 } {
 	t.Helper()
@@ -189,6 +190,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 			SeedPrefix           string `json:"seed_prefix"`
 			BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
 			WindowsTargetProfile string `json:"windows_target_profile"`
+			ForceGenerateEveryN  int    `json:"force_generate_every_n"`
 		} `json:"experimental"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -213,6 +215,24 @@ func loadWindowsAutomaticHelpers(t *testing.T) []string {
 		t.Fatal("windows target has no AutomaticHelper syscalls")
 	}
 	return helpers
+}
+
+func windowsSeedPrefixMatches(t *testing.T, prefixes string) []string {
+	t.Helper()
+	var matches []string
+	for _, prefix := range strings.Split(prefixes, ",") {
+		prefix = strings.TrimSpace(prefix)
+		if prefix == "" {
+			continue
+		}
+		cur, err := filepath.Glob(filepath.Join("..", "..", "sys", "windows", "test", prefix+"*.txt"))
+		if err != nil {
+			t.Fatalf("glob %s seeds: %v", prefix, err)
+		}
+		matches = append(matches, cur...)
+	}
+	slices.Sort(matches)
+	return slices.Compact(matches)
 }
 
 func requireWindowsHelpersEnabled(t *testing.T, cfgPath string, want []string) {
@@ -662,6 +682,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-accept-race.cfg",
 		"windows-nyx-afd-transmit.cfg",
 		"windows-nyx-afd-async.cfg",
+		"windows-nyx-afd-vnet-proven.cfg",
 	} {
 		cfgPath := cfgPath
 		t.Run(cfgPath, func(t *testing.T) {
@@ -672,9 +693,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 			if cfg.Experimental.SeedPrefix == "" {
 				t.Fatalf("%s missing experimental.seed_prefix", cfgPath)
 			}
-			if matches, err := filepath.Glob(filepath.Join("..", "..", "sys", "windows", "test", cfg.Experimental.SeedPrefix+"*.txt")); err != nil {
-				t.Fatalf("glob %s seeds: %v", cfgPath, err)
-			} else if len(matches) == 0 {
+			if matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix); len(matches) == 0 {
 				t.Fatalf("%s seed_prefix=%q does not match any AFD seed", cfgPath, cfg.Experimental.SeedPrefix)
 			}
 			if cfg.Experimental.WindowsTargetProfile != "afd" {
@@ -683,6 +702,85 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 			}
 			requireWindowsNyxConfigSyscallsInSparseTable(t, cfgPath)
 		})
+	}
+}
+
+func TestWindowsAfdVNetProvenConfigSeedsStayNarrow(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-vnet-proven.cfg")
+	if cfg.Experimental.SeedPrefix != cfg.Experimental.BorrowingSeedPrefix {
+		t.Fatalf("vnet proven seed_prefix=%q borrowing_seed_prefix=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	var got []string
+	for _, match := range matches {
+		got = append(got, filepath.Base(match))
+	}
+	want := []string{
+		"nyx_afd_accept_vnet_recv.txt",
+		"nyx_afd_accept_vnet_recv_nonblock.txt",
+		"nyx_afd_accept_vnet_wsarecv.txt",
+		"nyx_afd_accept_vnet_wsarecv_pending_iocp.txt",
+		"nyx_afd_acceptex_vnet_cancel.txt",
+		"nyx_afd_acceptex_vnet_iocp.txt",
+		"nyx_afd_acceptex_vnet_sockaddrs.txt",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("vnet proven seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	forbidden := []string{"_syn_tapmac", "_listener_", "_udp_"}
+	for _, name := range got {
+		for _, needle := range forbidden {
+			if strings.Contains(name, needle) {
+				t.Fatalf("vnet proven gate should not include diagnostic seed %s", name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdVNetProvenConfigForcesGenerationInterleave(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-vnet-proven.cfg")
+	if cfg.Experimental.ForceGenerateEveryN != 2 {
+		t.Fatalf("vnet proven force_generate_every_n=%d, want 2",
+			cfg.Experimental.ForceGenerateEveryN)
+	}
+}
+
+func TestWindowsAfdVNetProvenConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-vnet-proven.cfg")
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.NoGenerate || call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-vnet-proven.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
 	}
 }
 
