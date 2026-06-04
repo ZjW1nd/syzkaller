@@ -206,14 +206,14 @@ var (
 	reRunnerModuleCoverage     = regexp.MustCompile(`runner module coverage: id=(\d+) slot=(\d+) records=(\d+) pcs=(\d+)`)
 	reRunnerCallModuleCoverage = regexp.MustCompile(`runner call module coverage: id=(\d+) call=(\d+) name=([^ ]+) slot=(\d+) records=(\d+) pcs=(\d+)`)
 	reRunnerCallFeedback       = regexp.MustCompile(`runner call feedback: id=(\d+) call=(\d+) name=([^ ]+) signal=(\d+) cover=(\d+) comps=(\d+) errno=(-?\d+)`)
-	reRunnerProgram            = regexp.MustCompile(`runner (?:exec|prime) program: id=(\d+) sha1=([0-9a-fA-F]+) calls=(\d+) call0=([^ ]+)(?: deep0=([^ ]+))?`)
+	reRunnerProgram            = regexp.MustCompile(`runner (?:exec|prime) program: id=(\d+) sha1=([0-9a-fA-F]+) calls=(\d+) call0=([^ ]+)(?: deep0=([^ ]+))?(?: vnet=(1))?`)
 	reRunnerRestartReason      = regexp.MustCompile(`runner (scheduling VM restart|restarting VM):\s*(.*)`)
 	reRunnerRestartFailed      = regexp.MustCompile(`runner scheduling VM restart: request (\d+) failed: (.*)`)
 	reRunnerRestartHanged      = regexp.MustCompile(`runner scheduling VM restart: request (\d+) hanged`)
 	reWindowsCrash             = regexp.MustCompile(`SYZ-NYX-WINDOWS-CRASH:\s*(.*)`)
 	reRunnerFatal              = regexp.MustCompile(`\[FATAL\]\s*(.*)`)
 	reLastExecutingRequest     = regexp.MustCompile(`last executing request: id=(\d+)`)
-	reProgramSummary           = regexp.MustCompile(`sha1=([0-9a-fA-F]+) calls=(\d+) call0=([^ ]+)(?: deep0=([^ ]+))?`)
+	reProgramSummary           = regexp.MustCompile(`sha1=([0-9a-fA-F]+) calls=(\d+) call0=([^ ]+)(?: deep0=([^ ]+))?(?: vnet=(1))?`)
 )
 
 type collideSummaryEntry struct {
@@ -283,6 +283,8 @@ type afdSummary struct {
 	CollideQuality          []collideQualityEntry       `json:"collide_quality,omitempty"`
 	FailureEvents           []afdFailureEvent           `json:"failure_events,omitempty"`
 	FailureCategoryStats    []afdFailureCategorySummary `json:"failure_category_stats,omitempty"`
+	Throughput              afdThroughputSummary        `json:"throughput"`
+	Injection               afdInjectionSummary         `json:"injection,omitempty"`
 }
 
 type afdCallSummary struct {
@@ -380,6 +382,39 @@ type afdRunnerSummary struct {
 	RestartCompleted int `json:"restart_completed,omitempty"`
 }
 
+type afdThroughputSummary struct {
+	ExecPerMin             int     `json:"exec_per_min,omitempty"`
+	RPCResults             int     `json:"rpc_results,omitempty"`
+	RunnerExecResults      int     `json:"runner_exec_results,omitempty"`
+	HangedResults          int     `json:"hanged_results,omitempty"`
+	HangedRatio            float64 `json:"hanged_ratio,omitempty"`
+	NoCoverRequests        int     `json:"no_cover_requests,omitempty"`
+	NoCoverRatio           float64 `json:"no_cover_ratio,omitempty"`
+	TopFailureCategory     string  `json:"top_failure_category,omitempty"`
+	TopFailureCount        int     `json:"top_failure_count,omitempty"`
+	TopFailureHangs        int     `json:"top_failure_hangs,omitempty"`
+	TopFailureRequestCount int     `json:"top_failure_request_count,omitempty"`
+}
+
+type afdInjectionSummary struct {
+	VNetRequests             int     `json:"vnet_requests,omitempty"`
+	NonVNetRequests          int     `json:"non_vnet_requests,omitempty"`
+	VNetNoCoverRequests      int     `json:"vnet_no_cover_requests,omitempty"`
+	NonVNetNoCoverRequests   int     `json:"non_vnet_no_cover_requests,omitempty"`
+	VNetHangedRequests       int     `json:"vnet_hanged_requests,omitempty"`
+	NonVNetHangedRequests    int     `json:"non_vnet_hanged_requests,omitempty"`
+	VNetAFDModuleRequests    int     `json:"vnet_afd_module_requests,omitempty"`
+	NonVNetAFDModuleRequests int     `json:"non_vnet_afd_module_requests,omitempty"`
+	VNetNoCoverRatio         float64 `json:"vnet_no_cover_ratio,omitempty"`
+	NonVNetNoCoverRatio      float64 `json:"non_vnet_no_cover_ratio,omitempty"`
+	VNetHangedRatio          float64 `json:"vnet_hanged_ratio,omitempty"`
+	NonVNetHangedRatio       float64 `json:"non_vnet_hanged_ratio,omitempty"`
+	VNetAFDModuleHitRatio    float64 `json:"vnet_afd_module_hit_ratio,omitempty"`
+	NonVNetAFDModuleHitRatio float64 `json:"non_vnet_afd_module_hit_ratio,omitempty"`
+	VNetRequestIDs           []int   `json:"vnet_request_ids,omitempty"`
+	NonVNetRequestIDs        []int   `json:"non_vnet_request_ids,omitempty"`
+}
+
 type afdModuleRangeSummary struct {
 	Target string `json:"target"`
 	Name   string `json:"name"`
@@ -438,6 +473,7 @@ type afdProgramSummary struct {
 	call0    string
 	deep0    string
 	category string
+	vnet     bool
 }
 
 type afdFailureOccurrence struct {
@@ -1729,7 +1765,7 @@ func runAFDSummary(args []string) error {
 				continue
 			}
 			if m := reRunnerProgram.FindStringSubmatch(line); m != nil {
-				requestPrograms[mustAtoi(m[1])] = afdProgramSummaryFromMatch(m[2], m[3], m[4], m[5])
+				requestPrograms[mustAtoi(m[1])] = afdProgramSummaryFromMatch(m[2], m[3], m[4], m[5], m[6])
 				continue
 			}
 			if m := reLastExecutingRequest.FindStringSubmatch(line); m != nil {
@@ -1738,7 +1774,7 @@ func runAFDSummary(args []string) error {
 			}
 			if pendingLastRequestID != 0 && strings.HasPrefix(line, "sha1=") {
 				if m := reProgramSummary.FindStringSubmatch(line); m != nil {
-					program := afdProgramSummaryFromMatch(m[1], m[2], m[3], m[4])
+					program := afdProgramSummaryFromMatch(m[1], m[2], m[3], m[4], m[5])
 					requestPrograms[pendingLastRequestID] = program
 					updateLatestFailureOccurrenceProgram(failureOccurrences, pendingLastRequestID, program)
 					pendingLastRequestID = 0
@@ -1874,6 +1910,7 @@ func runAFDSummary(args []string) error {
 			return cmp.Compare(a.SlotID, b.SlotID)
 		})
 		s.ModuleCoverClasses = summarizeAFDModuleCoverClasses(requestCoverage, moduleSlots)
+		s.Injection = summarizeAFDInjection(requestPrograms, requestCoverage, moduleSlots, s.HangedRequestIDs)
 		s.RestartReasons = summarizeAFDRestartReasons(restartReasons)
 		s.FailureEvents = summarizeAFDFailureEvents(failureEvents)
 		s.FailureCategoryStats = aggregateAFDFailureCategories(s.FailureEvents)
@@ -2387,7 +2424,7 @@ func failureEvent(events map[string]*afdFailureEvent, kind, reason string, reque
 	return row
 }
 
-func afdProgramSummaryFromMatch(sha1, calls, call0, deep0 string) afdProgramSummary {
+func afdProgramSummaryFromMatch(sha1, calls, call0, deep0, vnet string) afdProgramSummary {
 	owner := call0
 	if afdCallCategoryIsDeep(afdCallCategory(deep0)) {
 		owner = deep0
@@ -2398,6 +2435,7 @@ func afdProgramSummaryFromMatch(sha1, calls, call0, deep0 string) afdProgramSumm
 		call0:    call0,
 		deep0:    deep0,
 		category: afdCallCategory(owner),
+		vnet:     vnet == "1",
 	}
 }
 
@@ -2587,6 +2625,57 @@ func fillAFDModuleCoverRatios(rows []afdModuleCoverSummary) {
 	}
 }
 
+func summarizeAFDInjection(programs map[int]afdProgramSummary, requests map[int]*afdRequestCoverage, slots map[int]*afdModuleRangeSummary, hangedRequestIDs []int) afdInjectionSummary {
+	var out afdInjectionSummary
+	hanged := make(map[int]bool)
+	for _, requestID := range hangedRequestIDs {
+		hanged[requestID] = true
+	}
+	for requestID, program := range programs {
+		coverage := requests[requestID]
+		hasNoCover := coverage != nil && coverage.coverRecords == 0
+		hasAFDModule := afdRequestCoverClass(coverage, slots) == "afd"
+		if program.vnet {
+			out.VNetRequests++
+			out.VNetRequestIDs = appendUniqueInt(out.VNetRequestIDs, requestID)
+			if hasNoCover {
+				out.VNetNoCoverRequests++
+			}
+			if hanged[requestID] {
+				out.VNetHangedRequests++
+			}
+			if hasAFDModule {
+				out.VNetAFDModuleRequests++
+			}
+			continue
+		}
+		out.NonVNetRequests++
+		out.NonVNetRequestIDs = appendUniqueInt(out.NonVNetRequestIDs, requestID)
+		if hasNoCover {
+			out.NonVNetNoCoverRequests++
+		}
+		if hanged[requestID] {
+			out.NonVNetHangedRequests++
+		}
+		if hasAFDModule {
+			out.NonVNetAFDModuleRequests++
+		}
+	}
+	slices.Sort(out.VNetRequestIDs)
+	slices.Sort(out.NonVNetRequestIDs)
+	if out.VNetRequests != 0 {
+		out.VNetNoCoverRatio = float64(out.VNetNoCoverRequests) / float64(out.VNetRequests)
+		out.VNetHangedRatio = float64(out.VNetHangedRequests) / float64(out.VNetRequests)
+		out.VNetAFDModuleHitRatio = float64(out.VNetAFDModuleRequests) / float64(out.VNetRequests)
+	}
+	if out.NonVNetRequests != 0 {
+		out.NonVNetNoCoverRatio = float64(out.NonVNetNoCoverRequests) / float64(out.NonVNetRequests)
+		out.NonVNetHangedRatio = float64(out.NonVNetHangedRequests) / float64(out.NonVNetRequests)
+		out.NonVNetAFDModuleHitRatio = float64(out.NonVNetAFDModuleRequests) / float64(out.NonVNetRequests)
+	}
+	return out
+}
+
 func afdRequestCoverClass(req *afdRequestCoverage, slots map[int]*afdModuleRangeSummary) string {
 	if req == nil {
 		return "unknown_or_user"
@@ -2748,6 +2837,43 @@ func finalizeAFDSummary(s *afdSummary, stats map[string]*afdCallSummary) {
 		}
 		return cmp.Compare(a.Category, b.Category)
 	})
+	s.Throughput = buildAFDThroughputSummary(*s)
+}
+
+func buildAFDThroughputSummary(s afdSummary) afdThroughputSummary {
+	out := afdThroughputSummary{
+		ExecPerMin:        s.Manager.ExecPerMin,
+		RPCResults:        s.Manager.RPCResults,
+		RunnerExecResults: s.Runner.ExecResults,
+		HangedResults:     s.Runner.HangedResults,
+	}
+	if out.HangedResults == 0 {
+		out.HangedResults = s.Manager.HangedResults
+	}
+	totalResults := out.RunnerExecResults
+	if totalResults == 0 {
+		totalResults = out.RPCResults
+	}
+	if totalResults != 0 {
+		out.HangedRatio = float64(out.HangedResults) / float64(totalResults)
+	}
+	for _, row := range s.ModuleCoverClasses {
+		if row.Class == "no_cover" {
+			out.NoCoverRequests = row.Requests
+			if out.RunnerExecResults != 0 {
+				out.NoCoverRatio = float64(row.Requests) / float64(out.RunnerExecResults)
+			}
+			break
+		}
+	}
+	if len(s.FailureCategoryStats) != 0 {
+		top := s.FailureCategoryStats[0]
+		out.TopFailureCategory = top.Category
+		out.TopFailureCount = top.Count
+		out.TopFailureHangs = top.Hangs
+		out.TopFailureRequestCount = top.RequestCount
+	}
+	return out
 }
 
 func summarizeAFDOwnerStatsFromCategories(categories []afdCategorySummary) []afdOwnerSummary {

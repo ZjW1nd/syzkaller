@@ -778,6 +778,10 @@ func TestRunAFDSummaryClassifiesDeepAndSetupOwners(t *testing.T) {
 		"2026/05/12 09:32:03 runner module coverage: id=4 slot=2 records=1 pcs=5",
 		"2026/05/12 09:32:03 runner call module coverage: id=4 call=3 name=NtReadFile slot=2 records=1 pcs=5",
 		"2026/05/12 09:32:03 runner exec complete: id=5 calls=3 cover_records=1",
+		"2026/05/12 09:32:03 runner exec program: id=6 sha1=cafe01 calls=5 call0=socket$listener_tcp deep0=WSARecv$accept vnet=1 arg0=0x2",
+		"2026/05/12 09:32:03 runner module coverage: id=6 slot=0 records=1 pcs=1",
+		"2026/05/12 09:32:03 runner exec program: id=7 sha1=cafe02 calls=3 call0=socket$inet_tcp arg0=0x2",
+		"2026/05/12 09:32:03 runner exec complete: id=7 calls=3 cover_records=0",
 		"2026/05/12 09:32:03 runner exec program: id=44 sha1=feed44 calls=8 call0=WSARecv$accept arg0=0xffffffffffffffff",
 		"2026/05/12 09:32:03 runner scheduling VM restart: request 44 hanged",
 		"2026/05/12 09:32:04 runner restarting VM: recovering from previous hanged request",
@@ -811,7 +815,7 @@ func TestRunAFDSummaryClassifiesDeepAndSetupOwners(t *testing.T) {
 	}
 	if summary.Manager.Coverage != 15193 || summary.Manager.Corpus != 6 ||
 		summary.Manager.ExecTotal != 66 || summary.Manager.ExecCandidate != 14 ||
-		summary.Manager.ExecTriage != 36 {
+		summary.Manager.ExecTriage != 36 || summary.Manager.ExecPerMin != 10 {
 		t.Fatalf("unexpected manager summary: %+v", summary.Manager)
 	}
 	if summary.Manager.WinTemplateGen != 11 || summary.Manager.WinResourceCentricZeroScore != 4 {
@@ -841,7 +845,7 @@ func TestRunAFDSummaryClassifiesDeepAndSetupOwners(t *testing.T) {
 		!slices.Equal(summary.CollideQuality[0].SetupTriageCalls, []string{"bind$inet_tcp"}) {
 		t.Fatalf("unexpected embedded collide quality: %+v", summary.CollideQuality)
 	}
-	if summary.Runner.ExecResults != 6 || summary.Runner.NonZeroCover != 5 ||
+	if summary.Runner.ExecResults != 7 || summary.Runner.NonZeroCover != 5 ||
 		summary.Runner.HangedResults != 1 || summary.Runner.RestartCompleted != 1 {
 		t.Fatalf("unexpected runner summary: %+v", summary.Runner)
 	}
@@ -914,36 +918,62 @@ func TestRunAFDSummaryClassifiesDeepAndSetupOwners(t *testing.T) {
 		t.Fatalf("unexpected module ranges: %+v", summary.ModuleRanges)
 	}
 	if len(summary.ModuleHits) != 3 || summary.ModuleHits[0].Name != "afd.sys" ||
-		summary.ModuleHits[0].PCs != 8 || summary.AFDModuleHitRatio < 0.46 ||
-		summary.AFDModuleHitRatio > 0.48 {
+		summary.ModuleHits[0].PCs != 9 || !floatClose(summary.AFDModuleHitRatio, 0.5) {
 		t.Fatalf("unexpected module hits: ratio=%v hits=%+v", summary.AFDModuleHitRatio, summary.ModuleHits)
 	}
-	if got := summary.ModuleHits[0].RequestIDs; len(got) != 2 || got[0] != 2 || got[1] != 3 {
+	if got := summary.ModuleHits[0].RequestIDs; !slices.Equal(got, []int{2, 3, 6}) {
 		t.Fatalf("unexpected AFD request ids: %+v", got)
 	}
 	if got := moduleCoverClass(summary.ModuleCoverClasses, "afd"); got == nil ||
-		got.Requests != 2 || got.CoverRecords != 7 || got.PCs != 12 ||
-		!floatClose(got.RequestRatio, 1.0/3.0) ||
-		!floatClose(got.ModuleRecordRatio, 4.0/5.0) ||
-		!floatClose(got.PCRatio, 12.0/17.0) {
+		got.Requests != 3 || got.CoverRecords != 8 || got.PCs != 13 ||
+		!floatClose(got.RequestRatio, 3.0/7.0) ||
+		!floatClose(got.ModuleRecordRatio, 5.0/6.0) ||
+		!floatClose(got.PCRatio, 13.0/18.0) {
 		t.Fatalf("unexpected afd cover class: %+v classes=%+v", got, summary.ModuleCoverClasses)
 	}
 	if got := moduleCoverClass(summary.ModuleCoverClasses, "other_module"); got == nil ||
 		got.Requests != 1 || got.CoverRecords != 2 || got.PCs != 5 ||
-		!floatClose(got.RequestRatio, 1.0/6.0) ||
-		!floatClose(got.ModuleRecordRatio, 1.0/5.0) ||
-		!floatClose(got.PCRatio, 5.0/17.0) {
+		!floatClose(got.RequestRatio, 1.0/7.0) ||
+		!floatClose(got.ModuleRecordRatio, 1.0/6.0) ||
+		!floatClose(got.PCRatio, 5.0/18.0) {
 		t.Fatalf("unexpected other-module cover class: %+v classes=%+v", got, summary.ModuleCoverClasses)
 	}
 	if got := moduleCoverClass(summary.ModuleCoverClasses, "unknown_or_user"); got == nil ||
-		got.Requests != 2 || got.CoverRecords != 2 ||
-		!floatClose(got.RequestRatio, 1.0/3.0) {
+		got.Requests != 1 || got.CoverRecords != 1 ||
+		!floatClose(got.RequestRatio, 1.0/7.0) {
 		t.Fatalf("unexpected unknown cover class: %+v classes=%+v", got, summary.ModuleCoverClasses)
 	}
 	if got := moduleCoverClass(summary.ModuleCoverClasses, "no_cover"); got == nil ||
-		got.Requests != 1 || got.CoverRecords != 0 ||
-		!floatClose(got.RequestRatio, 1.0/6.0) {
+		got.Requests != 2 || got.CoverRecords != 0 ||
+		!floatClose(got.RequestRatio, 2.0/7.0) {
 		t.Fatalf("unexpected no-cover class: %+v classes=%+v", got, summary.ModuleCoverClasses)
+	}
+	if summary.Throughput.ExecPerMin != 10 ||
+		summary.Throughput.RunnerExecResults != 7 ||
+		summary.Throughput.HangedResults != 1 ||
+		!floatClose(summary.Throughput.HangedRatio, 1.0/7.0) ||
+		summary.Throughput.NoCoverRequests != 2 ||
+		!floatClose(summary.Throughput.NoCoverRatio, 2.0/7.0) ||
+		summary.Throughput.TopFailureCategory != "accepted_data" ||
+		summary.Throughput.TopFailureCount != 1 ||
+		summary.Throughput.TopFailureHangs != 1 ||
+		summary.Throughput.TopFailureRequestCount != 1 {
+		t.Fatalf("unexpected throughput summary: %+v", summary.Throughput)
+	}
+	if summary.Injection.VNetRequests != 1 ||
+		summary.Injection.NonVNetRequests != 3 ||
+		summary.Injection.VNetNoCoverRequests != 0 ||
+		summary.Injection.NonVNetNoCoverRequests != 1 ||
+		summary.Injection.VNetHangedRequests != 0 ||
+		summary.Injection.NonVNetHangedRequests != 1 ||
+		summary.Injection.VNetAFDModuleRequests != 1 ||
+		summary.Injection.NonVNetAFDModuleRequests != 0 ||
+		!floatClose(summary.Injection.NonVNetNoCoverRatio, 1.0/3.0) ||
+		!floatClose(summary.Injection.NonVNetHangedRatio, 1.0/3.0) ||
+		!floatClose(summary.Injection.VNetAFDModuleHitRatio, 1.0) ||
+		!slices.Equal(summary.Injection.VNetRequestIDs, []int{6}) ||
+		!slices.Equal(summary.Injection.NonVNetRequestIDs, []int{7, 44, 45}) {
+		t.Fatalf("unexpected injection summary: %+v", summary.Injection)
 	}
 	var sendAccept *afdCallSummary
 	var cancel *afdCallSummary
