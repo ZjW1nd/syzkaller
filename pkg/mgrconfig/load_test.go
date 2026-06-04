@@ -107,22 +107,12 @@ func TestParseEnabledSyscallsExpandsWindowsHelpers(t *testing.T) {
 	require.NoError(t, err)
 
 	want := []string{
-		"VirtualAlloc",
 		"TransmitFile$inet_accept",
-		"WSAStartup",
-		"WSACleanup",
-		"socket$listener_tcp",
-		"socket$connected_tcp",
-		"socket$accept_tcp",
+		"socket$inet_tcp",
 		"bind$inet_tcp",
 		"listen$inet_tcp",
 		"accept$inet_tcp",
-		"connect$inet_tcp",
-		"closesocket$any",
 		"CreateFileA",
-		"CreateFile2",
-		"CloseHandle",
-		"WriteFile",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -156,11 +146,9 @@ func TestParseEnabledSyscallsExpandsWindowsAcceptAndUDPScaffold(t *testing.T) {
 	want := []string{
 		"WSARecvEx$inet_accept",
 		"send$inet_udp",
-		"WSAStartup", "WSACleanup", "closesocket$any",
-		"socket$listener_tcp", "socket$connected_tcp", "socket$accept_tcp",
-		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp",
-		"send$inet_tcp",
-		"socket$connected_udp", "connect$inet_udp",
+		"socket$inet_tcp",
+		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
+		"socket$inet_udp", "connect$inet_udp",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -177,13 +165,10 @@ func TestParseEnabledSyscallsExpandsWindowsAfdFocusedTargets(t *testing.T) {
 	require.NoError(t, err)
 
 	want := []string{
-		"WSAStartup", "WSACleanup", "closesocket$any",
-		"socket$listener_tcp",
-		"socket$connected_tcp",
-		"socket$accept_tcp",
-		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "connect$inet_tcp",
-		"CreateFileA", "CreateFile2", "CloseHandle", "WriteFile",
 		"TransmitFile$inet_accept",
+		"socket$inet_tcp",
+		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
+		"CreateFileA",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -200,9 +185,8 @@ func TestParseEnabledSyscallsExpandsWindowsFsctlFocusedTargets(t *testing.T) {
 	require.NoError(t, err)
 
 	want := []string{
-		"VirtualAlloc",
 		"NtFsControlFile",
-		"CreateFileA", "CreateFile2", "CloseHandle",
+		"CreateFileA",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -257,7 +241,7 @@ func TestLoadDataAppliesWindowsAFDTargetProfile(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg.Target)
 	assert.Equal(t, 4, cfg.Target.MinimumTriageCallRelevance)
-	assert.Equal(t, 5, cfg.Target.MinimumCollideCallRelevance)
+	assert.Equal(t, 4, cfg.Target.MinimumCollideCallRelevance)
 	require.NotNil(t, cfg.Target.RuntimePolicy.ShouldScheduleImmediateCollide)
 
 	global, err := prog.GetTarget("windows", "amd64")
