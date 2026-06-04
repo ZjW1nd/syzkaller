@@ -1904,3 +1904,43 @@ func TestWindowsExecutorPrefaultsDataSegment(t *testing.T) {
 		t.Fatal("data segment prefault loop appears before VirtualAlloc mapping")
 	}
 }
+
+func TestWindowsSocketStateWrappersLogWinsockErrors(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "executor.cc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	src := string(data)
+	for _, needle := range []string{
+		"static void windows_log_sockaddr_state",
+		"static void windows_log_getsockname_state",
+		"static int windows_wsa_error_to_errno",
+		"WSAEADDRNOTAVAIL",
+		"return EADDRNOTAVAIL;",
+		"WSASetLastError(0)",
+		"WSAGetLastError()",
+		"getsockname(s, (struct sockaddr*)&storage, &len)",
+		"windows socket state %s socket=0x%llx family=AF_INET addr=%u.%u.%u.%u port=%u namelen=%d",
+		"windows_log_sockaddr_state(\"bind input\"",
+		"windows socket state bind failed socket=0x%llx wsa=%d errno=%d",
+		"windows socket state bind ok socket=0x%llx",
+		"windows_log_getsockname_state(\"listen before\"",
+		"windows socket state listen failed socket=0x%llx backlog=%lld wsa=%d errno=%d",
+		"windows socket state listen ok socket=0x%llx backlog=%lld",
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("executor.cc is missing Windows socket diagnostic %q", needle)
+		}
+	}
+	bindBody := extractFunctionBody(t, src, "static intptr_t SYSCALLAPI windows_bind_state")
+	if strings.Index(bindBody, "windows_log_sockaddr_state(\"bind input\"") >
+		strings.Index(bindBody, "bind(socket, name, (int)namelen)") {
+		t.Fatal("windows_bind_state should log the sockaddr before bind")
+	}
+	listenBody := extractFunctionBody(t, src, "static intptr_t SYSCALLAPI windows_listen_state")
+	if strings.Index(listenBody, "windows_log_getsockname_state(\"listen before\"") >
+		strings.Index(listenBody, "listen(socket, (int)backlog)") {
+		t.Fatal("windows_listen_state should log getsockname before listen")
+	}
+}
