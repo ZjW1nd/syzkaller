@@ -461,6 +461,9 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 	if r.target.SelectResourceCtor != nil {
 		meta = r.target.SelectResourceCtor(r.currentMeta, kind, ctors)
 	}
+	if meta == nil {
+		meta = SelectResourceCtorByDepth(r.currentMeta, kind, ctors)
+	}
 	// Prefer precise constructors.
 	var precise []*Syscall
 	for _, info := range ctors {
@@ -1083,7 +1086,7 @@ func (target *Target) resourceReuseScore(current *Syscall, candidate *ResultArg,
 	if target.ResourceReuseScore != nil {
 		return target.ResourceReuseScore(current, candidate, p, insertionPoint)
 	}
-	return 0
+	return ResourceLineageReuseScore(current, candidate, p, insertionPoint)
 }
 
 // Finds a compatible resource with the type `t` and the calls that initialize that resource.
@@ -1228,7 +1231,7 @@ func (r *randGen) bestCorpusResourceScore(corpusProg *Prog, candidates []*Result
 		if r.target.CorpusResourceScore != nil {
 			score = r.target.CorpusResourceScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint, corpusProg)
 		} else {
-			score = r.target.resourceReuseScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint)
+			score = CorpusResourceLineageScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint, corpusProg)
 		}
 		if score > best {
 			best = score

@@ -96,12 +96,8 @@ func preferredCollideIndices(calls []*Call, target *Target) ([]int, bool) {
 	if target != nil && target.SelectCollideCallIndices != nil {
 		return target.SelectCollideCallIndices(calls)
 	}
-	minScore := 0
 	if target != nil {
-		minScore = target.MinimumCollideCallRelevance
-	}
-	if target != nil {
-		return target.bestRelevanceCallIndices(calls, minScore, true)
+		return SelectResourceLineageCollideCallIndices(target, calls)
 	}
 	return nil, false
 }

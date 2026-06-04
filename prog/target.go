@@ -64,8 +64,8 @@ type Target struct {
 	Helpers HelperPolicy
 	// Bias groups target-specific generation/bias/template steering hooks.
 	Bias BiasPolicy
-	// RuntimePolicy groups target-specific runtime pipeline steering hooks that are
-	// consumed outside pure prog semantics (triage/corpus/collide scheduling).
+	// RuntimePolicy groups runtime pipeline steering hooks that are consumed outside
+	// pure prog semantics (triage/corpus/collide scheduling).
 	RuntimePolicy RuntimePolicy
 	// ApplyTargetProfile returns a target instance with named target-specific policy
 	// knobs applied. Implementations should clone before mutating profile state.
@@ -78,9 +78,9 @@ type Target struct {
 	// existing resource for future reuse decisions. Higher scores mean the resource has
 	// already reached a deeper or more interesting state.
 	ResourceUseScore func(call *Syscall) int
-	// ResourceReuseScore lets a target prioritize one existing resource root over another for
-	// the syscall currently being generated. Higher values mean the resource is a better fit for
-	// continuing the current target-specific state/session.
+	// ResourceReuseScore prioritizes one existing resource root over another for the syscall
+	// currently being generated. Higher values mean the resource is a better fit for continuing
+	// the current state/session.
 	ResourceReuseScore func(current *Syscall, candidate *ResultArg, p *Prog, insertionPoint int) int
 	// CorpusResourceScore lets a target prioritize one corpus-derived resource root over another
 	// when resourceCentric borrows an initialization slice from corpus programs.
@@ -97,7 +97,7 @@ type Target struct {
 	// TriageCallScore lets a target prefer one owning syscall over another specifically for
 	// triage/corpus ownership decisions. When unset, triage falls back to CallRelevanceScore.
 	TriageCallScore func(call *Syscall) int
-	// ExpandEnabledCalls can automatically add target-specific helper syscalls to the enabled set
+	// ExpandEnabledCalls can automatically add helper/constructor syscalls to the enabled set
 	// before choice-table building and transitive resource checks.
 	ExpandEnabledCalls func(target *Target, enabled map[*Syscall]bool) map[*Syscall]bool
 	// MinimumHintsCallRelevance skips comparison-driven hints jobs for calls below the
