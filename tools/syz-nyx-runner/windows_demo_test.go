@@ -283,6 +283,29 @@ func requireWindowsNyxConfigSyscallsInSparseTable(t *testing.T, cfgPath string) 
 	if len(disabled) != 0 {
 		t.Fatalf("%s has disabled calls after expansion: %v", cfgPath, disabled)
 	}
+	_ = expanded
+}
+
+func requireWindowsNyxExpandedSyscallsInSparseTable(t *testing.T, cfgPath string) {
+	t.Helper()
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, cfgPath)
+	enabledCalls := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("%s syscall %q missing from windows/amd64 target", cfgPath, name)
+		}
+		enabledCalls[meta] = true
+	}
+	expanded, disabled := target.TransitivelyEnabledCalls(enabledCalls)
+	if len(disabled) != 0 {
+		t.Fatalf("%s has disabled calls after expansion: %v", cfgPath, disabled)
+	}
 	for call := range expanded {
 		if _, ok := table[call.Name]; !ok {
 			t.Fatalf("%s transitively enabled syscall %q missing from sparse Nyx table", cfgPath, call.Name)
@@ -312,22 +335,30 @@ func TestWindowsNyxConfigSyscallsPresentInSparseTable(t *testing.T) {
 }
 
 func TestWindowsNyxConfigExpandedSyscallsPresentInSparseTable(t *testing.T) {
+	requireWindowsNyxExpandedSyscallsInSparseTable(t, "windows-nyx-test.cfg")
+}
+
+func TestWindowsVNetPseudoSyscallsPresentInSparseTable(t *testing.T) {
 	table := loadDemoSyscallTable(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
 	}
-	enabledCalls := make(map[*prog.Syscall]bool)
-	for _, name := range loadWindowsNyxConfigSyscalls(t) {
-		enabledCalls[target.SyscallMap[name]] = true
-	}
-	expanded, disabled := target.TransitivelyEnabledCalls(enabledCalls)
-	if len(disabled) != 0 {
-		t.Fatalf("windows nyx config has disabled calls after expansion: %v", disabled)
-	}
-	for call := range expanded {
-		if _, ok := table[call.Name]; !ok {
-			t.Fatalf("transitively enabled syscall %q missing from sparse Nyx table", call.Name)
+	for _, name := range []string{
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows",
+		"syz_extract_tcp_res$windows_synack",
+	} {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("%s missing from windows/amd64 target", name)
+		}
+		gotID, ok := table[name]
+		if !ok {
+			t.Fatalf("%s missing from sparse Nyx table", name)
+		}
+		if gotID != meta.ID {
+			t.Fatalf("%s has sparse ID %d, want %d", name, gotID, meta.ID)
 		}
 	}
 }
@@ -1830,6 +1861,15 @@ func TestExecutePathsAvoidNyxHprintf(t *testing.T) {
 	src := string(data)
 	body := extractFunctionBody(t, src, "void execute_call(thread_t* th)")
 	assertNoNyxLoggingBetweenAcquireAndRelease(t, body)
+	for _, needle := range []string{
+		"is_windows_nyx_vnet_call(call)",
+		"execute_call_vnet_no_acquire",
+		"execute_call_vnet_done",
+	} {
+		if !strings.Contains(body, needle) {
+			t.Fatalf("execute_call should run Windows vnet helpers outside Nyx ACQUIRE, missing %q", needle)
+		}
+	}
 	if !strings.Contains(body, "GetCurrentThreadId()") {
 		t.Fatal("execute_call ACQUIRE path does not capture the current thread ID")
 	}

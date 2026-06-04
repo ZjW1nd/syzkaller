@@ -2214,6 +2214,10 @@ static int nyx_mode_loop(int argc, char** argv)
 	if (!nyx_submit_module_ranges(payload))
 		fail("failed to submit required module ranges");
 
+#if SYZ_NET_INJECTION
+	initialize_windows_net_injection();
+#endif
+
 	nyx_hprintf("nyx executor build marker=20260427b demo=%d sparse=%d generic=%d\n",
 		    (int)SYZ_NYX_WINDOWS_DEMO,
 		    (int)SYZ_NYX_WINDOWS_SPARSE_TABLE,
@@ -2446,6 +2450,15 @@ void* worker_thread(void* arg)
 	return 0;
 }
 
+#if GOOS_windows
+static bool is_windows_nyx_vnet_call(const call_t* call)
+{
+	return call->name && (strcmp(call->name, "syz_emit_ethernet$windows") == 0 ||
+			      strcmp(call->name, "syz_extract_tcp_res$windows") == 0 ||
+			      strcmp(call->name, "syz_extract_tcp_res$windows_synack") == 0);
+}
+#endif
+
 void execute_call(thread_t* th)
 {
 	const call_t* call = &syscalls[th->call_num];
@@ -2481,11 +2494,17 @@ void execute_call(thread_t* th)
 	errno = EFAULT;
 #if GOOS_windows
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE
-		if (call->name && strcmp(call->name, "NtQuerySystemInformation") == 0 &&
-		    !nyx_prepare_syscall(call, th->args))
-			failmsg("nyx_prepare_syscall failed", "call=%d name=%s", th->call_num,
-				call->name ? call->name : "<null>");
+	if (call->name && strcmp(call->name, "NtQuerySystemInformation") == 0 &&
+	    !nyx_prepare_syscall(call, th->args))
+		failmsg("nyx_prepare_syscall failed", "call=%d name=%s", th->call_num,
+			call->name ? call->name : "<null>");
 #endif
+	if (is_windows_nyx_vnet_call(call)) {
+		nyx_log_exec_stage("execute_call_vnet_no_acquire", th->id, th->call_num, th->num_args);
+		NONFAILING(th->res = execute_syscall(call, th->args));
+		nyx_log_exec_stage("execute_call_vnet_done", th->id, th->call_num, (uint64)th->res, errno);
+		goto windows_nyx_call_done;
+	}
 	nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 	{
 		kafl_syz_cov_cmd_t cov_cmd_ = {(uint32)th->call_index, 0, 0};
@@ -2498,9 +2517,10 @@ void execute_call(thread_t* th)
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 	// Per-call coverage is dumped by the RELEASE handler in QEMU.
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE
-		nyx_finish_syscall(call, th->args);
+	nyx_finish_syscall(call, th->args);
 #endif
 	nyx_log_exec_stage("execute_call_post_release", th->id, th->call_num, (uint64)th->res, errno);
+windows_nyx_call_done:
 #endif
 	th->reserrno = errno;
 	// Our pseudo-syscalls may misbehave.

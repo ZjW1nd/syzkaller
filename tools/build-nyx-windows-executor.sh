@@ -18,7 +18,12 @@ command -v "$CXX" >/dev/null 2>&1 || {
 
 mkdir -p ./bin/windows_amd64
 
-REV="${REV:-manual}"
+if [[ -z "${REV:-}" ]]; then
+	REV="$(git rev-parse HEAD)"
+	if ! git diff --quiet --ignore-submodules -- || ! git diff --cached --quiet --ignore-submodules --; then
+		REV+="+"
+	fi
+fi
 NYX_WINDOWS_DEMO="${NYX_WINDOWS_DEMO:-0}"
 NYX_WINDOWS_SPARSE_TABLE="${NYX_WINDOWS_SPARSE_TABLE:-1}"
 NYX_USE_GENERIC_PATH="${NYX_USE_GENERIC_PATH:-1}"
@@ -87,10 +92,16 @@ set -x
 	-DSYZ_NYX_WINDOWS_SPARSE_TABLE="$NYX_WINDOWS_SPARSE_TABLE" \
 	-DSYZ_NYX_USE_GENERIC_PATH="$NYX_USE_GENERIC_PATH" \
 	-DSYZ_NYX_WINDOWS_SUBMIT_CR3="$NYX_WINDOWS_SUBMIT_CR3" \
+	-DSYZ_NET_INJECTION=1 \
 	-DGOOS_windows=1 \
 	-DGOARCH_amd64=1 \
 	-DHOSTGOOS_linux=1 \
 	-DGIT_REVISION="\"$REV\"" \
 	-lntdll \
 	-lws2_32 \
-	-lmswsock
+	-lmswsock \
+	-liphlpapi \
+	-ladvapi32 \
+	-lole32 \
+	-loleaut32 \
+	-luuid

@@ -191,6 +191,9 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 #define W32_SOCKET_INET_TCP 3072
 #define W32_SOCKET_INET_UDP 3073
 #define W32_SOCKET_LISTENER_TCP 3074
+#define W32_SYZ_EMIT_ETHERNET_WINDOWS 3081
+#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS 3083
+#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK 3084
 
 #include "windows_service_26200.h"
 
@@ -369,6 +372,9 @@ static void init_nyx_syscalls()
 	syscalls[W32_SOCKET_INET_TCP] = call_t{"socket$inet_tcp", 0, {}, (syscall_t)socket};
 	syscalls[W32_SOCKET_INET_UDP] = call_t{"socket$inet_udp", 0, {}, (syscall_t)socket};
 	syscalls[W32_SOCKET_LISTENER_TCP] = call_t{"socket$listener_tcp", 0, {}, (syscall_t)socket};
+	syscalls[W32_SYZ_EMIT_ETHERNET_WINDOWS] = call_t{"syz_emit_ethernet$windows", 0, {0, 0, 0, 0, 0, 1, 1, }, (syscall_t)syz_emit_ethernet};
+	syscalls[W32_SYZ_EXTRACT_TCP_RES_WINDOWS] = call_t{"syz_extract_tcp_res$windows", 0, {0, 0, 0, 0, 0, 1, 1, }, (syscall_t)syz_extract_tcp_res};
+	syscalls[W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK] = call_t{"syz_extract_tcp_res$windows_synack", 0, {0, 0, 0, 0, 0, 1, 1, }, (syscall_t)syz_extract_tcp_res};
 	// New no-context NT syscalls
 	syscalls[W32_NTDELAYEXEC] = call_t{"NtDelayExecution", 0, {}, (syscall_t)NtDelayExecution};
 	syscalls[W32_NTYIELDEXEC] = call_t{"NtYieldExecution", 0, {}, (syscall_t)NtYieldExecution};
