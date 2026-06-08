@@ -139,6 +139,44 @@ static void use_temporary_dir(void)
 	_chdir(tmpdir);
 }
 
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+static void nyx_hprintf(const char* fmt, ...);
+#define windows_diag_log(...) nyx_hprintf(__VA_ARGS__)
+#else
+#define windows_diag_log(...) (void)0
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_kafl_bugcheck_trigger
+static intptr_t SYSCALLAPI syz_kafl_bugcheck_trigger(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
+						      intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)
+{
+	// Diagnostic-only pseudo syscall. It starts a preinstalled kernel driver
+	// whose DriverEntry calls KeBugCheckEx, so Nyx can validate bugcheck dump
+	// collection inside the fuzzing loop.
+	SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
+	if (scm == nullptr) {
+		DWORD err = GetLastError();
+		windows_diag_log("syz_kafl_bugcheck_trigger OpenSCManagerA failed err=%lu\n", (unsigned long)err);
+		return -1;
+	}
+	SC_HANDLE service = OpenServiceA(scm, "KaflBugcheckTrigger", SERVICE_START);
+	if (service == nullptr) {
+		DWORD err = GetLastError();
+		windows_diag_log("syz_kafl_bugcheck_trigger OpenServiceA failed err=%lu\n", (unsigned long)err);
+		CloseServiceHandle(scm);
+		return -1;
+	}
+	windows_diag_log("syz_kafl_bugcheck_trigger starting service\n");
+	BOOL ok = StartServiceA(service, 0, nullptr);
+	DWORD err = ok ? ERROR_SUCCESS : GetLastError();
+	windows_diag_log("syz_kafl_bugcheck_trigger StartServiceA ok=%u err=%lu\n",
+			 (unsigned)ok, (unsigned long)err);
+	CloseServiceHandle(service);
+	CloseServiceHandle(scm);
+	return ok ? 0 : -(intptr_t)err;
+}
+#endif
+
 #if SYZ_NET_INJECTION && (SYZ_EXECUTOR || __NR_syz_emit_ethernet || __NR_syz_extract_tcp_res || SYZ_REPEAT)
 static HANDLE windows_net_injection = INVALID_HANDLE_VALUE;
 static char windows_net_injection_write_buffer[4096];
@@ -180,7 +218,6 @@ static char windows_net_injection_target_adapter_name[64];
 static const UCHAR windows_net_injection_peer_mac[] = {0x02, 0xbb, 0xcc, 0xdd, 0xee, 0x02};
 
 #if SYZ_NET_INJECTION && SYZ_NYX_WINDOWS_SPARSE_TABLE
-static void nyx_hprintf(const char* fmt, ...);
 #define windows_nyx_log(...) nyx_hprintf(__VA_ARGS__)
 #else
 #define windows_nyx_log(...) (void)0
@@ -1536,7 +1573,6 @@ static long windows_net_injection_read(void* data, DWORD length)
 {
 	return windows_net_injection_read_with_poll(data, length, SYZ_WINDOWS_NET_INJECTION_READ_POLL_MS, true);
 }
-#endif
 
 #if SYZ_EXECUTOR || __NR_syz_emit_ethernet && SYZ_NET_INJECTION
 static intptr_t SYSCALLAPI syz_emit_ethernet(intptr_t a0, intptr_t a1, intptr_t, intptr_t, intptr_t, intptr_t,

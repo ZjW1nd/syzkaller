@@ -1242,6 +1242,9 @@ func (vm *nyxVM) makeCrashError(code byte, req *flatrpc.ExecRequest) *nyxCrashEr
 		fmt.Fprintf(&buf, "dump source: %s\n", dump.sourcePath)
 		fmt.Fprintf(&buf, "dump size: %d\n", dump.size)
 		fmt.Fprintf(&buf, "dump sha256: %s\n", dump.sha256)
+		if dump.tracePath != "" {
+			fmt.Fprintf(&buf, "dump trace: %s\n", dump.tracePath)
+		}
 	} else if dump.err != "" {
 		fmt.Fprintf(&buf, "dump error: %s\n", dump.err)
 	}
@@ -1281,56 +1284,158 @@ func nyxExitReason(code byte) string {
 type preservedDump struct {
 	sourcePath string
 	storedPath string
+	tracePath  string
 	size       int64
 	sha256     string
 	err        string
 }
 
+type stableDumpInfo struct {
+	size    int64
+	modTime time.Time
+}
+
+var (
+	windowsDumpSettlePoll          = 50 * time.Millisecond
+	windowsDumpSettleStableFor     = 6 * time.Second
+	windowsDumpSettleTimeout       = 20 * time.Second
+	windowsDumpSettleStableSamples = 3
+	windowsDumpCopyAttempts        = 3
+)
+
 func (vm *nyxVM) preserveWindowsDump(title string) preservedDump {
 	src := filepath.Join(vm.dumpDir, fmt.Sprintf("worker_%d_pending.dmp", vm.index))
-	info, err := os.Stat(src)
-	if err != nil {
-		return preservedDump{sourcePath: src, err: err.Error()}
-	}
-	if info.IsDir() {
-		return preservedDump{sourcePath: src, err: "pending dump path is a directory"}
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return preservedDump{sourcePath: src, err: err.Error()}
-	}
-	defer in.Close()
 	if err := os.MkdirAll(filepath.Join(vm.workdir, "dumps"), 0o755); err != nil {
 		return preservedDump{sourcePath: src, err: err.Error()}
 	}
+	var lastErr error
+	for attempt := 0; attempt < windowsDumpCopyAttempts; attempt++ {
+		stable, err := waitForStableWindowsDump(src)
+		if err != nil {
+			return preservedDump{sourcePath: src, err: err.Error()}
+		}
+		dump, err := vm.copyStableWindowsDump(title, src, stable)
+		if err == nil {
+			return dump
+		}
+		lastErr = err
+		time.Sleep(windowsDumpSettlePoll)
+	}
+	return preservedDump{sourcePath: src, err: lastErr.Error()}
+}
+
+func waitForStableWindowsDump(path string) (stableDumpInfo, error) {
+	if windowsDumpSettleStableSamples < 1 {
+		windowsDumpSettleStableSamples = 1
+	}
+	deadline := time.Now().Add(windowsDumpSettleTimeout)
+	var last stableDumpInfo
+	var stableSamples int
+	var stableSince time.Time
+	for {
+		info, err := os.Stat(path)
+		if err != nil {
+			return stableDumpInfo{}, err
+		}
+		if info.IsDir() {
+			return stableDumpInfo{}, errors.New("pending dump path is a directory")
+		}
+		cur := stableDumpInfo{size: info.Size(), modTime: info.ModTime()}
+		if cur.size > 0 && cur == last {
+			stableSamples++
+		} else {
+			last = cur
+			stableSamples = 1
+			stableSince = time.Now()
+		}
+		if cur.size > 0 && stableSamples >= windowsDumpSettleStableSamples &&
+			time.Since(stableSince) >= windowsDumpSettleStableFor {
+			return cur, nil
+		}
+		if time.Now().After(deadline) {
+			return stableDumpInfo{}, fmt.Errorf("pending dump did not stabilize within %s", windowsDumpSettleTimeout)
+		}
+		time.Sleep(windowsDumpSettlePoll)
+	}
+}
+
+func (vm *nyxVM) copyStableWindowsDump(title, src string, stable stableDumpInfo) (preservedDump, error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return preservedDump{}, err
+	}
+	defer in.Close()
 	sum := sha256.New()
 	if _, err := io.Copy(sum, in); err != nil {
-		return preservedDump{sourcePath: src, err: err.Error()}
+		return preservedDump{}, err
 	}
 	hash := fmt.Sprintf("%x", sum.Sum(nil))
 	dst := filepath.Join(vm.workdir, "dumps", fmt.Sprintf("%s_%06d_%s.dmp",
 		sanitizeDumpName(title), time.Now().UnixNano()%1000000, hash[:12]))
 	if _, err := in.Seek(0, io.SeekStart); err != nil {
-		return preservedDump{sourcePath: src, err: err.Error()}
+		return preservedDump{}, err
 	}
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 	if err != nil {
-		return preservedDump{sourcePath: src, err: err.Error()}
+		return preservedDump{}, err
+	}
+	copied, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(dst)
+		return preservedDump{}, copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(dst)
+		return preservedDump{}, closeErr
+	}
+	info, err := os.Stat(src)
+	if err != nil {
+		_ = os.Remove(dst)
+		return preservedDump{}, err
+	}
+	if copied != stable.size || info.Size() != stable.size || !info.ModTime().Equal(stable.modTime) {
+		_ = os.Remove(dst)
+		return preservedDump{}, fmt.Errorf("pending dump changed while copying: stable_size=%d copied=%d current_size=%d",
+			stable.size, copied, info.Size())
+	}
+	dump := preservedDump{
+		sourcePath: src,
+		storedPath: dst,
+		size:       stable.size,
+		sha256:     hash,
+	}
+	traceSrc := filepath.Join(vm.dumpDir, fmt.Sprintf("worker_%d_dumpio_trace.log", vm.index))
+	traceDst := strings.TrimSuffix(dst, ".dmp") + ".dumpio_trace.log"
+	if err := copyFileIfExists(traceSrc, traceDst); err == nil {
+		dump.tracePath = traceDst
+	} else if !errors.Is(err, os.ErrNotExist) {
+		log.Logf(0, "failed to preserve Windows dump trace %s: %v", traceSrc, err)
+	}
+	return dump, nil
+}
+
+func copyFileIfExists(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
 	}
 	_, copyErr := io.Copy(out, in)
 	closeErr := out.Close()
 	if copyErr != nil {
-		return preservedDump{sourcePath: src, err: copyErr.Error()}
+		_ = os.Remove(dst)
+		return copyErr
 	}
 	if closeErr != nil {
-		return preservedDump{sourcePath: src, err: closeErr.Error()}
+		_ = os.Remove(dst)
+		return closeErr
 	}
-	return preservedDump{
-		sourcePath: src,
-		storedPath: dst,
-		size:       info.Size(),
-		sha256:     hash,
-	}
+	return nil
 }
 
 func sanitizeDumpName(title string) string {
@@ -1665,10 +1770,6 @@ func programUsesWindowsVNet(calls []prog.ExecCall) bool {
 	return false
 }
 
-func requestLeavesGuestStateDirty(keepState bool) bool {
-	return keepState
-}
-
 func firstDeepAFDCallName(calls []prog.ExecCall) string {
 	for _, call := range calls {
 		if call.Meta != nil && isDeepAFDCallName(call.Meta.Name) {
@@ -1738,19 +1839,18 @@ func execCallNames(data []byte) []string {
 }
 
 type runner struct {
-	id              int
-	addr            string
-	port            string
-	vm              *nyxVM
-	conn            *flatrpc.Conn
-	connectReply    *flatrpc.ConnectReply
-	handshakeReady  bool
-	coveragePrimed  bool
-	lastEnvFlags    flatrpc.ExecEnv
-	lastSandboxArg  int64
-	needRestart     bool
-	keepState       bool
-	dirtyGuestState bool
+	id             int
+	addr           string
+	port           string
+	vm             *nyxVM
+	conn           *flatrpc.Conn
+	connectReply   *flatrpc.ConnectReply
+	handshakeReady bool
+	coveragePrimed bool
+	lastEnvFlags   flatrpc.ExecEnv
+	lastSandboxArg int64
+	needRestart    bool
+	keepState      bool
 }
 
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
@@ -1767,7 +1867,6 @@ func (r *runner) resetForReconnect() {
 	r.coveragePrimed = false
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
-	r.dirtyGuestState = false
 }
 
 func (r *runner) connect() error {
@@ -1874,7 +1973,6 @@ func (r *runner) restartVM(reason string) error {
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
 	r.needRestart = false
-	r.dirtyGuestState = false
 	return nil
 }
 
@@ -2122,11 +2220,6 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return nil, err
 		}
 	}
-	if r.keepState && r.dirtyGuestState {
-		if err := r.restartVM(fmt.Sprintf("fresh root before keep-state request id=%d", req.Id)); err != nil {
-			return nil, err
-		}
-	}
 	if err := r.ensureHandshake(req); err != nil {
 		return nil, err
 	}
@@ -2137,20 +2230,15 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		}
 		r.coveragePrimed = true
 		if primeResultCanReturn(primeMsg) {
-			r.dirtyGuestState = requestLeavesGuestStateDirty(r.keepState)
 			return primeMsg, nil
 		}
 		log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
-		msg, err := r.executeRequestOnce(req, false)
-		r.dirtyGuestState = requestLeavesGuestStateDirty(r.keepState)
-		return msg, err
+		return r.executeRequestOnce(req, false)
 	}
 	if requestNeedsCoveragePriming(req) {
 		r.coveragePrimed = true
 	}
-	msg, err := r.executeRequestOnce(req, false)
-	r.dirtyGuestState = requestLeavesGuestStateDirty(r.keepState)
-	return msg, err
+	return r.executeRequestOnce(req, false)
 }
 
 func primeResultCanReturn(msg *flatrpc.ExecutorMessage) bool {
@@ -2334,8 +2422,6 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 	if err != nil {
 		return err
 	}
-	enabled := standaloneEnabledCallsForProgram(target, p)
-	ct := target.BuildChoiceTable(nil, enabled)
 	connectReply := &flatrpc.ConnectReply{
 		Cover:            true,
 		CoverEdges:       true,
@@ -2366,6 +2452,11 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 	}
 	if rounds <= 0 {
 		rounds = 1
+	}
+	var ct *prog.ChoiceTable
+	if rounds > 1 {
+		enabled := standaloneEnabledCallsForProgram(target, p)
+		ct = target.BuildChoiceTable(nil, enabled)
 	}
 	corpus := []*prog.Prog{p.Clone()}
 	seenSignal := make(map[uint64]struct{})
@@ -3057,6 +3148,7 @@ func main() {
 		memoryMB                   = flag.Int("memory", 2048, "guest memory size in MB")
 		windowsMinidump            = flag.Bool("windows-minidump", false, "preserve Windows minidumps through qemu-nyx")
 		windowsMinidumpTimeout     = flag.Int("windows-minidump-timeout", 120, "Windows minidump completion timeout in seconds")
+		keepState                  = flag.Bool("keep-state", false, "preserve guest state across manager-driven exec requests")
 		debug                      = flag.Bool("debug", false, "inherit qemu stdout/stderr")
 		standalone                 = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
 		standaloneSyscall          = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
@@ -3111,6 +3203,7 @@ func main() {
 	}
 	ctx := context.Background()
 	if err := vm.start(ctx); err != nil {
+		vm.close()
 		log.Fatalf("failed to start Nyx VM: %v", err)
 	}
 	if *standalone {
@@ -3128,11 +3221,14 @@ func main() {
 		return
 	}
 	r := newRunner(index, flag.Arg(1), flag.Arg(2), vm)
+	r.keepState = *keepState
 	if err := connectWithRetry(r, 30*time.Second); err != nil {
+		vm.close()
 		log.Fatalf("failed to connect to manager: %v", err)
 	}
 	for {
 		if err := r.loop(); err != nil {
+			vm.close()
 			log.Fatalf("runner loop failed: %v", err)
 		}
 		log.Logf(0, "runner manager connection closed; attempting reconnect")

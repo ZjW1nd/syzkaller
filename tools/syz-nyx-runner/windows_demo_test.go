@@ -491,7 +491,7 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("accept$inet_tcp", -1, "SOCKET_TCP_ACCEPTED")
 	assertResource("connect$inet_tcp", 0, "SOCKET_TCP_CREATED")
 	assertResource("connect$inet_tcp", -1, "SOCKET_TCP_CONNECTED")
-	assertResource("DisconnectEx$inet_tcp_reuse", 0, "SOCKET_CONNECTED")
+	assertResource("DisconnectEx$inet_tcp_reuse", 0, "SOCKET_TCP_CONNECTED")
 	assertResource("DisconnectEx$inet_tcp_reuse", -1, "SOCKET_TCP_DISCONNECTED_REUSABLE")
 	assertResource("ConnectEx$inet_tcp_reuse", 0, "SOCKET_TCP_DISCONNECTED_REUSABLE")
 	assertResource("ConnectEx$inet_tcp_reuse", -1, "SOCKET_TCP_CONNECTED")
@@ -544,10 +544,10 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("AcceptEx$inet_tcp_pending", -1, "SOCKET_TCP_ACCEPT_PENDING")
 	assertResource("setsockopt$update_accept_context", 0, "SOCKET_TCP_ACCEPT_PENDING")
 	assertResource("setsockopt$update_accept_context", -1, "SOCKET_TCP_ACCEPTED_UPDATED")
-	assertResource("ConnectEx$inet_tcp", 0, "SOCKET_CONNECTED")
-	assertResource("ConnectEx$inet_tcp_pending", 0, "SOCKET_CONNECTED")
+	assertResource("ConnectEx$inet_tcp", 0, "SOCKET_TCP_CONNECTEX_BOUND")
+	assertResource("ConnectEx$inet_tcp_pending", 0, "SOCKET_TCP_CONNECTEX_BOUND")
 	assertResource("ConnectEx$inet_tcp_pending", -1, "SOCKET_TCP_CONNECTING")
-	assertResource("DisconnectEx$inet_tcp", 0, "SOCKET_CONNECTED")
+	assertResource("DisconnectEx$inet_tcp", 0, "SOCKET_TCP_CONNECTED")
 	assertResource("WSARecvEx$inet_accept", 0, "SOCKET_TCP_ACCEPTED")
 	assertResource("send$inet_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
 	assertResource("recv$inet_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
@@ -683,6 +683,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-transmit.cfg",
 		"windows-nyx-afd-async.cfg",
 		"windows-nyx-afd-vnet-proven.cfg",
+		"windows-nyx-afd-private.cfg",
 	} {
 		cfgPath := cfgPath
 		t.Run(cfgPath, func(t *testing.T) {
@@ -778,6 +779,73 @@ func TestWindowsAfdVNetProvenConfigCoversSeedSyscalls(t *testing.T) {
 			}
 			if !expanded[call.Meta] {
 				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-vnet-proven.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	want := []string{
+		"NtDeviceIoControlFile$afd_query_recv_tcp",
+		"NtDeviceIoControlFile$afd_query_recv_accept",
+		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_get_context_tcp",
+		"NtDeviceIoControlFile$afd_address_list_query_udp",
+		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("private AFD enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		if strings.Contains(name, "event_select") ||
+			strings.Contains(name, "enum_network_events") ||
+			strings.Contains(name, "poll") {
+			t.Fatalf("private AFD config should keep %s seed-only", name)
+		}
+	}
+}
+
+func TestWindowsAfdPrivateConfigForcesGenerationInterleave(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	if cfg.Experimental.ForceGenerateEveryN != 2 {
+		t.Fatalf("private AFD force_generate_every_n=%d, want 2",
+			cfg.Experimental.ForceGenerateEveryN)
+	}
+}
+
+func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.NoGenerate || call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-private.cfg",
 					filepath.Base(path), call.Meta.Name)
 			}
 		}
@@ -1866,6 +1934,7 @@ func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 		"nyxExecKeepState",
 		"meta.Flags |= nyxExecKeepState",
 		"keepState:    true",
+		"keep-state",
 	} {
 		if !strings.Contains(mainSrc, want) {
 			t.Fatalf("runner keep-state protocol missing %q", want)

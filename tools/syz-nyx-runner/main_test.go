@@ -129,6 +129,75 @@ func TestSynthesizeHangedResultPreservesRequest(t *testing.T) {
 	}
 }
 
+func TestPreserveWindowsDumpWaitsForStableFile(t *testing.T) {
+	oldPoll := windowsDumpSettlePoll
+	oldStableFor := windowsDumpSettleStableFor
+	oldTimeout := windowsDumpSettleTimeout
+	oldSamples := windowsDumpSettleStableSamples
+	oldAttempts := windowsDumpCopyAttempts
+	windowsDumpSettlePoll = 10 * time.Millisecond
+	windowsDumpSettleStableFor = 120 * time.Millisecond
+	windowsDumpSettleTimeout = time.Second
+	windowsDumpSettleStableSamples = 3
+	windowsDumpCopyAttempts = 1
+	t.Cleanup(func() {
+		windowsDumpSettlePoll = oldPoll
+		windowsDumpSettleStableFor = oldStableFor
+		windowsDumpSettleTimeout = oldTimeout
+		windowsDumpSettleStableSamples = oldSamples
+		windowsDumpCopyAttempts = oldAttempts
+	})
+
+	workdir := t.TempDir()
+	vm := &nyxVM{
+		index:   0,
+		workdir: workdir,
+		dumpDir: filepath.Join(workdir, "dump"),
+	}
+	if err := os.MkdirAll(vm.dumpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(vm.dumpDir, "worker_0_pending.dmp")
+	first := bytes.Repeat([]byte("A"), 64)
+	second := bytes.Repeat([]byte("B"), 64)
+	if err := os.WriteFile(src, first, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(80 * time.Millisecond)
+		f, err := os.OpenFile(src, os.O_APPEND|os.O_WRONLY, 0)
+		if err != nil {
+			t.Errorf("open pending dump for append: %v", err)
+			return
+		}
+		if _, err := f.Write(second); err != nil {
+			t.Errorf("append pending dump: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Errorf("close pending dump: %v", err)
+		}
+	}()
+
+	dump := vm.preserveWindowsDump("WINDOWS BUGCHECK DIRECT DUMP IO")
+	<-done
+	if dump.err != "" {
+		t.Fatalf("preserveWindowsDump failed: %s", dump.err)
+	}
+	if dump.size != int64(len(first)+len(second)) {
+		t.Fatalf("dump size=%d, want %d", dump.size, len(first)+len(second))
+	}
+	got, err := os.ReadFile(dump.storedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]byte{}, first...), second...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("stored dump mismatch: got %d bytes want %d", len(got), len(want))
+	}
+}
+
 func TestInjectCoverageByCallIndex(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syz_cov.bin")
 	writeCoverageDump(t, path, []nyxCovDumpRecord{
@@ -378,24 +447,6 @@ func TestRequestNeedsCoveragePriming(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if got := requestNeedsCoveragePriming(test.req); got != test.want {
 				t.Fatalf("requestNeedsCoveragePriming()=%v want %v", got, test.want)
-			}
-		})
-	}
-}
-
-func TestRequestLeavesGuestStateDirty(t *testing.T) {
-	tests := []struct {
-		name      string
-		keepState bool
-		want      bool
-	}{
-		{name: "default reload", want: false},
-		{name: "keep state", keepState: true, want: true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := requestLeavesGuestStateDirty(test.keepState); got != test.want {
-				t.Fatalf("requestLeavesGuestStateDirty()=%v want %v", got, test.want)
 			}
 		})
 	}
