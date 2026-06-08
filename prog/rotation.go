@@ -83,8 +83,9 @@ func MakeRotator(target *Target, calls map[*Syscall]bool, rnd *rand.Rand) *Rotat
 				r.resources[parent] = info
 			}
 		}
-		outputDedup := make(map[string]bool, len(call.createsResources))
-		for _, res := range call.createsResources {
+		outputResources := append(call.createsResources, call.seedCreatesResources...)
+		outputDedup := make(map[string]bool, len(outputResources))
+		for _, res := range outputResources {
 			if outputDedup[res.Name] {
 				continue
 			}
@@ -103,7 +104,7 @@ func MakeRotator(target *Target, calls map[*Syscall]bool, rnd *rand.Rand) *Rotat
 				r.resources[parent] = info
 			}
 		}
-		if len(inputs)+len(call.createsResources) == 0 {
+		if len(inputs)+len(outputResources) == 0 {
 			r.resourceless = append(r.resourceless, call)
 		}
 	}

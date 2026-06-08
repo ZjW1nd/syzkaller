@@ -365,6 +365,9 @@ func (job *triageJob) maybeScheduleImmediateCollide(p *prog.Prog, call int) {
 		TraceID:   job.fuzzer.nextTraceID("collide"),
 		Important: true,
 	}
+	if !job.fuzzer.shouldScheduleProgram(req) {
+		return
+	}
 	job.fuzzer.enqueue(job.fuzzer.immediateCollideQueue, req, ProgSmashed, 0)
 }
 
@@ -653,6 +656,11 @@ func (job *triageJob) minimize(call int, info *triageCall) (*prog.Prog, int) {
 				mergedSignal.Merge(thisSignal)
 			}
 			if info.newStableSignal.Intersection(mergedSignal).Len() == info.newStableSignal.Len() {
+				if !job.shouldPersistCall(p1, call1) {
+					job.info.Logf("[call #%d] minimization step rejected by persist policy (|calls| = %d)",
+						call, len(p1.Calls))
+					return false
+				}
 				job.info.Logf("[call #%d] minimization step success (|calls| = %d)",
 					call, len(p1.Calls))
 				return true

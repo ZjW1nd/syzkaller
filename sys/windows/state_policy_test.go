@@ -134,6 +134,9 @@ func TestWindowsAFDTargetProfileKeepsDefaultTargetClean(t *testing.T) {
 	if !profiled.CallEligibleForTriage(profiled.SyscallMap["WSARecv$accept"]) {
 		t.Fatal("AFD profile should triage deep resource consumers")
 	}
+	if !profiled.CallEligibleForTriage(profiled.SyscallMap["ConnectEx$inet_tcp"]) {
+		t.Fatal("AFD profile should triage deep public resource state transitions")
+	}
 	if profiled.Bias.FilterBiasCalls != nil ||
 		profiled.Bias.SelectGenerationBiasCall != nil ||
 		profiled.Bias.SelectGeneratedCall != nil {
@@ -157,37 +160,42 @@ func TestWindowsAFDTargetProfilePrefersDeepCollideCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p := &prog.Prog{
-		Target: profiled,
-		Calls: []*prog.Call{
-			{Meta: profiled.SyscallMap["bind$inet_tcp"]},
-			{Meta: profiled.SyscallMap["listen$inet_tcp"]},
-			{Meta: profiled.SyscallMap["WSARecv$accept"]},
-			{Meta: profiled.SyscallMap["socket$accept_tcp"]},
-		},
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
 	}
 	idx, blocked := profiled.SelectCollideCallIndices(p.Calls)
 	if blocked {
 		t.Fatal("focused collide selection unexpectedly blocked deep program")
 	}
-	if len(idx) != 1 || idx[0] != 2 {
-		t.Fatalf("collide indices=%v, want [2]", idx)
+	deepIdx := idx[len(idx)-1]
+	if p.Calls[deepIdx].Meta.Name != "WSARecv$accept" {
+		t.Fatalf("collide indices=%v, want WSARecv$accept as deepest owner", idx)
 	}
 	if !profiled.RuntimePolicy.PreferCollideProgram(p) {
 		t.Fatal("focused profile did not prefer deep resource program for collide")
 	}
-	if !profiled.RuntimePolicy.ShouldScheduleImmediateCollide(p, 2) {
+	if !profiled.RuntimePolicy.ShouldScheduleImmediateCollide(p, deepIdx) {
 		t.Fatal("focused profile did not request immediate collide for deep owner")
 	}
-	if !profiled.RuntimePolicy.ShouldForceTriageCall("candidate", p, 2) {
+	if !profiled.RuntimePolicy.ShouldForceTriageCall("candidate", p, deepIdx) {
 		t.Fatal("focused profile did not force candidate triage for deep owner")
 	}
-	if !profiled.RuntimePolicy.ShouldPersistStableTriageCall("candidate", p, 2) {
+	if !profiled.RuntimePolicy.ShouldPersistStableTriageCall("candidate", p, deepIdx) {
 		t.Fatal("focused profile did not persist stable candidate triage for deep owner")
 	}
-	shallow := &prog.Prog{
-		Target: profiled,
-		Calls:  []*prog.Call{{Meta: profiled.SyscallMap["bind$inet_tcp"]}},
+	shallow, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize shallow: %v", err)
 	}
 	_, blocked = profiled.SelectCollideCallIndices(shallow.Calls)
 	if !blocked {
@@ -198,6 +206,90 @@ func TestWindowsAFDTargetProfilePrefersDeepCollideCalls(t *testing.T) {
 	}
 	if profiled.RuntimePolicy.ShouldForceTriageCall("candidate", shallow, 0) {
 		t.Fatal("focused profile should not force candidate triage for shallow setup")
+	}
+}
+
+func TestWindowsAFDTargetProfileSkipsDeepDefaultResourceProgram(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"WSARecv$accept(0xffffffffffffffff, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if profiled.RuntimePolicy.PreferCollideProgram(p) {
+		t.Fatal("focused profile should not prefer a deep call backed only by a default resource")
+	}
+	if profiled.RuntimePolicy.ShouldScheduleImmediateCollide(p, 0) {
+		t.Fatal("focused profile should not collide a deep call backed only by a default resource")
+	}
+	if profiled.RuntimePolicy.ShouldForceTriageCall("candidate", p, 0) {
+		t.Fatal("focused profile should not force triage for a default-resource deep call")
+	}
+	if !profiled.RuntimePolicy.ShouldSkipTriageProgram("candidate", p) {
+		t.Fatal("focused profile should skip default-resource deep calls")
+	}
+}
+
+func TestWindowsAFDTargetProfileRejectsBrokenPrivateResourceLineage(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = connect$inet_udp(0xffffffffffffffff, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_routing_interface_query_udp(r0, 0x0, 0x0, 0x0, &(0x7f0000000000)={@Status=0x0, 0x0}, 0x120ab, &(0x7f0000000040)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000080), 0x10)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if profiled.RuntimePolicy.ShouldScheduleProgram("collide:fuzz", p) {
+		t.Fatalf("focused profile scheduled broken resource lineage:\n%s", p.Serialize())
+	}
+	if profiled.RuntimePolicy.PreferCollideProgram(p) {
+		t.Fatal("focused profile should not prefer broken private resource lineage")
+	}
+	if profiled.RuntimePolicy.ShouldForceTriageCall("collide:fuzz", p, 1) {
+		t.Fatal("focused profile should not force triage for broken private resource lineage")
+	}
+}
+
+func TestWindowsAFDTargetProfileRejectsMixedBrokenResourceLineage(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_event_select_accept(r3, 0x0, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x12087, &(0x7f0000000140)={0x0, 0x3ff, 0x0}, 0x10, 0x0, 0x0)\n"+
+			"r4 = bind$inet_tcp(0xffffffffffffffff, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	if !profiled.RuntimePolicy.PreferCollideProgram(p) {
+		t.Fatal("test program should still contain a valid focused owner")
+	}
+	if profiled.RuntimePolicy.ShouldScheduleProgram("collide:fuzz", p) {
+		t.Fatalf("focused profile scheduled program with mixed broken lineage:\n%s", p.Serialize())
 	}
 }
 
@@ -297,9 +389,27 @@ func TestWindowsAFDTargetProfileSkipsSeedOnlyTriagePrograms(t *testing.T) {
 	if !profiled.RuntimePolicy.ShouldSkipTriageProgram("candidate", seedOnlyProg) {
 		t.Fatal("focused profile should skip triage for seed-only programs")
 	}
-	creatorProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: creator}}}
+	creatorProg, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$connectex_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"ConnectEx$inet_tcp(r1, &(0x7f0000000100)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000200)='', 0x0, &(0x7f0000000240), 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize creator: %v", err)
+	}
 	if profiled.RuntimePolicy.ShouldSkipTriageProgram("candidate", creatorProg) {
 		t.Fatal("focused profile should triage regular public resource calls")
+	}
+	if !profiled.RuntimePolicy.ShouldForceTriageCall("candidate", creatorProg, 2) {
+		t.Fatal("focused profile should force triage for deep public state transitions")
+	}
+	scaffold := profiled.SyscallMap["listen$inet_tcp"]
+	if scaffold == nil {
+		t.Fatal("missing listen$inet_tcp")
+	}
+	scaffoldProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: scaffold}}}
+	if profiled.RuntimePolicy.ShouldForceTriageCall("candidate", scaffoldProg, 0) {
+		t.Fatal("focused profile should not force triage for shallow scaffold transitions")
 	}
 }
 

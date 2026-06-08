@@ -136,6 +136,29 @@ func (e *recordingExecutor) Submit(req *queue.Request) {
 	req.Done(e.result)
 }
 
+type minimizeSignalExecutor struct {
+	signal []uint64
+	errno  int32
+}
+
+func (e *minimizeSignalExecutor) Submit(req *queue.Request) {
+	calls := make([]*flatrpc.CallInfo, len(req.Prog.Calls))
+	for _, call := range req.ReturnAllSignal {
+		if call < 0 || call >= len(calls) {
+			continue
+		}
+		calls[call] = &flatrpc.CallInfo{
+			Error:  e.errno,
+			Signal: e.signal,
+			Cover:  e.signal,
+		}
+	}
+	req.Done(&queue.Result{
+		Status: queue.Success,
+		Info:   &flatrpc.ProgInfo{Calls: calls},
+	})
+}
+
 func TestTriageExecuteSignalsReadyAfterSubmit(t *testing.T) {
 	exec := &recordingExecutor{
 		submitted: make(chan *queue.Request, 1),
@@ -166,6 +189,59 @@ func TestTriageExecuteSignalsReadyAfterSubmit(t *testing.T) {
 		t.Fatal("triage request was not submitted before ready was signaled")
 	}
 	<-done
+}
+
+func TestWindowsAFDMinimizePreservesFocusedResourceLineage(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:       corpus.NewCorpus(ctx),
+		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
+		Logf:         func(int, string, ...any) {},
+	}, rand.New(rand.NewSource(0)), profiled)
+	job := &triageJob{
+		p:      p,
+		fuzzer: fuzzer,
+		queue:  &minimizeSignalExecutor{signal: []uint64{0x10}},
+		ready:  make(chan struct{}),
+		info:   &JobInfo{},
+		origin: "candidate",
+	}
+	minimized, minCall := job.minimize(call, &triageCall{
+		errno:           0,
+		newStableSignal: signal.FromRaw([]uint64{0x10}, 3),
+	})
+	if minimized == nil {
+		t.Fatal("minimize returned nil")
+	}
+	if minimized.CallName(minCall) != "WSARecv$accept" {
+		t.Fatalf("minimized call=%s, want WSARecv$accept", minimized.CallName(minCall))
+	}
+	if len(minimized.Calls) < 5 {
+		t.Fatalf("minimization dropped focused resource lineage:\n%s", minimized.Serialize())
+	}
+	if !job.shouldPersistCall(minimized, minCall) {
+		t.Fatalf("minimized focused program is not persistable:\n%s", minimized.Serialize())
+	}
 }
 
 func TestFocusedResourceTriageDeflakeLogsProgress(t *testing.T) {

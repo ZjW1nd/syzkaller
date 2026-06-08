@@ -86,7 +86,7 @@ func ResourceDepthCallScore(target *Target, call *Syscall) int {
 		return 1
 	}
 	if len(call.createsResources) != 0 || len(call.seedCreatesResources) != 0 {
-		return max(depth-1, 1)
+		return max(depth, 1)
 	}
 	if len(call.createsResources) == 0 && len(call.seedCreatesResources) == 0 {
 		return depth + 1
@@ -325,6 +325,9 @@ func SelectResourceLineageCollideCallIndices(target *Target, calls []*Call) ([]i
 		if call == nil || call.Meta == nil || !callCanOwnResourcePolicy(target, call.Meta) {
 			continue
 		}
+		if !callHasFocusedResourceLineage(calls, i, nil) {
+			continue
+		}
 		score := target.CallRelevance(call.Meta)
 		if score > 0 {
 			hasScored = true
@@ -420,6 +423,42 @@ func ResourceReturnProducer(candidate *ResultArg, p *Prog, insertionPoint int) *
 	return nil
 }
 
+func resourceProducerCall(candidate *ResultArg, calls []*Call, insertionPoint int) *Call {
+	if candidate == nil {
+		return nil
+	}
+	limit := len(calls)
+	if insertionPoint >= 0 && insertionPoint < limit {
+		limit = insertionPoint
+	}
+	for i := 0; i < limit; i++ {
+		call := calls[i]
+		if call != nil && call.Ret == candidate {
+			return call
+		}
+	}
+	for i := 0; i < limit; i++ {
+		call := calls[i]
+		if call == nil || call.Ret == candidate {
+			continue
+		}
+		found := false
+		ForeachArg(call, func(arg Arg, ctx *ArgCtx) {
+			if found || arg.Dir() != DirOut {
+				return
+			}
+			if arg == candidate {
+				found = true
+				ctx.Stop = true
+			}
+		})
+		if found {
+			return call
+		}
+	}
+	return nil
+}
+
 func ResourceOutputProducer(candidate *ResultArg, p *Prog, insertionPoint int) *Syscall {
 	if candidate == nil || p == nil {
 		return nil
@@ -496,6 +535,9 @@ func FocusedResourceRuntimePolicy(target *Target, minOwnerScore int) RuntimePoli
 		PreferCollideProgram: func(p *Prog) bool {
 			return ProgramHasResourceOwner(target, p, minOwnerScore)
 		},
+		ShouldScheduleProgram: func(origin string, p *Prog) bool {
+			return ProgramHasResourceOwner(target, p, minOwnerScore) && ProgramHasValidResourceLineage(p)
+		},
 		ShouldScheduleImmediateCollide: func(p *Prog, call int) bool {
 			return CallIndexHasResourceOwner(target, p, call, minOwnerScore)
 		},
@@ -523,6 +565,21 @@ func ProgramHasResourceOwner(target *Target, p *Prog, minOwnerScore int) bool {
 	return false
 }
 
+func ProgramHasValidResourceLineage(p *Prog) bool {
+	if p == nil {
+		return false
+	}
+	for idx, call := range p.Calls {
+		if call == nil || call.Meta == nil || len(call.Meta.inputResources) == 0 {
+			continue
+		}
+		if !callHasFocusedResourceLineage(p.Calls, idx, nil) {
+			return false
+		}
+	}
+	return true
+}
+
 func CallIndexHasResourceOwner(target *Target, p *Prog, call int, minOwnerScore int) bool {
 	if p == nil || call < 0 || call >= len(p.Calls) || p.Calls[call] == nil {
 		return false
@@ -531,13 +588,21 @@ func CallIndexHasResourceOwner(target *Target, p *Prog, call int, minOwnerScore 
 	if meta == nil || !callCanOwnResourcePolicy(target, meta) {
 		return false
 	}
-	score := 0
-	if target != nil {
-		score = target.CallRelevance(meta)
-	} else {
-		score = ResourceDepthCallScore(nil, meta)
+	if !callHasFocusedResourceLineage(p.Calls, call, nil) {
+		return false
 	}
-	return score >= minOwnerScore
+	return focusedResourceOwnerScore(target, meta) >= minOwnerScore
+}
+
+func focusedResourceOwnerScore(target *Target, call *Syscall) int {
+	if target != nil {
+		score := target.CallRelevance(call)
+		if len(call.createsResources) != 0 || len(call.seedCreatesResources) != 0 {
+			score = max(score, callInputResourceDepth(call))
+		}
+		return score
+	}
+	return ResourceDepthCallScore(nil, call)
 }
 
 func callCanOwnResourcePolicy(target *Target, call *Syscall) bool {
@@ -547,7 +612,10 @@ func callCanOwnResourcePolicy(target *Target, call *Syscall) bool {
 	if target != nil && target.CallIsAutomaticHelper(call) {
 		return false
 	}
-	return len(call.createsResources) == 0 && len(call.seedCreatesResources) == 0
+	if len(call.createsResources) == 0 && len(call.seedCreatesResources) == 0 {
+		return true
+	}
+	return callInputResourceDepth(call) >= resourceCtorStateDepth
 }
 
 func ShouldSkipFocusedResourceProgram(target *Target, p *Prog, minOwnerScore int) bool {
@@ -555,6 +623,7 @@ func ShouldSkipFocusedResourceProgram(target *Target, p *Prog, minOwnerScore int
 		return false
 	}
 	containsNoGenerate := false
+	containsUnownedFocusedCall := false
 	for idx, call := range p.Calls {
 		if call == nil || call.Meta == nil {
 			continue
@@ -565,8 +634,12 @@ func ShouldSkipFocusedResourceProgram(target *Target, p *Prog, minOwnerScore int
 		if call.Meta.Attrs.NoGenerate {
 			containsNoGenerate = true
 		}
+		if callCanOwnResourcePolicy(target, call.Meta) &&
+			focusedResourceOwnerScore(target, call.Meta) >= minOwnerScore {
+			containsUnownedFocusedCall = true
+		}
 	}
-	return containsNoGenerate
+	return containsNoGenerate || containsUnownedFocusedCall
 }
 
 func shouldKeepFocusedResourceOwner(target *Target, origin string, p *Prog, call int, minOwnerScore int) bool {
@@ -574,6 +647,56 @@ func shouldKeepFocusedResourceOwner(target *Target, origin string, p *Prog, call
 		return false
 	}
 	return CallIndexHasResourceOwner(target, p, call, minOwnerScore)
+}
+
+func callHasFocusedResourceLineage(calls []*Call, callIndex int, seen map[*Call]bool) bool {
+	if callIndex < 0 || callIndex >= len(calls) {
+		return false
+	}
+	call := calls[callIndex]
+	if call == nil || call.Meta == nil || len(call.Meta.inputResources) == 0 {
+		return true
+	}
+	if seen == nil {
+		seen = make(map[*Call]bool)
+	}
+	if seen[call] {
+		return true
+	}
+	seen[call] = true
+	foundRequiredResource := false
+	validRequiredResources := true
+	ForeachArg(call, func(arg Arg, ctx *ArgCtx) {
+		res, ok := arg.(*ResultArg)
+		if !ok || res.Dir() == DirOut || res.Type().Optional() {
+			return
+		}
+		foundRequiredResource = true
+		if res.Res == nil {
+			validRequiredResources = false
+			ctx.Stop = true
+			return
+		}
+		producer := resourceProducerCall(res.Res, calls, callIndex)
+		if producer == nil {
+			validRequiredResources = false
+			ctx.Stop = true
+			return
+		}
+		producerIndex := -1
+		for i := callIndex - 1; i >= 0; i-- {
+			if calls[i] == producer {
+				producerIndex = i
+				break
+			}
+		}
+		if producerIndex == -1 || !callHasFocusedResourceLineage(calls, producerIndex, seen) {
+			validRequiredResources = false
+			ctx.Stop = true
+			return
+		}
+	})
+	return foundRequiredResource && validRequiredResources
 }
 
 // NoTargetProfile keeps ApplyTargetProfile implementations compact when a target

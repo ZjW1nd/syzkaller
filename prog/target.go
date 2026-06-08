@@ -214,6 +214,10 @@ type RuntimePolicy struct {
 	// PreferCollideProgram lets a target request a higher collide probability for programs that
 	// already match a target-specific local interaction template.
 	PreferCollideProgram func(p *Prog) bool
+	// ShouldScheduleProgram lets a target reject generated or mutated programs before they enter
+	// the executor queues. Focused modes use this to keep broken resource lineages out of the
+	// steady-state fuzz stream while leaving ordinary targets unrestricted.
+	ShouldScheduleProgram func(origin string, p *Prog) bool
 	// ShouldScheduleImmediateCollide lets a target request an immediate one-off collide attempt
 	// after a triaged program is stabilized and persisted. This is intended for focused targets
 	// where deeper owners are rare and should be raced promptly rather than waiting to be drawn

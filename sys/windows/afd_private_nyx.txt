@@ -1,0 +1,46 @@
+# Controlled private afd.sys DeviceControl surface for Nyx experiments.
+# These variants intentionally reuse SOCKET_* endpoint states from socket_nyx.txt
+# instead of introducing a separate AFD endpoint handle resource.
+
+afd_poll_events = 0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x3ff
+
+AFD_RECEIVE_INFORMATION {
+	BytesAvailable		int32
+	ExpeditedBytesAvailable	int32
+} [size[8]]
+
+AFD_POLL_HANDLE_INFO {
+	Handle		SOCKET
+	PollEvents	flags[afd_poll_events, int32]
+	Status		int32
+} [size[16]]
+
+AFD_POLL_INFO {
+	Timeout		LARGE_INTEGER
+	NumberOfHandles	const[1, int32]
+	Unique		bool8
+	Pad0		array[const[0, int8], 3]
+	Handles		array[AFD_POLL_HANDLE_INFO, 1]
+} [size[32]]
+
+AFD_EVENT_SELECT_INFO {
+	Event		WSAEVENT_HANDLE
+	PollEvents	flags[afd_poll_events, int32]
+	Padding		const[0, int32]
+} [size[16]]
+
+AFD_ENUM_NETWORK_EVENTS_INFO {
+	PollEvents	int32
+	EventStatus	array[int32, 13]
+} [size[56]]
+
+NtDeviceIoControlFile$afd_query_recv_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12033], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_RECEIVE_INFORMATION], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_query_recv_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12033], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_RECEIVE_INFORMATION], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_remote_address_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_context_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12043], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_address_list_query_udp(FileHandle SOCKET_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120b3], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, afd_address_list], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_routing_interface_query_udp(FileHandle SOCKET_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120ab], InputBuffer ptr[in, sockaddr_in], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
+
+NtDeviceIoControlFile$afd_event_select_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12087], InputBuffer ptr[in, AFD_EVENT_SELECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_enum_network_events_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208b], InputBuffer ptr[in, WSAEVENT_HANDLE, opt], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_ENUM_NETWORK_EVENTS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_poll_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12024], InputBuffer ptr[inout, AFD_POLL_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[inout, AFD_POLL_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)

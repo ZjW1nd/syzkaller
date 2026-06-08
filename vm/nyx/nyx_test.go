@@ -53,6 +53,7 @@ func TestRunnerArgs(t *testing.T) {
 				QemuArgs:               []string{"-serial", "file:{{WORKDIR}}/serial.log"},
 				WindowsMinidump:        true,
 				WindowsMinidumpTimeout: 90,
+				KeepState:              true,
 			},
 		},
 		index:   2,
@@ -76,6 +77,7 @@ func TestRunnerArgs(t *testing.T) {
 		"--debug",
 		"--windows-minidump",
 		"--windows-minidump-timeout", "90",
+		"--keep-state",
 		"--qemu-arg", "-serial",
 		"--qemu-arg", "file:/inst/work/serial.log",
 	}

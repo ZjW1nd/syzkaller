@@ -6,6 +6,7 @@ resource SOCKET[int64]: -1
 resource SOCKET_TCP[SOCKET]
 resource SOCKET_TCP_CREATED[SOCKET_TCP]
 resource SOCKET_TCP_BOUND[SOCKET_TCP]
+resource SOCKET_TCP_CONNECTEX_BOUND[SOCKET_TCP_BOUND]
 resource SOCKET_TCP_LISTENING[SOCKET_TCP_BOUND]
 resource SOCKET_TCP_CONNECTED[SOCKET_TCP]
 resource SOCKET_TCP_ACCEPTED[SOCKET_TCP]
@@ -123,7 +124,7 @@ WSAResetEvent(hEvent WSAEVENT_HANDLE)
 
 bind$inet_tcp(s SOCKET_TCP_CREATED, addr ptr[in, sockaddr_in], namelen len[addr]) SOCKET_TCP_BOUND
 bind$inet_udp(s SOCKET_UDP_CREATED, addr ptr[in, sockaddr_in], namelen len[addr]) SOCKET_UDP_BOUND
-bind$connectex_tcp(s SOCKET_CONNECTED, addr ptr[in, sockaddr_in], namelen len[addr])
+bind$connectex_tcp(s SOCKET_TCP_CREATED, addr ptr[in, sockaddr_in], namelen len[addr]) SOCKET_TCP_CONNECTEX_BOUND
 connect$inet_tcp(s SOCKET_TCP_CREATED, name ptr[in, sockaddr_in], namelen len[name]) SOCKET_TCP_CONNECTED
 connect$inet_udp(s SOCKET_UDP_CREATED, name ptr[in, sockaddr_in], namelen len[name]) SOCKET_UDP_PEERED
 listen$inet_tcp(s SOCKET_TCP_BOUND, backlog int32) SOCKET_TCP_LISTENING
@@ -226,10 +227,10 @@ getsockopt$int_accept_updated(s SOCKET_TCP_ACCEPTED_UPDATED, level int32, optnam
 AcceptEx$inet_tcp(sListenSocket SOCKET_LISTENER, sAcceptSocket SOCKET_ACCEPT, lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, lpdwBytesReceived ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED, opt])
 AcceptEx$inet_tcp_pending(sListenSocket SOCKET_LISTENER, sAcceptSocket SOCKET_ACCEPT, lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, lpdwBytesReceived ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED]) SOCKET_TCP_ACCEPT_PENDING (no_generate, no_minimize)
 setsockopt$update_accept_context(s SOCKET_TCP_ACCEPT_PENDING, level const[0xffff], optname const[0x700b], optval ptr[in, SOCKET_LISTENER], optlen const[8]) SOCKET_TCP_ACCEPTED_UPDATED (no_generate, no_minimize)
-ConnectEx$inet_tcp(s SOCKET_CONNECTED, name ptr[in, sockaddr_in], namelen len[name], lpSendBuffer ptr[in, array[int8]], dwSendDataLength bytesize[lpSendBuffer], lpdwBytesSent ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt])
-ConnectEx$inet_tcp_pending(s SOCKET_CONNECTED, name ptr[in, sockaddr_in], namelen len[name], lpSendBuffer ptr[in, array[int8]], dwSendDataLength bytesize[lpSendBuffer], lpdwBytesSent ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED]) SOCKET_TCP_CONNECTING (no_generate, no_minimize)
-DisconnectEx$inet_tcp(s SOCKET_CONNECTED, lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags flags[disconnectex_flags], dwReserved const[0])
-DisconnectEx$inet_tcp_reuse(s SOCKET_CONNECTED, lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags const[0x2], dwReserved const[0]) SOCKET_TCP_DISCONNECTED_REUSABLE
+ConnectEx$inet_tcp(s SOCKET_TCP_CONNECTEX_BOUND, name ptr[in, sockaddr_in], namelen len[name], lpSendBuffer ptr[in, array[int8]], dwSendDataLength bytesize[lpSendBuffer], lpdwBytesSent ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt]) SOCKET_TCP_CONNECTED
+ConnectEx$inet_tcp_pending(s SOCKET_TCP_CONNECTEX_BOUND, name ptr[in, sockaddr_in], namelen len[name], lpSendBuffer ptr[in, array[int8]], dwSendDataLength bytesize[lpSendBuffer], lpdwBytesSent ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED]) SOCKET_TCP_CONNECTING (no_generate, no_minimize)
+DisconnectEx$inet_tcp(s SOCKET_TCP_CONNECTED, lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags flags[disconnectex_flags], dwReserved const[0])
+DisconnectEx$inet_tcp_reuse(s SOCKET_TCP_CONNECTED, lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags const[0x2], dwReserved const[0]) SOCKET_TCP_DISCONNECTED_REUSABLE
 ConnectEx$inet_tcp_reuse(s SOCKET_TCP_DISCONNECTED_REUSABLE, name ptr[in, sockaddr_in], namelen len[name], lpSendBuffer ptr[in, array[int8]], dwSendDataLength bytesize[lpSendBuffer], lpdwBytesSent ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt]) SOCKET_TCP_CONNECTED
 GetAcceptExSockaddrs$inet_tcp(lpOutputBuffer ptr[inout, array[int8]], dwReceiveDataLength int32, dwLocalAddressLength int32, dwRemoteAddressLength int32, LocalSockaddr ptr[out, ptr[out, sockaddr_in]], LocalSockaddrLength ptr[out, int32], RemoteSockaddr ptr[out, ptr[out, sockaddr_in]], RemoteSockaddrLength ptr[out, int32])
 TransmitPackets$inet_accept(hSocket SOCKET_ACCEPT, lpPacketArray ptr[in, array[transmit_packet_memory, 1]], nElementCount const[1], nSendSize int32[0:4096], lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags flags[transmit_packets_flags])

@@ -418,9 +418,76 @@ func TestWindowsAFDSkipsCorpusForSeedOnlyPrograms(t *testing.T) {
 	if job.shouldPersistCall(seedOnlyProg, 0) {
 		t.Fatal("seed-only AFD programs should not be persisted as corpus entries")
 	}
-	creatorProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: creator}}}
-	if !job.shouldPersistCall(creatorProg, 0) {
+	creatorProg := windowsFuzzerTestConnectExProgram(t, profiled)
+	creatorCall := windowsFuzzerTestCallIndex(t, creatorProg, "ConnectEx$inet_tcp")
+	if !job.shouldPersistCall(creatorProg, creatorCall) {
 		t.Fatal("regular public AFD calls should still be persisted")
+	}
+}
+
+func TestWindowsAFDSkipsBrokenResourceLineageCandidate(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = connect$inet_udp(0xffffffffffffffff, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_routing_interface_query_udp(r0, 0x0, 0x0, 0x0, &(0x7f0000000000)={@Status=0x0, 0x0}, 0x120ab, &(0x7f0000000040)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000080), 0x10)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		Logf:   func(int, string, ...any) {},
+		EnabledCalls: map[*prog.Syscall]bool{
+			profiled.SyscallMap["NtDeviceIoControlFile$afd_routing_interface_query_udp"]: true,
+		},
+	}, rand.New(rand.NewSource(0)), profiled)
+	fuzzer.AddCandidates([]Candidate{{Prog: p}})
+	if got := fuzzer.candidateQueue.Len(); got != 0 {
+		t.Fatalf("broken resource lineage candidate queued %d requests", got)
+	}
+}
+
+func TestWindowsAFDSkipsMixedBrokenResourceLineageCandidate(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_event_select_accept(r3, 0x0, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x12087, &(0x7f0000000140)={0x0, 0x3ff, 0x0}, 0x10, 0x0, 0x0)\n"+
+			"r4 = bind$inet_tcp(0xffffffffffffffff, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		Logf:   func(int, string, ...any) {},
+		EnabledCalls: map[*prog.Syscall]bool{
+			profiled.SyscallMap["NtDeviceIoControlFile$afd_event_select_accept"]: true,
+		},
+	}, rand.New(rand.NewSource(0)), profiled)
+	fuzzer.AddCandidates([]Candidate{{Prog: p}})
+	if got := fuzzer.candidateQueue.Len(); got != 0 {
+		t.Fatalf("mixed broken resource lineage candidate queued %d requests", got)
 	}
 }
 
@@ -502,11 +569,12 @@ func TestWindowsAFDSkipsTriageForSeedOnlyPrograms(t *testing.T) {
 	if got := fuzzer.Cover.CopyMaxSignal().Len(); got != 3 {
 		t.Fatalf("seed-only AFD program max signal=%d, want 3", got)
 	}
-	creatorProg := &prog.Prog{Target: profiled, Calls: []*prog.Call{{Meta: creator}}}
+	creatorProg := windowsFuzzerTestConnectExProgram(t, profiled)
+	creatorCall := windowsFuzzerTestCallIndex(t, creatorProg, "ConnectEx$inet_tcp")
 	fuzzer.triageProgCall("candidate", creatorProg, &flatrpc.CallInfo{
 		Signal: []uint64{4, 5, 6},
 		Cover:  []uint64{4, 5, 6},
-	}, 0, &triage)
+	}, creatorCall, &triage)
 	if len(triage) != 1 {
 		t.Fatalf("pure async state creator should still produce triage, got %d", len(triage))
 	}
@@ -911,6 +979,19 @@ func windowsFuzzerTestCallIndex(t *testing.T, p *prog.Prog, name string) int {
 	}
 	t.Fatalf("program is missing %s", name)
 	return -1
+}
+
+func windowsFuzzerTestConnectExProgram(t *testing.T, target *prog.Target) *prog.Prog {
+	t.Helper()
+	p, err := target.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$connectex_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"ConnectEx$inet_tcp(r1, &(0x7f0000000100)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000200)='', 0x0, &(0x7f0000000240), 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize ConnectEx program: %v", err)
+	}
+	return p
 }
 
 func BenchmarkFuzzer(b *testing.B) {

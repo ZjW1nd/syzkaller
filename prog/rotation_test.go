@@ -103,6 +103,40 @@ nextIter:
 	}
 }
 
+func TestRotationTracksSeedOnlyResourceConstructors(t *testing.T) {
+	target, rs, _ := initRandomTargetTest(t, "windows", "amd64")
+	ctor := target.SyscallMap["AcceptEx$inet_tcp_pending"]
+	consumer := target.SyscallMap["CancelIoEx$accept_pending"]
+	if ctor == nil || consumer == nil {
+		t.Fatalf("missing seed-only resource test calls: ctor=%v consumer=%v", ctor, consumer)
+	}
+	calls := map[*Syscall]bool{
+		ctor:     true,
+		consumer: true,
+	}
+	rotator := MakeRotator(target, calls, rand.New(rs))
+	res := target.resourceMap["SOCKET_TCP_ACCEPT_PENDING"]
+	if res == nil {
+		t.Fatal("missing SOCKET_TCP_ACCEPT_PENDING resource")
+	}
+	info := rotator.resources[res]
+	if !rotationTestContainsCall(info.ctors[1], ctor) {
+		t.Fatalf("rotator did not track seed-only constructor %q for %s", ctor.Name, res.Name)
+	}
+	if !rotationTestContainsCall(info.uses[0], consumer) {
+		t.Fatalf("rotator did not track consumer %q for %s", consumer.Name, res.Name)
+	}
+}
+
+func rotationTestContainsCall(calls []*Syscall, want *Syscall) bool {
+	for _, call := range calls {
+		if call == want {
+			return true
+		}
+	}
+	return false
+}
+
 func selectCalls(target *Target, rnd *rand.Rand, ncalls int) map[*Syscall]bool {
 retry:
 	calls := make(map[*Syscall]bool)

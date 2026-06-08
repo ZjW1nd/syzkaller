@@ -410,26 +410,48 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 	}
 	var req *queue.Request
 	rnd := fuzzer.rand()
-	if rnd.Float64() < mutateRate {
-		req = mutateProgRequest(fuzzer, rnd)
+	for range 16 {
+		if rnd.Float64() < mutateRate {
+			req = mutateProgRequest(fuzzer, rnd)
+		}
+		if req == nil {
+			req = genProgRequest(fuzzer, rnd)
+		}
+		if fuzzer.shouldScheduleProgram(req) {
+			break
+		}
+		req = nil
 	}
 	if req == nil {
-		req = genProgRequest(fuzzer, rnd)
+		return nil
 	}
 	collideChance := fuzzer.collideChanceForProg(req.Prog)
 	if fuzzer.Config.Collide && (fuzzer.Config.MaxCallsPerProg == 0 || fuzzer.Config.MaxCallsPerProg > 1) &&
 		rnd.Intn(collideChance) == 0 {
 		collidedProg := randomCollide(req.Prog, rnd)
-		req = &queue.Request{
+		collideReq := &queue.Request{
 			Prog:       collidedProg,
 			Stat:       fuzzer.statExecCollide,
 			ExtraStats: []*stat.Val{req.Stat},
 			Origin:     "collide:" + req.Origin,
 			TraceID:    fuzzer.nextTraceID("collide"),
 		}
+		if fuzzer.shouldScheduleProgram(collideReq) {
+			req = collideReq
+		}
 	}
 	fuzzer.prepare(req, 0, 0)
 	return req
+}
+
+func (fuzzer *Fuzzer) shouldScheduleProgram(req *queue.Request) bool {
+	if req == nil || req.Prog == nil {
+		return false
+	}
+	if fuzzer.target == nil || fuzzer.target.RuntimePolicy.ShouldScheduleProgram == nil {
+		return true
+	}
+	return fuzzer.target.RuntimePolicy.ShouldScheduleProgram(req.Origin, req.Prog)
 }
 
 func (fuzzer *Fuzzer) collideChanceForProg(p *prog.Prog) int {
@@ -484,10 +506,11 @@ func (fuzzer *Fuzzer) Next() *queue.Request {
 		// Some focused modes can temporarily exhaust candidate/corpus-driven sources,
 		// especially when mutation has no available base program. Fall back to a fresh
 		// generation request instead of panicking the whole manager.
-		if req = genProgRequest(fuzzer, fuzzer.rand()); req != nil {
+		if req = genProgRequest(fuzzer, fuzzer.rand()); fuzzer.shouldScheduleProgram(req) {
+			fuzzer.prepare(req, 0, 0)
 			return req
 		}
-		if tries >= 2 {
+		if tries >= 16 {
 			panic("nil request from the fuzzer")
 		}
 	}
@@ -559,7 +582,7 @@ type CorpusSaveEvent struct {
 }
 
 func (fuzzer *Fuzzer) AddCandidates(candidates []Candidate) {
-	fuzzer.statCandidates.Add(len(candidates))
+	accepted := 0
 	for _, candidate := range candidates {
 		req := &queue.Request{
 			Prog:       candidate.Prog,
@@ -570,8 +593,13 @@ func (fuzzer *Fuzzer) AddCandidates(candidates []Candidate) {
 			Important:  true,
 			NoPrefetch: true,
 		}
+		if !fuzzer.shouldScheduleProgram(req) {
+			continue
+		}
+		accepted++
 		fuzzer.enqueue(fuzzer.candidateQueue, req, candidate.Flags|progCandidate, 0)
 	}
+	fuzzer.statCandidates.Add(accepted)
 }
 
 func (fuzzer *Fuzzer) rand() *rand.Rand {

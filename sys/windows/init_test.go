@@ -182,7 +182,7 @@ func TestWindowsExpandEnabledCallsUsesSocketResourceRoles(t *testing.T) {
 		},
 		{
 			root: "CancelIoEx$connect_pending",
-			want: []string{"socket$inet_tcp", "connect$inet_tcp", "ConnectEx$inet_tcp_pending"},
+			want: []string{"socket$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp_pending"},
 		},
 		{
 			root: "WSAEventSelect$accept",
@@ -241,6 +241,32 @@ func TestWindowsExpandEnabledCallsAddsFileAndObjectConstructors(t *testing.T) {
 		{
 			root: "ReadFile$pipe",
 			want: []string{"ReadFile$pipe", "CreatePipe$anon"},
+		},
+		{
+			root: "NtDeviceIoControlFile$afd_query_recv_tcp",
+			want: []string{"NtDeviceIoControlFile$afd_query_recv_tcp", "socket$inet_tcp", "connect$inet_tcp"},
+		},
+		{
+			root: "NtDeviceIoControlFile$afd_query_recv_accept",
+			want: []string{
+				"NtDeviceIoControlFile$afd_query_recv_accept",
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
+			},
+		},
+		{
+			root: "NtDeviceIoControlFile$afd_address_list_query_udp",
+			want: []string{"NtDeviceIoControlFile$afd_address_list_query_udp", "socket$inet_udp", "bind$inet_udp"},
+		},
+		{
+			root: "NtDeviceIoControlFile$afd_routing_interface_query_udp",
+			want: []string{"NtDeviceIoControlFile$afd_routing_interface_query_udp", "socket$inet_udp", "connect$inet_udp"},
+		},
+		{
+			root: "NtDeviceIoControlFile$afd_event_select_accept",
+			want: []string{
+				"NtDeviceIoControlFile$afd_event_select_accept",
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "WSACreateEvent",
+			},
 		},
 	}
 	for _, test := range tests {
@@ -395,6 +421,8 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("socket$inet_udp", -1, "SOCKET_UDP_CREATED")
 	assertResource("bind$inet_tcp", 0, "SOCKET_TCP_CREATED")
 	assertResource("bind$inet_tcp", -1, "SOCKET_TCP_BOUND")
+	assertResource("bind$connectex_tcp", 0, "SOCKET_TCP_CREATED")
+	assertResource("bind$connectex_tcp", -1, "SOCKET_TCP_CONNECTEX_BOUND")
 	assertResource("connect$inet_tcp", 0, "SOCKET_TCP_CREATED")
 	assertResource("connect$inet_tcp", -1, "SOCKET_TCP_CONNECTED")
 	assertResource("bind$inet_udp", 0, "SOCKET_UDP_CREATED")
@@ -427,6 +455,15 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("NtWriteFile", 1, "EVENT_HANDLE")
 	assertResource("NtDeviceIoControlFile", 0, "FILE_HANDLE")
 	assertResource("NtDeviceIoControlFile", 1, "EVENT_HANDLE")
+	assertResource("NtDeviceIoControlFile$afd_query_recv_tcp", 0, "SOCKET_TCP_CONNECTED")
+	assertResource("NtDeviceIoControlFile$afd_query_recv_accept", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("NtDeviceIoControlFile$afd_get_remote_address_tcp", 0, "SOCKET_TCP_CONNECTED")
+	assertResource("NtDeviceIoControlFile$afd_get_context_tcp", 0, "SOCKET_TCP_CONNECTED")
+	assertResource("NtDeviceIoControlFile$afd_address_list_query_udp", 0, "SOCKET_UDP_BOUND")
+	assertResource("NtDeviceIoControlFile$afd_routing_interface_query_udp", 0, "SOCKET_UDP_PEERED")
+	assertResource("NtDeviceIoControlFile$afd_event_select_accept", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("NtDeviceIoControlFile$afd_enum_network_events_accept", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("NtDeviceIoControlFile$afd_poll_accept", 0, "SOCKET_TCP_ACCEPTED")
 	assertResource("NtFsControlFile", 0, "FILE_HANDLE")
 	assertResource("NtFsControlFile", 1, "EVENT_HANDLE")
 	assertResource("NtFsControlFile$ntfs_get_compression", 0, "FILE_HANDLE")
@@ -445,6 +482,16 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertPtrStruct("NtFsControlFile$ntfs_set_zero_data", 6, "FILE_ZERO_DATA_INFORMATION")
 	assertPtrStruct("NtFsControlFile$ntfs_query_allocated_ranges", 6, "FILE_ALLOCATED_RANGE_BUFFER")
 	assertPtrArrayStruct("NtFsControlFile$ntfs_query_allocated_ranges", 8, "FILE_ALLOCATED_RANGE_BUFFER")
+	assertPtrStruct("NtDeviceIoControlFile$afd_query_recv_tcp", 8, "AFD_RECEIVE_INFORMATION")
+	assertPtrStruct("NtDeviceIoControlFile$afd_query_recv_accept", 8, "AFD_RECEIVE_INFORMATION")
+	assertPtrStruct("NtDeviceIoControlFile$afd_get_remote_address_tcp", 8, "sockaddr_in")
+	assertPtrStruct("NtDeviceIoControlFile$afd_address_list_query_udp", 8, "afd_address_list")
+	assertPtrStruct("NtDeviceIoControlFile$afd_routing_interface_query_udp", 6, "sockaddr_in")
+	assertPtrStruct("NtDeviceIoControlFile$afd_routing_interface_query_udp", 8, "sockaddr_in")
+	assertPtrStruct("NtDeviceIoControlFile$afd_event_select_accept", 6, "AFD_EVENT_SELECT_INFO")
+	assertPtrStruct("NtDeviceIoControlFile$afd_enum_network_events_accept", 8, "AFD_ENUM_NETWORK_EVENTS_INFO")
+	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept", 6, "AFD_POLL_INFO")
+	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept", 8, "AFD_POLL_INFO")
 	assertPtrStruct("AcceptEx$inet_tcp", 7, "OVERLAPPED")
 	assertResource("AcceptEx$inet_tcp_pending", 0, "SOCKET_LISTENER")
 	assertResource("AcceptEx$inet_tcp_pending", 1, "SOCKET_ACCEPT")
@@ -464,8 +511,10 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("WSAIoctl$sio_routing_interface_query", 0, "SOCKET_UDP_PEERED")
 	assertPtrStruct("WSAIoctl$sio_keepalive_vals", 2, "tcp_keepalive")
 	assertPtrStruct("WSAIoctl$sio_get_extension_function_pointer", 2, "wsa_guid_connectex")
+	assertResource("ConnectEx$inet_tcp", 0, "SOCKET_TCP_CONNECTEX_BOUND")
+	assertResource("ConnectEx$inet_tcp", -1, "SOCKET_TCP_CONNECTED")
 	assertPtrStruct("ConnectEx$inet_tcp", 1, "sockaddr_in")
-	assertResource("ConnectEx$inet_tcp_pending", 0, "SOCKET_CONNECTED")
+	assertResource("ConnectEx$inet_tcp_pending", 0, "SOCKET_TCP_CONNECTEX_BOUND")
 	assertResource("ConnectEx$inet_tcp_pending", -1, "SOCKET_TCP_CONNECTING")
 	assertPtrStruct("ConnectEx$inet_tcp_pending", 1, "sockaddr_in")
 	assertPtrStruct("ConnectEx$inet_tcp_pending", 6, "OVERLAPPED")
@@ -561,6 +610,11 @@ func TestWindowsObjectStructLayouts(t *testing.T) {
 		{name: "FILE_SET_SPARSE_BUFFER", size: 0x1},
 		{name: "FILE_ZERO_DATA_INFORMATION", size: 0x10},
 		{name: "FILE_ALLOCATED_RANGE_BUFFER", size: 0x10},
+		{name: "AFD_RECEIVE_INFORMATION", size: 0x8},
+		{name: "AFD_POLL_HANDLE_INFO", size: 0x10},
+		{name: "AFD_POLL_INFO", size: 0x20},
+		{name: "AFD_EVENT_SELECT_INFO", size: 0x10},
+		{name: "AFD_ENUM_NETWORK_EVENTS_INFO", size: 0x38},
 		{name: "tcp_keepalive", size: 0xc},
 		{name: "wsa_guid_connectex", size: 0x10},
 		{name: "afd_address_list", size: 0x44},
@@ -582,6 +636,15 @@ func TestWindowsNtControlCallsHaveFullArity(t *testing.T) {
 	}
 	for _, name := range []string{
 		"NtDeviceIoControlFile",
+		"NtDeviceIoControlFile$afd_query_recv_tcp",
+		"NtDeviceIoControlFile$afd_query_recv_accept",
+		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_get_context_tcp",
+		"NtDeviceIoControlFile$afd_address_list_query_udp",
+		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
+		"NtDeviceIoControlFile$afd_event_select_accept",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept",
+		"NtDeviceIoControlFile$afd_poll_accept",
 		"NtFsControlFile",
 		"NtFsControlFile$ntfs_get_compression",
 		"NtFsControlFile$ntfs_set_compression",
@@ -809,6 +872,9 @@ func TestWindowsAFDAsyncSeedOnlyCallsAreNotGeneratedStandalone(t *testing.T) {
 		"closesocket$tcp_recv_pending",
 		"closesocket$tcp_send_pending",
 		"closesocket$connect_pending",
+		"NtDeviceIoControlFile$afd_event_select_accept",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept",
+		"NtDeviceIoControlFile$afd_poll_accept",
 	} {
 		meta := target.SyscallMap[name]
 		if meta == nil {
@@ -1921,8 +1987,15 @@ func TestWindowsAFDStateMachineCallsAreGeneratable(t *testing.T) {
 			want: []string{"socket$inet_tcp", "connect$inet_tcp", "shutdown$tcp_wr"},
 		},
 		{
+			root: "ConnectEx$inet_tcp",
+			want: []string{"socket$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp"},
+		},
+		{
 			root: "ConnectEx$inet_tcp_reuse",
-			want: []string{"socket$connected_tcp", "connect$inet_tcp", "DisconnectEx$inet_tcp_reuse", "ConnectEx$inet_tcp_reuse"},
+			want: []string{
+				"socket$inet_tcp", "bind$connectex_tcp", "ConnectEx$inet_tcp",
+				"DisconnectEx$inet_tcp_reuse", "ConnectEx$inet_tcp_reuse",
+			},
 		},
 	}
 	for _, test := range tests {

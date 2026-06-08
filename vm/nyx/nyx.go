@@ -47,6 +47,7 @@ type Config struct {
 	RunnerLog              string   `json:"runner_log"`
 	WindowsMinidump        bool     `json:"windows_minidump"`
 	WindowsMinidumpTimeout int      `json:"windows_minidump_timeout"`
+	KeepState              bool     `json:"keep_state"`
 }
 
 type Pool struct {
@@ -285,6 +286,9 @@ func (inst *instance) runnerArgs(host, port string) ([]string, error) {
 		if cfg.WindowsMinidumpTimeout > 0 {
 			args = append(args, "--windows-minidump-timeout", strconv.Itoa(cfg.WindowsMinidumpTimeout))
 		}
+	}
+	if cfg.KeepState {
+		args = append(args, "--keep-state")
 	}
 	for _, arg := range cfg.QemuArgs {
 		args = append(args, "--qemu-arg", inst.expand(arg))
