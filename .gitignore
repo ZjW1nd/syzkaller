@@ -33,3 +33,4 @@ executor/syscalls.h
 .gemini/
 gha-creds-*.json
 .gocache
+.serena
