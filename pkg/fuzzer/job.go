@@ -193,6 +193,7 @@ func (job *triageJob) run(fuzzer *Fuzzer) {
 }
 
 func (job *triageJob) handleCall(call int, info *triageCall) {
+	origCall := call
 	origCallName := job.p.CallName(call)
 	if info.newStableSignal.Empty() {
 		if job != nil && job.fuzzer != nil && job.fuzzer.target != nil &&
@@ -207,10 +208,20 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 
 	p := job.p
 	if job.flags&ProgMinimized == 0 {
-		p, call = job.minimize(call, info)
-		if p == nil {
-			job.logTriageSkip(call, origCallName, info, "minimize_failed")
-			return
+		if job.shouldKeepOriginalWithoutMinimization(call, info) {
+			job.info.Logf("[call #%d] no_minimize stable owner; keeping original input", call)
+		} else {
+			p, call = job.minimize(call, info)
+			if p == nil {
+				if job.shouldPersistOriginalAfterMinimizeFailure(origCall, info) {
+					p = job.p
+					call = origCall
+					job.info.Logf("[call #%d] minimization failed; keeping original stable focused input", call)
+				} else {
+					job.logTriageSkip(origCall, origCallName, info, "minimize_failed")
+					return
+				}
+			}
 		}
 	}
 	callName := p.CallName(call)
@@ -338,6 +349,31 @@ func (job *triageJob) shouldPersistCall(p *prog.Prog, call int) bool {
 		return false
 	}
 	return true
+}
+
+func (job *triageJob) shouldPersistOriginalAfterMinimizeFailure(call int, info *triageCall) bool {
+	if call < 0 || info == nil || info.stableSignal.Empty() {
+		return false
+	}
+	if job.shouldKeepOriginalWithoutMinimization(call, info) {
+		return true
+	}
+	if job.fuzzer == nil || job.fuzzer.target == nil ||
+		job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall == nil {
+		return false
+	}
+	return job.fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall(job.origin, job.p, call)
+}
+
+func (job *triageJob) shouldKeepOriginalWithoutMinimization(call int, info *triageCall) bool {
+	if call < 0 || info == nil || info.stableSignal.Empty() || job == nil || job.p == nil ||
+		call >= len(job.p.Calls) || job.p.Calls[call] == nil || job.p.Calls[call].Meta == nil {
+		return false
+	}
+	if !job.p.Calls[call].Meta.Attrs.NoMinimize {
+		return false
+	}
+	return job.shouldPersistCall(job.p, call)
 }
 
 func (job *triageJob) maybeScheduleImmediateCollide(p *prog.Prog, call int) {
@@ -640,7 +676,7 @@ func (job *triageJob) minimize(call int, info *triageCall) (*prog.Prog, int) {
 				ExecOpts:        setFlags(flatrpc.ExecFlagCollectSignal),
 				ReturnAllSignal: []int{call1},
 				Stat:            job.fuzzer.statExecMinimize,
-			}, 0)
+			}, progInTriage)
 			if result.Stop() {
 				stop = true
 				return false

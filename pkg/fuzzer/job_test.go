@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"os"
 	"strings"
 	"testing"
 
@@ -159,6 +160,20 @@ func (e *minimizeSignalExecutor) Submit(req *queue.Request) {
 	})
 }
 
+type hangedMinimizeExecutor struct{}
+
+func (e *hangedMinimizeExecutor) Submit(req *queue.Request) {
+	req.Done(&queue.Result{Status: queue.Hanged})
+}
+
+type failSubmitExecutor struct {
+	t *testing.T
+}
+
+func (e *failSubmitExecutor) Submit(req *queue.Request) {
+	e.t.Fatalf("unexpected executor submit during no_minimize triage: %s", req.Prog)
+}
+
 func TestTriageExecuteSignalsReadyAfterSubmit(t *testing.T) {
 	exec := &recordingExecutor{
 		submitted: make(chan *queue.Request, 1),
@@ -241,6 +256,54 @@ func TestWindowsAFDMinimizePreservesFocusedResourceLineage(t *testing.T) {
 	}
 	if !job.shouldPersistCall(minimized, minCall) {
 		t.Fatalf("minimized focused program is not persistable:\n%s", minimized.Serialize())
+	}
+}
+
+func TestTriageMinimizeDoesNotSpawnRecursiveTriageJobs(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	p, err := profiled.Deserialize([]byte(
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:       corpus.NewCorpus(ctx),
+		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
+		Logf:         func(int, string, ...any) {},
+	}, rand.New(rand.NewSource(0)), profiled)
+	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	job := &triageJob{
+		p:       p,
+		fuzzer:  fuzzer,
+		queue:   &minimizeSignalExecutor{signal: []uint64{0x10}},
+		ready:   make(chan struct{}),
+		info:    &JobInfo{},
+		origin:  "candidate",
+		traceID: "candidate-1",
+	}
+	minimized, _ := job.minimize(call, &triageCall{
+		errno:           0,
+		newStableSignal: signal.FromRaw([]uint64{0x10}, 3),
+	})
+	if minimized == nil {
+		t.Fatal("minimize returned nil")
+	}
+	if req := fuzzer.triageQueue.Next(); req != nil {
+		t.Fatalf("minimize execution spawned recursive triage request: %s", req.Prog)
 	}
 }
 
@@ -472,6 +535,7 @@ func TestWindowsAFDPersistsStableCandidateOwner(t *testing.T) {
 	}
 	corp := corpus.NewCorpus(context.Background())
 	fuzzer := &Fuzzer{
+		ctx: context.Background(),
 		Config: &Config{
 			Corpus:         corp,
 			NewInputFilter: func(string) bool { return true },
@@ -495,6 +559,119 @@ func TestWindowsAFDPersistsStableCandidateOwner(t *testing.T) {
 	}
 	if got := items[0].StringCall(); got != "WSARecv$accept" {
 		t.Fatalf("corpus owner=%q, want WSARecv$accept", got)
+	}
+}
+
+func TestWindowsAFDKeepsOriginalStableOwnerWhenMinimizeHangs(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	corp := corpus.NewCorpus(context.Background())
+	fuzzer := &Fuzzer{
+		ctx: context.Background(),
+		Config: &Config{
+			Corpus:         corp,
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	job := &triageJob{
+		p:      p,
+		flags:  ProgSmashed,
+		origin: "candidate",
+		fuzzer: fuzzer,
+		queue:  &hangedMinimizeExecutor{},
+		ready:  make(chan struct{}),
+		info:   &JobInfo{},
+	}
+	job.handleCall(call, &triageCall{
+		errno:           0,
+		stableSignal:    signal.FromRaw([]uint64{1, 2}, 3),
+		newStableSignal: signal.FromRaw([]uint64{2}, 3),
+		cover:           cover.FromRaw([]uint64{3, 4}),
+		rawCover:        []uint64{5},
+	})
+	items := corp.Items()
+	if len(items) != 1 {
+		t.Fatalf("corpus items=%d, want original stable AFD vnet owner", len(items))
+	}
+	if got := items[0].StringCall(); got != "recv$inet_accept" {
+		t.Fatalf("corpus owner=%q, want recv$inet_accept", got)
+	}
+	if got := string(items[0].Prog.Serialize()); got != string(p.Serialize()) {
+		t.Fatalf("persisted program was minimized despite hanged minimization:\n%s", items[0].Prog.Serialize())
+	}
+}
+
+func TestWindowsAFDKeepsOriginalStableNoMinimizeOwner(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_updated.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	corp := corpus.NewCorpus(context.Background())
+	fuzzer := &Fuzzer{
+		ctx: context.Background(),
+		Config: &Config{
+			Corpus:         corp,
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+	}
+	call := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept_updated")
+	if !p.Calls[call].Meta.Attrs.NoMinimize {
+		t.Fatal("recv$inet_accept_updated must stay no_minimize for this test")
+	}
+	job := &triageJob{
+		p:      p,
+		flags:  ProgSmashed,
+		origin: "candidate",
+		fuzzer: fuzzer,
+		queue:  &failSubmitExecutor{t: t},
+		ready:  make(chan struct{}),
+		info:   &JobInfo{},
+	}
+	job.handleCall(call, &triageCall{
+		errno:           0,
+		stableSignal:    signal.FromRaw([]uint64{1, 2}, 3),
+		newStableSignal: signal.FromRaw([]uint64{2}, 3),
+		cover:           cover.FromRaw([]uint64{3, 4}),
+		rawCover:        []uint64{5},
+	})
+	items := corp.Items()
+	if len(items) != 1 {
+		t.Fatalf("corpus items=%d, want original stable no_minimize owner", len(items))
+	}
+	if got := items[0].StringCall(); got != "recv$inet_accept_updated" {
+		t.Fatalf("corpus owner=%q, want recv$inet_accept_updated", got)
+	}
+	if got := string(items[0].Prog.Serialize()); got != string(p.Serialize()) {
+		t.Fatalf("persisted program was modified despite no_minimize owner:\n%s", items[0].Prog.Serialize())
 	}
 }
 

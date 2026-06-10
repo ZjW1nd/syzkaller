@@ -347,6 +347,29 @@ func TestFuzzerNextFallsBackToFreshGenerationWhenSourceIsEmpty(t *testing.T) {
 	}
 }
 
+func TestFuzzerNextReturnsNilWhenFallbackGenerationIsRejected(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target = target.Clone()
+	target.RuntimePolicy.ShouldScheduleProgram = func(string, *prog.Prog) bool {
+		return false
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus: corpus.NewCorpus(ctx),
+		EnabledCalls: map[*prog.Syscall]bool{
+			target.SyscallMap["test$length11"]: true,
+		},
+	}, rand.New(rand.NewSource(0)), target)
+	fuzzer.source = queue.Callback(func() *queue.Request { return nil })
+	if got := fuzzer.Next(); got != nil {
+		t.Fatalf("fallback generation should pause when runtime policy rejects generated programs: %#v", got)
+	}
+}
+
 func TestFuzzerNextPausesFallbackGenerationDuringCandidateTriage(t *testing.T) {
 	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
 	if err != nil {

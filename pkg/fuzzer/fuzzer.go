@@ -511,7 +511,7 @@ func (fuzzer *Fuzzer) Next() *queue.Request {
 			return req
 		}
 		if tries >= 16 {
-			panic("nil request from the fuzzer")
+			return nil
 		}
 	}
 }
