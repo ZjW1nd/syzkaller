@@ -434,7 +434,7 @@ func filterCandidateInplace(p *prog.Prog, allowed map[*prog.Syscall]bool, allowN
 }
 
 func candidateCallAllowed(call *prog.Syscall, allowed map[*prog.Syscall]bool, allowNoGenerate bool) bool {
-	return allowed[call] || allowNoGenerate && call.Attrs.NoGenerate
+	return allowed[call] || allowNoGenerate && (call.Attrs.NoGenerate || call.Attrs.AutomaticHelper)
 }
 
 // Programs that do more than 15 system calls are to be treated with suspicion and re-minimized.

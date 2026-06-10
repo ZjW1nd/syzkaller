@@ -536,7 +536,7 @@ func FocusedResourceRuntimePolicy(target *Target, minOwnerScore int) RuntimePoli
 			return ProgramHasResourceOwner(target, p, minOwnerScore)
 		},
 		ShouldScheduleProgram: func(origin string, p *Prog) bool {
-			return ProgramHasResourceOwner(target, p, minOwnerScore) && ProgramHasValidResourceLineage(p)
+			return ProgramHasResourceOwner(target, p, minOwnerScore) && ProgramHasValidResourceLineage(target, p)
 		},
 		ShouldScheduleImmediateCollide: func(p *Prog, call int) bool {
 			return CallIndexHasResourceOwner(target, p, call, minOwnerScore)
@@ -565,12 +565,15 @@ func ProgramHasResourceOwner(target *Target, p *Prog, minOwnerScore int) bool {
 	return false
 }
 
-func ProgramHasValidResourceLineage(p *Prog) bool {
+func ProgramHasValidResourceLineage(target *Target, p *Prog) bool {
 	if p == nil {
 		return false
 	}
 	for idx, call := range p.Calls {
 		if call == nil || call.Meta == nil || len(call.Meta.inputResources) == 0 {
+			continue
+		}
+		if call.Meta.Attrs.NoGenerate || target != nil && target.CallIsAutomaticHelper(call.Meta) {
 			continue
 		}
 		if !callHasFocusedResourceLineage(p.Calls, idx, nil) {

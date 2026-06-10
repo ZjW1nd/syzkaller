@@ -539,6 +539,33 @@ func TestFilterCandidatesKeepsNoGenerateSeedCalls(t *testing.T) {
 	}
 }
 
+func TestFilterCandidatesKeepsAutomaticHelperSeedCalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+		"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n"+
+		"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+		"listen$inet_tcp(r0, 0x1)\n"+
+		"recv$inet_accept(r0, &(0x7f00000001a0)='\\x00'/64, 0x40, 0x0)\n"))
+	enabled := enabledWithoutSeedScaffold(p)
+	filtered := manager.FilterCandidates([]fuzzer.Candidate{{
+		Prog:  p,
+		Flags: fuzzer.ProgMinimized,
+	}}, enabled, true)
+	if len(filtered.Candidates) != 1 {
+		t.Fatalf("got %d filtered candidates, want 1", len(filtered.Candidates))
+	}
+	if len(filtered.ModifiedHashes) != 0 {
+		t.Fatalf("automatic helper calls should not make regular seeds look modified")
+	}
+	got := string(filtered.Candidates[0].Prog.Serialize())
+	if !strings.Contains(got, "WSAStartup") {
+		t.Fatalf("automatic helper was filtered out of regular seed:\n%s", got)
+	}
+}
+
 func TestFilterCandidatesFiltersNoGenerateCorpusCalls(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -623,6 +650,16 @@ func enabledWithoutNoGenerate(p *prog.Prog) map[*prog.Syscall]bool {
 	enabled := make(map[*prog.Syscall]bool)
 	for _, call := range p.Calls {
 		if !call.Meta.Attrs.NoGenerate {
+			enabled[call.Meta] = true
+		}
+	}
+	return enabled
+}
+
+func enabledWithoutSeedScaffold(p *prog.Prog) map[*prog.Syscall]bool {
+	enabled := make(map[*prog.Syscall]bool)
+	for _, call := range p.Calls {
+		if !call.Meta.Attrs.NoGenerate && !call.Meta.Attrs.AutomaticHelper {
 			enabled[call.Meta] = true
 		}
 	}
