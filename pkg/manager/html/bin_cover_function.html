@@ -1,0 +1,63 @@
+{{/*
+Copyright 2026 syzkaller project authors. All rights reserved.
+Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+*/}}
+
+<style>
+.bincover_code {
+	border-collapse: collapse;
+	font-family: monospace;
+	white-space: pre;
+}
+.bincover_code td {
+	border: 0;
+	padding: 1px 8px;
+}
+.bincover_code .covered {
+	color: #000000;
+}
+.bincover_code .partial {
+	color: #c86400;
+}
+.bincover_code .uncovered {
+	color: #ff0000;
+}
+.bincover_code .unknown {
+	color: #505050;
+}
+</style>
+
+<p><a href="/bincover">back to binary coverage</a></p>
+
+<table class="list_table">
+	<caption>{{.Name}}</caption>
+	<thead>
+	<tr>
+		<th>Offset</th>
+		<th>Blocks</th>
+		<th>Coverage</th>
+	</tr>
+	</thead>
+	<tbody>
+	<tr>
+		<td>{{.Function.StartHex}} - {{.Function.EndHex}}</td>
+		<td>{{.Function.CoveredBlocks}} / {{.Function.TotalBlocks}}</td>
+		<td>{{.Function.BlockPercent}}</td>
+	</tr>
+	</tbody>
+</table>
+
+{{if not .Lines}}
+<p>No pseudocode lines were uploaded for this function.</p>
+{{else}}
+<table class="bincover_code">
+	<tbody>
+	{{range $line := .Lines}}
+	<tr class="{{$line.State}}">
+		<td>{{$line.Line}}</td>
+		<td>{{$line.Text}}</td>
+	</tr>
+	{{end}}
+	</tbody>
+</table>
+{{end}}

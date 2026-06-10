@@ -66,6 +66,7 @@ type HTTPServer struct {
 	Corpus          atomic.Pointer[corpus.Corpus]
 	Fuzzer          atomic.Pointer[fuzzer.Fuzzer]
 	Cover           atomic.Pointer[CoverageInfo]
+	BinCover        atomic.Pointer[BinCoverageSnapshot]
 	EnabledSyscalls atomic.Value // map[*prog.Syscall]bool
 
 	// Internal state.
@@ -87,6 +88,11 @@ func (serv *HTTPServer) Serve(ctx context.Context) error {
 	handle("/", serv.httpMain)
 	handle("/action", serv.httpAction)
 	handle("/addcandidate", serv.httpAddCandidate)
+	handle("/bincover", serv.httpBinCover)
+	handle("/bincover/function", serv.httpBinCoverFunction)
+	handle("/bincover/lighthouse", serv.httpBinCoverLighthouse)
+	handle("/bincover/raw", serv.httpBinCoverRaw)
+	handle("/bincover/upload", serv.httpBinCoverUpload)
 	handle("/config", serv.httpConfig)
 	handle("/corpus", serv.httpCorpus)
 	handle("/corpus.db", serv.httpDownloadCorpus)
@@ -1309,6 +1315,8 @@ var (
 	vmsTemplate           = createPage("vms", UIVMData{})
 	crashTemplate         = createPage("crash", UICrashPage{})
 	corpusTemplate        = createPage("corpus", UICorpusPage{})
+	binCoverTemplate      = createPage("bin_cover", UIBinCoverPage{})
+	binCoverFuncTemplate  = createPage("bin_cover_function", UIBinCoverFunctionPage{})
 	prioTemplate          = createPage("prio", UIPrioData{})
 	fallbackCoverTemplate = createPage("fallback_cover", UIFallbackCoverData{})
 	rawCoverTemplate      = createPage("raw_cover", UIRawCoverPage{})
