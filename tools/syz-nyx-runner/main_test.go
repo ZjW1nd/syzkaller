@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/syzkaller/pkg/flatrpc"
+	"github.com/google/syzkaller/prog"
 )
 
 func writeCoverageDump(t *testing.T, path string, records []nyxCovDumpRecord) {
@@ -59,6 +60,27 @@ func uint64SlicesEqual(left, right []uint64) bool {
 		}
 	}
 	return true
+}
+
+func serializeWindowsTestProgramForExec(t *testing.T, path string) []byte {
+	t.Helper()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize %s: %v", path, err)
+	}
+	execData, err := p.SerializeForExec()
+	if err != nil {
+		t.Fatalf("SerializeForExec %s: %v", path, err)
+	}
+	return execData
 }
 
 func TestParseCoverageDumpMultipleRecords(t *testing.T) {
@@ -452,6 +474,20 @@ func TestRequestNeedsCoveragePriming(t *testing.T) {
 	}
 }
 
+func TestExecProgramIsMultiCallWindowsVNet(t *testing.T) {
+	vnet := serializeWindowsTestProgramForExec(t,
+		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_accept_vnet_recv.txt"))
+	if !execProgramIsMultiCallWindowsVNet(vnet) {
+		t.Fatal("AFD vnet receive seed should be classified as a multi-call Windows vnet program")
+	}
+
+	nonVNet := serializeWindowsTestProgramForExec(t,
+		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_query_readonly.txt"))
+	if execProgramIsMultiCallWindowsVNet(nonVNet) {
+		t.Fatal("non-vnet AFD seed must not be classified as a Windows vnet program")
+	}
+}
+
 func TestPrimeResultCanReturn(t *testing.T) {
 	tests := []struct {
 		name string
@@ -492,6 +528,14 @@ func TestPrimeResultCanReturn(t *testing.T) {
 			name: "no coverage",
 			msg: execResultMessage(&flatrpc.ExecResult{
 				Info: flatrpc.EmptyProgInfo(1),
+			}),
+			want: true,
+		},
+		{
+			name: "executor error",
+			msg: execResultMessage(&flatrpc.ExecResult{
+				Error: "executor failed",
+				Info:  flatrpc.EmptyProgInfo(1),
 			}),
 			want: false,
 		},
@@ -742,6 +786,15 @@ func TestApplyStandaloneHardTimeoutHonorsSmallerFallback(t *testing.T) {
 func TestHardTimeoutWithSlackUsesMinimum(t *testing.T) {
 	got := hardTimeoutWithSlack(5 * time.Second)
 	want := 35 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestExecWaitTimeoutHonorsDerivedShortProgramTimeout(t *testing.T) {
+	vm := &nyxVM{hardTimeout: 15 * time.Second}
+	got := vm.execWaitTimeout()
+	want := 20 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}

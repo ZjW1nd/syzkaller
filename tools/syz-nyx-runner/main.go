@@ -112,6 +112,7 @@ func reorderArgsForFlags(args []string) []string {
 		"-standalone-stage-idle-ms":       true,
 		"-standalone-syscall-timeout-ms":  true,
 		"-standalone-program-timeout-ms":  true,
+		"-standalone-keep-state":          true,
 		"-module-ranges":                  true,
 		"-vv":                             true,
 		"-qemu-arg":                       true,
@@ -132,6 +133,7 @@ func reorderArgsForFlags(args []string) []string {
 		"--standalone-stage-idle-ms":      true,
 		"--standalone-syscall-timeout-ms": true,
 		"--standalone-program-timeout-ms": true,
+		"--standalone-keep-state":         true,
 		"--module-ranges":                 true,
 		"--vv":                            true,
 		"--qemu-arg":                      true,
@@ -1081,7 +1083,7 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 	return errors.New("timed out waiting for nyx handshake ack")
 }
 
-func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage, error) {
+func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainReload bool) (*flatrpc.ExecutorMessage, error) {
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxExecResult))
 	_ = os.Remove(vm.coverPath)
 	vm.aux.clearTransientResult()
@@ -1094,7 +1096,16 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	for {
 		if data, err := os.ReadFile(resultPath); err == nil {
 			log.Logf(0, "runner exec result observed before step=%d", steps)
-			return parseExecResult(data)
+			msg, err := parseExecResult(data)
+			if err != nil {
+				return nil, err
+			}
+			if drainReload {
+				if err := vm.drainExecReload(reqID(req), deadline); err != nil {
+					return nil, err
+				}
+			}
+			return msg, nil
 		}
 		if time.Now().After(deadline) {
 			log.Logf(0, "runner exec wait deadline expired after %d steps; synthesizing hanged result", steps)
@@ -1158,11 +1169,53 @@ func (vm *nyxVM) executeIdle(sleepMs int) (*flatrpc.ExecutorMessage, error) {
 			ExecFlags: 0,
 		},
 	}
-	return vm.executeRequest(packNyxPayload(nyxKindIdle, nil, body.Bytes()), req)
+	return vm.executeRequest(packNyxPayload(nyxKindIdle, nil, body.Bytes()), req, false)
+}
+
+func reqID(req *flatrpc.ExecRequest) int64 {
+	if req == nil {
+		return 0
+	}
+	return req.Id
+}
+
+func (vm *nyxVM) drainExecReload(id int64, deadline time.Time) error {
+	for step := 0; step < 8; step++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("timed out draining reload after request %d", id)
+		}
+		if remaining > 2*time.Second {
+			remaining = 2 * time.Second
+		}
+		log.Logf(0, "runner exec reload drain step=%d id=%d state=%d exec_done=%v exec_code=%d misc=%q",
+			step, id, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
+			strings.TrimSpace(string(vm.aux.misc())))
+		if err := vm.runQemuWithTimeout(remaining); err != nil {
+			return fmt.Errorf("drain reload after request %d: %w", id, err)
+		}
+		log.Logf(0, "runner exec reload drain post-step=%d id=%d state=%d exec_done=%v exec_code=%d reloaded=%v misc=%q",
+			step, id, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(), vm.aux.reloaded(),
+			strings.TrimSpace(string(vm.aux.misc())))
+		if vm.aux.execCode() == 0 {
+			log.Logf(0, "runner exec reload drained: id=%d steps=%d", id, step+1)
+			return nil
+		}
+		switch vm.aux.execCode() {
+		case nyxRCHprintf:
+			vm.recordModuleRangesFromAux()
+			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
+		case nyxRCAbort:
+			return fmt.Errorf("guest abort while draining reload after request %d: %s", id, string(vm.aux.misc()))
+		case nyxRCCrash, nyxRCSanitizer:
+			return fmt.Errorf("guest crash while draining reload after request %d: %s", id, string(vm.aux.misc()))
+		}
+	}
+	return fmt.Errorf("reload boundary was not observed after request %d", id)
 }
 
 func (vm *nyxVM) execWaitTimeout() time.Duration {
-	return hardTimeoutWithSlack(vm.hardTimeout)
+	return timeoutWithSlack(vm.hardTimeout)
 }
 
 func (vm *nyxVM) initWaitTimeout() time.Duration {
@@ -1178,6 +1231,13 @@ func hardTimeoutWithSlack(timeout time.Duration) time.Duration {
 		timeout = 30 * time.Second
 	}
 	if timeout < 30*time.Second {
+		timeout = 30 * time.Second
+	}
+	return timeout + 5*time.Second
+}
+
+func timeoutWithSlack(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 	return timeout + 5*time.Second
@@ -1757,6 +1817,18 @@ func describeExecProgram(data []byte) string {
 	return strings.Join(parts, " ")
 }
 
+func execProgramIsMultiCallWindowsVNet(data []byte) bool {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return false
+	}
+	decoded, err := target.DeserializeExec(data, nil)
+	if err != nil {
+		return false
+	}
+	return len(decoded.Calls) > 1 && programUsesWindowsVNet(decoded.Calls)
+}
+
 func programUsesWindowsVNet(calls []prog.ExecCall) bool {
 	for _, call := range calls {
 		if call.Meta == nil {
@@ -2039,10 +2111,19 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		AllExtraSignal: hasExtraSignal(req.AllSignal),
 		ProgData:       req.Data,
 	}
-	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req)
+	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req, !r.keepState)
 	if err != nil {
 		r.markForRestart(fmt.Sprintf("request %d failed: %v", req.Id, err))
 		return nil, err
+	}
+	if !r.keepState {
+		// A non-keep execution drains the Nyx root-snapshot reload before
+		// returning. The root snapshot is taken before the executor receives
+		// the syzkaller handshake, so the next payload must be a handshake.
+		r.handshakeReady = false
+		r.coveragePrimed = false
+		r.lastEnvFlags = 0
+		r.lastSandboxArg = 0
 	}
 	covRecords, compRecords, covErr := parseCoverageDump(r.vm.coverPath)
 	if covErr == nil {
@@ -2242,7 +2323,17 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 }
 
 func primeResultCanReturn(msg *flatrpc.ExecutorMessage) bool {
-	return execResultHasCoverage(msg) || execResultHanged(msg)
+	if execResultHanged(msg) {
+		return true
+	}
+	if msg == nil || msg.Msg == nil {
+		return false
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res == nil || res.Error != "" {
+		return false
+	}
+	return res.Info != nil
 }
 
 func execResultHanged(msg *flatrpc.ExecutorMessage) bool {
@@ -2412,7 +2503,7 @@ func connectWithRetry(r *runner, retryFor time.Duration) error {
 	}
 }
 
-func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, programPath string, threaded bool,
+func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, programPath string, threaded, keepState bool,
 	syscallTimeoutMs, programTimeoutMs, rounds int) error {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -2448,7 +2539,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 		id:           index,
 		vm:           vm,
 		connectReply: connectReply,
-		keepState:    true,
+		keepState:    keepState,
 	}
 	if rounds <= 0 {
 		rounds = 1
@@ -2518,7 +2609,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 	return nil
 }
 
-func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath string, threaded bool,
+func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath string, threaded, keepState bool,
 	syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int) error {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -2549,7 +2640,7 @@ func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPa
 		id:           index,
 		vm:           vm,
 		connectReply: connectReply,
-		keepState:    true,
+		keepState:    keepState,
 	}
 	stages := []struct {
 		id    int64
@@ -3161,6 +3252,7 @@ func main() {
 		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
 		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
 		standaloneThreaded         = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
+		standaloneKeepState        = flag.Bool("standalone-keep-state", true, "preserve guest state between standalone exec requests")
 		moduleRangesRaw            = flag.String("module-ranges", defaultModuleRangeList(), "comma-separated kernel module PT range targets; suffix :required for mandatory matches")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
@@ -3209,13 +3301,13 @@ func main() {
 	if *standalone {
 		if *standaloneStagedProgram != "" {
 			if err := runStandaloneStaged(index, vm, *standaloneProgramPath, *standaloneStagedProgram, *standaloneThreaded,
-				*standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
+				*standaloneKeepState, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
 				log.Fatalf("standalone staged Nyx request failed: %v", err)
 			}
 			return
 		}
 		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneProgramPath, *standaloneThreaded,
-			*standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
+			*standaloneKeepState, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
 			log.Fatalf("standalone Nyx request failed: %v", err)
 		}
 		return

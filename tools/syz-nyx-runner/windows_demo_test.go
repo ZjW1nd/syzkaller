@@ -166,6 +166,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	NoMutateSyscalls []string `json:"no_mutate_syscalls"`
 	VM               struct {
 		ModuleRanges string `json:"module_ranges"`
+		KeepState    bool   `json:"keep_state"`
 	} `json:"vm"`
 	Experimental struct {
 		SeedPrefix           string `json:"seed_prefix"`
@@ -185,6 +186,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		NoMutateSyscalls []string `json:"no_mutate_syscalls"`
 		VM               struct {
 			ModuleRanges string `json:"module_ranges"`
+			KeepState    bool   `json:"keep_state"`
 		} `json:"vm"`
 		Experimental struct {
 			SeedPrefix           string `json:"seed_prefix"`
@@ -782,6 +784,13 @@ func TestWindowsAfdVNetProvenConfigCoversSeedSyscalls(t *testing.T) {
 					filepath.Base(path), call.Meta.Name)
 			}
 		}
+	}
+}
+
+func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
+	if cfg.VM.KeepState {
+		t.Fatal("AFD session config must keep vm.keep_state disabled so each request reloads the Nyx root snapshot")
 	}
 }
 
@@ -1548,7 +1557,7 @@ func TestNyxModeLoopSupportsIdlePayload(t *testing.T) {
 	}
 }
 
-func TestStandaloneStagedVNetModeKeepsGuestState(t *testing.T) {
+func TestStandaloneStagedVNetModeCanKeepGuestState(t *testing.T) {
 	data, err := os.ReadFile("main.go")
 	if err != nil {
 		t.Fatalf("read main.go: %v", err)
@@ -1556,11 +1565,11 @@ func TestStandaloneStagedVNetModeKeepsGuestState(t *testing.T) {
 	src := string(data)
 	body := extractFunctionBody(t, src, "func runStandaloneStaged")
 	for _, want := range []string{
-		"keepState:    true",
+		"keepState:    keepState",
 		"standalone staged guest idle before stage2",
 	} {
 		if !strings.Contains(body, want) {
-			t.Fatalf("runStandaloneStaged is missing keep-state support %q", want)
+			t.Fatalf("runStandaloneStaged is missing configurable keep-state support %q", want)
 		}
 	}
 }
@@ -1933,8 +1942,8 @@ func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 	for _, want := range []string{
 		"nyxExecKeepState",
 		"meta.Flags |= nyxExecKeepState",
-		"keepState:    true",
 		"keep-state",
+		"standalone-keep-state",
 	} {
 		if !strings.Contains(mainSrc, want) {
 			t.Fatalf("runner keep-state protocol missing %q", want)
