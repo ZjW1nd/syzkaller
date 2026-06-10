@@ -9,7 +9,7 @@ import (
 	"embed"
 	"encoding/gob"
 	"fmt"
-	"path/filepath"
+	"path"
 
 	"github.com/google/syzkaller/prog"
 	"github.com/google/syzkaller/sys/targets"
@@ -83,7 +83,7 @@ func Glob() string {
 }
 
 func fileName(name string) string {
-	return filepath.Join("gen", fmt.Sprintf("%v.gob.flate", name))
+	return path.Join("gen", fmt.Sprintf("%v.gob.flate", name))
 }
 
 func init() {
