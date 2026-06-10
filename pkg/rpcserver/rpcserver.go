@@ -158,24 +158,19 @@ func New(cfg *RemoteConfig) (Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	features := flatrpc.AllFeatures
-	if !cfg.Experimental.RemoteCover {
-		features &= ^flatrpc.FeatureExtraCoverage
-	}
-	if !cfg.MemoryDump {
-		features &= ^flatrpc.FeatureMemoryDump
-	}
+	features, optionalCoverage := machineCheckFeatures(cfg)
 	return newImpl(&Config{
 		Config: vminfo.Config{
-			Target:     cfg.Target,
-			VMType:     cfg.Type,
-			Features:   features,
-			Syscalls:   cfg.Syscalls,
-			Debug:      cfg.Debug,
-			Cover:      cfg.Cover,
-			MemoryDump: cfg.MemoryDump,
-			Sandbox:    sandbox,
-			SandboxArg: cfg.SandboxArg,
+			Target:           cfg.Target,
+			VMType:           cfg.Type,
+			Features:         features,
+			Syscalls:         cfg.Syscalls,
+			Debug:            cfg.Debug,
+			Cover:            cfg.Cover,
+			OptionalCoverage: optionalCoverage,
+			MemoryDump:       cfg.MemoryDump,
+			Sandbox:          sandbox,
+			SandboxArg:       cfg.SandboxArg,
 		},
 		Stats:  cfg.Stats,
 		VMArch: cfg.TargetVMArch,
@@ -596,6 +591,22 @@ func (serv *server) DistributeSignalDelta(plus signal.Signal) {
 	serv.foreachRunnerAsync(func(runner *Runner) {
 		runner.SendSignalUpdate(plusRaw)
 	})
+}
+
+func machineCheckFeatures(cfg *RemoteConfig) (flatrpc.Feature, bool) {
+	features := flatrpc.AllFeatures
+	if !cfg.Experimental.RemoteCover {
+		features &= ^flatrpc.FeatureExtraCoverage
+	}
+	if !cfg.MemoryDump {
+		features &= ^flatrpc.FeatureMemoryDump
+	}
+	optionalCoverage := false
+	if cfg.TargetOS == targets.Windows && cfg.Type == "nyx" {
+		features = flatrpc.FeatureSandboxNone
+		optionalCoverage = true
+	}
+	return features, optionalCoverage
 }
 
 func (serv *server) TriagedCorpus() {

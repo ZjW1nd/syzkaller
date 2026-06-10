@@ -48,12 +48,15 @@ type Config struct {
 	// Set of features to check, missing features won't be checked/enabled after Run.
 	Features flatrpc.Feature
 	// Set of syscalls to check.
-	Syscalls   []int
-	Debug      bool
-	Cover      bool
-	MemoryDump bool
-	Sandbox    flatrpc.ExecEnv
-	SandboxArg int64
+	Syscalls []int
+	Debug    bool
+	Cover    bool
+	// OptionalCoverage allows backends that provide non-KCOV coverage to keep
+	// coverage enabled without requiring the KCOV feature probe to pass.
+	OptionalCoverage bool
+	MemoryDump       bool
+	Sandbox          flatrpc.ExecEnv
+	SandboxArg       int64
 }
 
 func New(cfg *Config) *Checker {

@@ -104,6 +104,25 @@ func TestNew(t *testing.T) {
 				assert.Nil(t, s.serv)
 			},
 		},
+		{
+			name: "windows nyx binary coverage",
+			modifyCfg: func() *mgrconfig.Config {
+				cfg := defaultCfg
+				cfg.Type = "nyx"
+				cfg.Cover = true
+				cfg.Experimental.RemoteCover = true
+				cfg.Derived.TargetOS = targets.Windows
+				cfg.Derived.TargetArch = targets.AMD64
+				cfg.Derived.TargetVMArch = targets.AMD64
+				return &cfg
+			},
+			expectedServCheck: func(srv Server) {
+				s := srv.(*server)
+				assert.Equal(t, flatrpc.FeatureSandboxNone, s.cfg.Config.Features)
+				assert.True(t, s.cfg.Config.OptionalCoverage)
+				assert.Nil(t, s.serv)
+			},
+		},
 	}
 
 	for _, tt := range tests {

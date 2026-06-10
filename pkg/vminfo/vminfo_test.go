@@ -84,6 +84,31 @@ func allFeatures() []*flatrpc.FeatureInfo {
 	return features
 }
 
+func TestOptionalCoverageAllowsFailedCoverageProbe(t *testing.T) {
+	check := func(optional bool) error {
+		ctx := &checkContext{
+			cfg:      &Config{Cover: true, OptionalCoverage: optional},
+			features: make(chan featureResult, 100),
+		}
+		for feat := range flatrpc.EnumNamesFeature {
+			reason := ""
+			if feat == flatrpc.FeatureCoverage {
+				reason = "test program execution failed: status=Hanged"
+			}
+			ctx.features <- featureResult{feat, reason}
+		}
+		_, err := ctx.finishFeatures(allFeatures())
+		return err
+	}
+
+	if err := check(false); err == nil {
+		t.Fatal("failed coverage probe unexpectedly passed without OptionalCoverage")
+	}
+	if err := check(true); err != nil {
+		t.Fatalf("failed coverage probe should pass with OptionalCoverage: %v", err)
+	}
+}
+
 func createSuccessfulResults(source queue.Source, stop chan struct{}) {
 	var count int
 	for {
