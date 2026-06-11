@@ -483,7 +483,26 @@ func (fuzzer *Fuzzer) shouldScheduleProgram(req *queue.Request) bool {
 	if fuzzer.target == nil || fuzzer.target.RuntimePolicy.ShouldScheduleProgram == nil {
 		return true
 	}
+	if !fuzzer.programUsesEnabledCalls(req.Prog) {
+		return false
+	}
 	return fuzzer.target.RuntimePolicy.ShouldScheduleProgram(req.Origin, req.Prog)
+}
+
+func (fuzzer *Fuzzer) programUsesEnabledCalls(p *prog.Prog) bool {
+	if p == nil || fuzzer == nil || fuzzer.Config == nil || len(fuzzer.Config.EnabledCalls) == 0 {
+		return true
+	}
+	for _, call := range p.Calls {
+		if call == nil || call.Meta == nil || fuzzer.Config.EnabledCalls[call.Meta] {
+			continue
+		}
+		if call.Meta.Attrs.NoGenerate || fuzzer.target != nil && fuzzer.target.CallIsAutomaticHelper(call.Meta) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func runtimePolicyRejectedResult(req *queue.Request) *queue.Result {

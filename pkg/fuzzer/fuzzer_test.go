@@ -514,6 +514,96 @@ func TestWindowsAFDSkipsMixedBrokenResourceLineageCandidate(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDRejectsProgramUsingDisabledConstructor(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	enabledCalls := windowsFuzzerTestEnabledCalls(t, profiled,
+		[]string{"NtDeviceIoControlFile$afd_address_list_query_udp"},
+		[]string{"accept$inet_tcp"})
+	if enabledCalls[profiled.SyscallMap["accept$inet_tcp"]] {
+		t.Fatal("test setup left accept$inet_tcp enabled")
+	}
+	p, err := profiled.Deserialize([]byte(
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"accept$inet_tcp(r2, 0x0, 0x0)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize disabled constructor program: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:       corpus.NewCorpus(ctx),
+		Logf:         func(int, string, ...any) {},
+		EnabledCalls: enabledCalls,
+	}, rand.New(rand.NewSource(0)), profiled)
+	res := fuzzer.executeWithFlags(&failSubmitExecutor{t: t}, &queue.Request{
+		Prog:   p,
+		Origin: "gen",
+	}, 0)
+	if res.Status != queue.ExecFailure || res.Err == nil ||
+		!strings.Contains(res.Err.Error(), "runtime policy rejected") {
+		t.Fatalf("execute result=%+v, want runtime-policy rejection", res)
+	}
+	fuzzer.AddCandidates([]Candidate{{Prog: p}})
+	if got := fuzzer.candidateQueue.Len(); got != 0 {
+		t.Fatalf("disabled constructor candidate queued %d requests", got)
+	}
+}
+
+func TestWindowsAFDAllowsProgramUsingParsedEnabledScaffold(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	enabledCalls := windowsFuzzerTestEnabledCalls(t, profiled,
+		[]string{"NtDeviceIoControlFile$afd_address_list_query_udp"},
+		nil)
+	p, err := profiled.Deserialize([]byte(
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n"+
+			"r1 = bind$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"NtDeviceIoControlFile$afd_address_list_query_udp(r1, 0x0, 0x0, 0x0, &(0x7f0000000200)={@Status=0x0, 0x0}, 0x120b3, 0x0, 0x0, &(0x7f0000000240), 0x44)\n"),
+		prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize enabled scaffold program: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:       corpus.NewCorpus(ctx),
+		Logf:         func(int, string, ...any) {},
+		EnabledCalls: enabledCalls,
+	}, rand.New(rand.NewSource(0)), profiled)
+	exec := &recordingExecutor{
+		submitted: make(chan *queue.Request, 1),
+		result:    &queue.Result{Status: queue.Success},
+	}
+	res := fuzzer.executeWithFlags(exec, &queue.Request{
+		Prog:   p,
+		Origin: "gen",
+	}, 0)
+	if res.Status != queue.Success {
+		t.Fatalf("execute status=%v err=%v, want success", res.Status, res.Err)
+	}
+	if got := len(exec.submitted); got != 1 {
+		t.Fatalf("submitted requests=%d, want 1", got)
+	}
+}
+
 func TestWindowsSkipsTriageForAutomaticHelpers(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -1063,6 +1153,19 @@ func windowsFuzzerTestCallIndex(t *testing.T, p *prog.Prog, name string) int {
 	}
 	t.Fatalf("program is missing %s", name)
 	return -1
+}
+
+func windowsFuzzerTestEnabledCalls(t *testing.T, target *prog.Target, enabled, disabled []string) map[*prog.Syscall]bool {
+	t.Helper()
+	ids, err := mgrconfig.ParseEnabledSyscalls(target, enabled, disabled, mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	calls := make(map[*prog.Syscall]bool, len(ids))
+	for _, id := range ids {
+		calls[target.Syscalls[id]] = true
+	}
+	return calls
 }
 
 func windowsFuzzerTestConnectExProgram(t *testing.T, target *prog.Target) *prog.Prog {

@@ -52,6 +52,7 @@ type Config struct {
 	Slowdown      int
 	pcBase        uint64
 	localModules  []*vminfo.KernelModule
+	disabledCalls []string
 
 	// RPCServer closes the channel once the machine check has begun. Used for fault injection during testing.
 	machineCheckStarted chan struct{}
@@ -185,6 +186,7 @@ func New(cfg *RemoteConfig) (Server, error) {
 		Slowdown:          cfg.Timeouts.Slowdown,
 		pcBase:            pcBase,
 		localModules:      cfg.LocalModules,
+		disabledCalls:     cfg.DisabledSyscalls,
 	}, cfg.Manager), nil
 }
 
@@ -464,6 +466,15 @@ func (serv *server) runCheck(ctx context.Context, info *handshakeResult) error {
 	}
 
 	enabledCalls, transitivelyDisabled := serv.target.TransitivelyEnabledCalls(enabledCalls)
+	configDisabled := filterDisabledSyscalls(serv.target, enabledCalls, serv.cfg.disabledCalls)
+	if len(configDisabled) != 0 {
+		if disabledCalls == nil {
+			disabledCalls = make(map[*prog.Syscall]string)
+		}
+		for call, reason := range configDisabled {
+			disabledCalls[call] = reason
+		}
+	}
 	// Note: need to print disbled syscalls before failing due to an error.
 	// This helps to debug "all system calls are disabled".
 	if serv.cfg.PrintMachineCheck {
@@ -481,6 +492,26 @@ func (serv *server) runCheck(ctx context.Context, info *handshakeResult) error {
 	serv.baseSource.Store(newSource)
 	serv.checkDone.Store(true)
 	return nil
+}
+
+func filterDisabledSyscalls(target *prog.Target, enabled map[*prog.Syscall]bool,
+	disabled []string) map[*prog.Syscall]string {
+	if target == nil || len(enabled) == 0 || len(disabled) == 0 {
+		return nil
+	}
+	removed := make(map[*prog.Syscall]string)
+	for _, pattern := range disabled {
+		for call := range enabled {
+			if mgrconfig.MatchSyscall(call.Name, pattern) {
+				delete(enabled, call)
+				removed[call] = fmt.Sprintf("disabled by config pattern %q", pattern)
+			}
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+	return removed
 }
 
 func (serv *server) printMachineCheck(checkFilesInfo []*flatrpc.FileInfo, enabledCalls map[*prog.Syscall]bool,
