@@ -330,7 +330,7 @@ func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.
 		}
 		newMaxSignal = signal.FromRaw([]uint64{1}, 0)
 	}
-	if fuzzer.pruneLessRelevantTriage(p, call, triage) {
+	if fuzzer.pruneLessRelevantTriage(origin, p, call, triage) {
 		return
 	}
 	fuzzer.Logf(2, "found new signal in call %d in %s", call, p)
@@ -347,14 +347,18 @@ func (fuzzer *Fuzzer) triageProgCall(origin string, p *prog.Prog, info *flatrpc.
 	}
 }
 
-func (fuzzer *Fuzzer) pruneLessRelevantTriage(p *prog.Prog, call int, triage *map[int]*triageCall) bool {
+func (fuzzer *Fuzzer) pruneLessRelevantTriage(origin string, p *prog.Prog, call int, triage *map[int]*triageCall) bool {
 	if call < 0 || *triage == nil {
 		return false
 	}
+	keepCandidateOwner := fuzzer.shouldKeepCandidateTriageOwner(origin, p, call)
 	score := fuzzer.target.TriageRelevance(p.Calls[call].Meta)
 	skipCurrent := false
 	for id := range *triage {
 		if id < 0 {
+			continue
+		}
+		if keepCandidateOwner && fuzzer.shouldKeepCandidateTriageOwner(origin, p, id) {
 			continue
 		}
 		otherScore := fuzzer.target.TriageRelevance(p.Calls[id].Meta)
@@ -367,6 +371,25 @@ func (fuzzer *Fuzzer) pruneLessRelevantTriage(p *prog.Prog, call int, triage *ma
 		}
 	}
 	return skipCurrent
+}
+
+func (fuzzer *Fuzzer) shouldKeepCandidateTriageOwner(origin string, p *prog.Prog, call int) bool {
+	if origin != "candidate" || fuzzer == nil || fuzzer.target == nil || p == nil || call < 0 || call >= len(p.Calls) {
+		return false
+	}
+	meta := p.Calls[call].Meta
+	if !fuzzer.target.CallEligibleForTriage(meta) {
+		return false
+	}
+	if fuzzer.target.Helpers.SkipCorpusForAutomaticHelpers && fuzzer.target.CallIsAutomaticHelper(meta) {
+		return false
+	}
+	if fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram != nil &&
+		fuzzer.target.RuntimePolicy.ShouldSkipTriageProgram(origin, p) {
+		return false
+	}
+	return fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall != nil &&
+		fuzzer.target.RuntimePolicy.ShouldPersistStableTriageCall(origin, p, call)
 }
 
 func (fuzzer *Fuzzer) handleCallInfo(req *queue.Request, info *flatrpc.CallInfo, call int) {

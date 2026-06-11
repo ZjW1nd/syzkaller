@@ -894,6 +894,67 @@ func TestWindowsAFDProcessResultQueuesCandidateTriageWhenFilteredOwnerSignalOver
 	}
 }
 
+func TestWindowsAFDProcessResultQueuesAllCandidateSeedOwnersWithNewSignal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_private_query_readonly.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	queryCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_query_recv_tcp")
+	routeCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_routing_interface_query_udp")
+	for _, call := range []int{queryCall, routeCall} {
+		if !profiled.CallEligibleForTriage(p.Calls[call].Meta) {
+			t.Fatalf("%s should be eligible for AFD triage", p.CallName(call))
+		}
+	}
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:         corpus.NewCorpus(ctx),
+		NewInputFilter: func(string) bool { return true },
+	}, rand.New(rand.NewSource(0)), profiled)
+	fuzzer.statCandidates.Add(1)
+	calls := make([]*flatrpc.CallInfo, len(p.Calls))
+	calls[queryCall] = &flatrpc.CallInfo{Signal: []uint64{0x100}, Cover: []uint64{0x100}}
+	calls[routeCall] = &flatrpc.CallInfo{Signal: []uint64{0x200}, Cover: []uint64{0x200}}
+	ok := fuzzer.processResult(&queue.Request{
+		Prog:     p,
+		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
+		Origin:   "candidate",
+	}, &queue.Result{
+		Status: queue.Success,
+		Info:   &flatrpc.ProgInfo{Calls: calls},
+	}, progCandidate, 0)
+	if !ok {
+		t.Fatal("processResult should complete candidate processing")
+	}
+	req := fuzzer.triageCandidateQueue.Next()
+	if req == nil {
+		t.Fatal("candidate result did not queue a triage request")
+	}
+	cancel()
+	got := map[int]bool{}
+	for _, call := range req.ReturnAllSignal {
+		got[call] = true
+	}
+	for _, call := range []int{queryCall, routeCall} {
+		if !got[call] {
+			t.Fatalf("triage ReturnAllSignal=%v, missing %s", req.ReturnAllSignal, p.CallName(call))
+		}
+	}
+}
+
 func TestWindowsAFDProcessResultForcesCandidateTriageForStableDeepOwner(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

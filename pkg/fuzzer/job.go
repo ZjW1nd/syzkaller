@@ -452,7 +452,7 @@ func (job *triageJob) deflake(exec func(*queue.Request, ProgFlags) *queue.Result
 			Stat:            job.fuzzer.statExecTriage,
 		}, progInTriage)
 		job.logTriageDeflakeRun(run, needRuns, indices, result)
-		if result.Stop() {
+		if result.Stop() && (result.Status != queue.Hanged || result.Info == nil) {
 			job.logTriageDeflakeStop(run, needRuns, result.Status)
 			return true
 		}

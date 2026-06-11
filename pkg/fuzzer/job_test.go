@@ -127,6 +127,49 @@ func TestDeflake(t *testing.T) {
 	}
 }
 
+func TestDeflakeUsesHangedResultWithInfo(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	assert.NoError(t, err)
+	const anyTestProg = `syz_compare(&AUTO="00000000", 0x4, &AUTO=@conditional={0x0, @void, @void, @void}, AUTO)`
+	p, err := target.Deserialize([]byte(anyTestProg), prog.NonStrict)
+	assert.NoError(t, err)
+	prio := signalPrio(p, &flatrpc.CallInfo{}, 0)
+	info := triageCall{
+		newSignal: signal.FromRaw([]uint64{1}, prio),
+		signals:   [deflakeNeedRuns]signal.Signal{signal.FromRaw([]uint64{1}, prio)},
+	}
+	job := &triageJob{
+		p:     p,
+		calls: map[int]*triageCall{0: &info},
+		fuzzer: &Fuzzer{
+			Cover:  newCover(),
+			Config: &Config{},
+		},
+		info: &JobInfo{},
+	}
+	run := 0
+	stop := job.deflake(func(_ *queue.Request, _ ProgFlags) *queue.Result {
+		run++
+		status := queue.Success
+		if run == 2 {
+			status = queue.Hanged
+		}
+		return &queue.Result{
+			Status: status,
+			Info: &flatrpc.ProgInfo{
+				Calls: []*flatrpc.CallInfo{{
+					Signal: []uint64{1},
+					Cover:  []uint64{10},
+				}},
+			},
+		}
+	})
+	assert.False(t, stop)
+	assert.Equal(t, 2, run)
+	assert.ElementsMatch(t, []uint64{1}, info.stableSignal.ToRaw())
+	assert.ElementsMatch(t, []uint64{1}, info.newStableSignal.ToRaw())
+}
+
 type recordingExecutor struct {
 	submitted chan *queue.Request
 	result    *queue.Result
