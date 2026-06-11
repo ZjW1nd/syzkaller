@@ -2256,7 +2256,7 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 	body := extractFunctionBody(t, string(data), "thread_t* schedule_call")
 	wantOrder := []string{
 		"schedule_pre_idle_wait",
-		"event_timedwait(&th->idle, idle_timeout_ms)",
+		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields)",
 		"schedule_post_idle_wait",
 		"schedule_pre_done_reset",
 		"event_reset(&th->done);",
@@ -2283,6 +2283,9 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 		}
 		last = idx
 	}
+	if strings.Contains(body, "event_timedwait(&th->idle") {
+		t.Fatal("schedule_call should not use a guest-timer-based idle wait")
+	}
 	if !strings.Contains(body, "event_isset(&th->ready)") ||
 		!strings.Contains(body, "event_isset(&th->done)") ||
 		!strings.Contains(body, "th->executing") ||
@@ -2291,6 +2294,29 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 		!strings.Contains(body, "th->worker_wait_seq") ||
 		!strings.Contains(body, "event_isset(&th->idle)") {
 		t.Fatal("schedule_call handoff logs should include ready/done/idle/executing/running state")
+	}
+}
+
+func TestWindowsExecutorWorkerIdleWaitIsBounded(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "executor.cc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	helper := extractFunctionBody(t, string(data), "static int windows_yield_until_event")
+	for _, needle := range []string{
+		"for (uint64 i = 0; i < max_yields; i++)",
+		"event_isset(ev)",
+		"SwitchToThread()",
+		"Sleep(0)",
+	} {
+		if !strings.Contains(helper, needle) {
+			t.Fatalf("windows_yield_until_event missing bounded-yield construct %q", needle)
+		}
+	}
+	if strings.Contains(helper, "event_timedwait") ||
+		strings.Contains(helper, "WaitForSingleObject") {
+		t.Fatal("windows_yield_until_event should not depend on a guest timer wait")
 	}
 }
 
@@ -2309,10 +2335,27 @@ func TestWindowsExecutorLogsWorkerHandoffWaits(t *testing.T) {
 		"th->call_index = -1;",
 		"th->call_num = -1;",
 		"event_init(&th->idle);",
+		"thread_start(worker_thread, th);",
+		"thread_create_pre_idle_wait",
+		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields)",
+		"thread_create_post_idle_wait",
+		"event_set(&th->done);",
 	} {
 		if !strings.Contains(threadCreate, needle) {
 			t.Fatalf("thread_create missing initialization %q", needle)
 		}
+	}
+	if strings.Index(threadCreate, "thread_start(worker_thread, th);") >
+		strings.Index(threadCreate, "event_set(&th->done);") {
+		t.Fatal("Windows thread_create should start the worker before marking it done")
+	}
+	if strings.Index(threadCreate, "thread_create_pre_idle_wait") >
+		strings.Index(threadCreate, "thread_create_post_idle_wait") {
+		t.Fatal("thread_create should log idle wait begin before idle wait result")
+	}
+	if strings.Index(threadCreate, "thread_create_post_idle_wait") >
+		strings.Index(threadCreate, "event_set(&th->done);") {
+		t.Fatal("thread_create should wait for the worker idle breadcrumb before marking done")
 	}
 	worker := extractFunctionBody(t, src, "void* worker_thread")
 	for _, needle := range []string{

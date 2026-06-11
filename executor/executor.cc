@@ -845,6 +845,8 @@ static intptr_t SYSCALLAPI WSARecvMsg(intptr_t s, intptr_t msg, intptr_t bytes,
 #endif
 
 #if GOOS_windows
+static const uint64 kWindowsWorkerIdleYields = 1 << 15;
+
 static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 {
 #if SYZ_NYX_WINDOWS_DEMO
@@ -962,6 +964,17 @@ static void nyx_log_thread_stage(const char* stage, const thread_t* th, uint64 a
 		    (unsigned long long)a2,
 		    (unsigned long long)a3);
 #endif
+}
+
+static int windows_yield_until_event(event_t* ev, uint64 max_yields)
+{
+	for (uint64 i = 0; i < max_yields; i++) {
+		if (event_isset(ev))
+			return 1;
+		if (!SwitchToThread())
+			Sleep(0);
+	}
+	return event_isset(ev);
 }
 #endif
 
@@ -1875,10 +1888,9 @@ thread_t* schedule_call(int call_index, int call_num, uint64 copyout_index, uint
 		      event_isset(&th->ready), event_isset(&th->done), th->executing);
 #if GOOS_windows
 	if (flag_threaded) {
-		uint64 idle_timeout_ms = 1000 * (slowdown_scale ? slowdown_scale : 1);
 		nyx_log_thread_stage("schedule_pre_idle_wait", th, event_isset(&th->idle),
-				     th->handoff_seq, th->worker_tid, running);
-		int idle_seen = event_timedwait(&th->idle, idle_timeout_ms);
+				     th->handoff_seq, th->worker_tid, kWindowsWorkerIdleYields);
+		int idle_seen = windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields);
 		nyx_log_thread_stage("schedule_post_idle_wait", th, idle_seen,
 				     event_isset(&th->idle), th->worker_tid, running);
 	}
@@ -2769,9 +2781,21 @@ void thread_create(thread_t* th, int id, bool need_coverage)
 	event_init(&th->ready);
 	event_init(&th->done);
 	event_init(&th->idle);
+#if GOOS_windows
+	if (flag_threaded) {
+		thread_start(worker_thread, th);
+		nyx_log_thread_stage("thread_create_pre_idle_wait", th, event_isset(&th->idle),
+				     th->handoff_seq, th->worker_tid, kWindowsWorkerIdleYields);
+		int idle_seen = windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields);
+		nyx_log_thread_stage("thread_create_post_idle_wait", th, idle_seen,
+				     event_isset(&th->idle), th->worker_tid, th->worker_wait_seq);
+	}
+	event_set(&th->done);
+#else
 	event_set(&th->done);
 	if (flag_threaded)
 		thread_start(worker_thread, th);
+#endif
 }
 
 void thread_mmap_cover(thread_t* th)
