@@ -937,11 +937,12 @@ func TestWindowsAFDSchedulesImmediateCollideForDeepOwner(t *testing.T) {
 	if len(p.Calls) == 0 || p.Calls[0].Meta.Name != "WSAStartup" {
 		t.Fatalf("test program lost WSAStartup scaffold:\n%s", p.Serialize())
 	}
+	enabledCalls := windowsFuzzerTestEnabledCalls(t, profiled, []string{"WSARecv$accept"}, nil)
 	newTestFuzzer := func(seed int64) *Fuzzer {
 		return NewFuzzer(context.Background(), &Config{
 			Collide:      true,
 			Corpus:       corpus.NewCorpus(context.Background()),
-			EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
+			EnabledCalls: enabledCalls,
 		}, rand.New(rand.NewSource(seed)), profiled)
 	}
 	fuzzer := newTestFuzzer(0)

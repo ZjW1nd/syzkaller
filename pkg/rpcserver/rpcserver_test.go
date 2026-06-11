@@ -287,6 +287,31 @@ func TestHandleConn(t *testing.T) {
 	}
 }
 
+func TestMachineCheckExpansionKeepsConfigDisabledSyscallsDisabled(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	assert.NoError(t, err)
+	target, err = target.ApplyTargetProfile(target, "afd")
+	assert.NoError(t, err)
+
+	root := target.SyscallMap["NtDeviceIoControlFile$afd_query_recv_accept"]
+	accept := target.SyscallMap["accept$inet_tcp"]
+	if root == nil || accept == nil {
+		t.Fatalf("missing AFD test syscalls: root=%v accept=%v", root, accept)
+	}
+	enabled, _ := target.TransitivelyEnabledCalls(map[*prog.Syscall]bool{root: true})
+	if !enabled[accept] {
+		t.Fatal("test setup did not expand accept$inet_tcp")
+	}
+
+	removed := filterDisabledSyscalls(target, enabled, []string{"accept$inet_tcp"})
+	if enabled[accept] {
+		t.Fatal("accept$inet_tcp remained enabled after disabled-pattern filter")
+	}
+	if removed[accept] == "" {
+		t.Fatal("disabled-pattern filter did not report accept$inet_tcp removal")
+	}
+}
+
 func TestMachineCheckCrash(t *testing.T) {
 	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
 	if err != nil {
