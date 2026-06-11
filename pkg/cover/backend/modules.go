@@ -156,6 +156,20 @@ func getKaslrOffset(modules []*vminfo.KernelModule, pcBase uint64) uint64 {
 func FixModules(localModules, modules []*vminfo.KernelModule, pcBase uint64) []*vminfo.KernelModule {
 	kaslrOffset := getKaslrOffset(modules, pcBase)
 	var modules1 []*vminfo.KernelModule
+	if len(localModules) == 0 {
+		for _, mod := range modules {
+			if mod.Path == "" {
+				continue
+			}
+			modules1 = append(modules1, &vminfo.KernelModule{
+				Name: mod.Name,
+				Size: mod.Size,
+				Addr: mod.Addr - kaslrOffset,
+				Path: mod.Path,
+			})
+		}
+		return modules1
+	}
 	for _, mod := range modules {
 		size := uint64(0)
 		path := ""

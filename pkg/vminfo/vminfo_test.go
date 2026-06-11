@@ -5,6 +5,7 @@ package vminfo
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,6 +43,40 @@ func TestHostMachineInfo(t *testing.T) {
 	t.Logf("machine info:\n%s", info)
 	for _, module := range modules {
 		t.Logf("module %q: addr 0x%x size %v", module.Name, module.Addr, module.Size)
+	}
+}
+
+func TestNyxModulesMachineInfo(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []*KernelModule{{
+		Name: "afd.sys",
+		Addr: 0xfffff80600000000,
+		Size: 0x1000,
+		Path: "afd.sys",
+	}}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker := New(&Config{Target: target, VMType: "nyx"})
+	modules, info, err := checker.MachineInfo([]*flatrpc.FileInfo{{
+		Name:   NyxModulesFile,
+		Exists: true,
+		Data:   data,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(modules) != 1 || modules[0].Name != want[0].Name ||
+		modules[0].Addr != want[0].Addr || modules[0].Size != want[0].Size ||
+		modules[0].Path != want[0].Path {
+		t.Fatalf("modules=%+v want %+v", modules, want)
+	}
+	if !strings.Contains(string(info), "afd.sys") {
+		t.Fatalf("machine info does not contain module data: %s", info)
 	}
 }
 

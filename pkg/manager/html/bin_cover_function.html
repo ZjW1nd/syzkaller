@@ -25,9 +25,14 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 .bincover_code .unknown {
 	color: #505050;
 }
+.bincover_offsets {
+	color: #505050;
+	font-size: 90%;
+	white-space: nowrap;
+}
 </style>
 
-<p><a href="/bincover">back to binary coverage</a></p>
+<p><a href="{{.CoverURL}}">back to coverage</a></p>
 
 <table class="list_table">
 	<caption>{{.Name}}</caption>
@@ -56,6 +61,9 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 	<tr class="{{$line.State}}">
 		<td>{{$line.Line}}</td>
 		<td>{{$line.Text}}</td>
+		<td class="bincover_offsets">
+			{{range $off := $line.Offsets}}0x{{printf "%x" $off}} {{end}}
+		</td>
 	</tr>
 	{{end}}
 	</tbody>

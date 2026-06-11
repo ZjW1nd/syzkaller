@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -49,6 +50,7 @@ func (mod BinCoverageModule) FunctionPercent() string {
 
 type BinCoverageFunction struct {
 	Name          string `json:"name"`
+	File          string `json:"file,omitempty"`
 	StartOffset   uint64 `json:"start_offset"`
 	EndOffset     uint64 `json:"end_offset"`
 	CoveredBlocks int    `json:"covered_blocks"`
@@ -69,6 +71,7 @@ func (fn BinCoverageFunction) EndHex() string {
 
 type BinCoverageFunctionCode struct {
 	Name  string            `json:"name"`
+	File  string            `json:"file,omitempty"`
 	Lines []BinCoverageLine `json:"lines"`
 }
 
@@ -81,7 +84,11 @@ type BinCoverageLine struct {
 
 type UIBinCoverPage struct {
 	UIPageHeader
-	Snapshot *BinCoverageSnapshot
+	Snapshot      *BinCoverageSnapshot
+	Functions     []BinCoverageFunction
+	LighthouseURL string
+	JSONURL       string
+	RawURL        string
 }
 
 type UIBinCoverFunctionPage struct {
@@ -90,6 +97,29 @@ type UIBinCoverFunctionPage struct {
 	Function BinCoverageFunction
 	Name     string
 	Lines    []BinCoverageLine
+}
+
+type UIBinCoverSourcePage struct {
+	UIPageHeader
+	Snapshot      *BinCoverageSnapshot
+	Module        string
+	Files         []binCoverageFile
+	SelectedFile  string
+	Functions     []BinCoverageFunctionCode
+	LighthouseURL string
+	JSONURL       string
+	RawURL        string
+}
+
+type binCoverageFile struct {
+	Name      string
+	Functions int
+	Covered   int
+	Total     int
+}
+
+func (file binCoverageFile) Percent() string {
+	return binCoverPercent(file.Covered, file.Total)
 }
 
 type binCoverRawResponse struct {
@@ -111,7 +141,22 @@ type binCoverRawModule struct {
 }
 
 func (serv *HTTPServer) httpBinCover(w http.ResponseWriter, r *http.Request) {
+	moduleName := strings.TrimSpace(r.FormValue("module"))
 	snapshot := serv.BinCover.Load()
+	if snapshot != nil && moduleName != "" && !snapshot.matchesModule(moduleName) {
+		http.Error(w, "binary coverage for requested module is not ready", http.StatusNotFound)
+		return
+	}
+	if r.URL.Path == "/bincover" && r.FormValue("json") == "" {
+		if snapshot != nil && snapshot.Module.Name != "" {
+			http.Redirect(w, r, binCoverModuleURL("/cover", snapshot.Module.Name), http.StatusFound)
+			return
+		}
+		if moduleName != "" {
+			http.Redirect(w, r, binCoverModuleURL("/cover", moduleName), http.StatusFound)
+			return
+		}
+	}
 	if r.FormValue("json") != "" {
 		w.Header().Set("Content-Type", ctApplicationJSON)
 		if snapshot == nil {
@@ -122,20 +167,73 @@ func (serv *HTTPServer) httpBinCover(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	header := serv.pageHeader(r, "coverage")
+	if snapshot != nil {
+		header.setBinCoverModule(snapshot.Module.Name)
+	} else {
+		header.setBinCoverModule(moduleName)
+	}
 	data := UIBinCoverPage{
-		UIPageHeader: serv.pageHeader(r, "binary coverage"),
+		UIPageHeader: header,
 		Snapshot:     snapshot,
+	}
+	if snapshot != nil {
+		data.Functions = snapshot.uiFunctions()
+		data.LighthouseURL = binCoverModuleURL("/bincover/lighthouse", snapshot.Module.Name)
+		data.JSONURL = binCoverModuleURL("/bincover", snapshot.Module.Name, "json", "1")
+		data.RawURL = binCoverModuleURL("/bincover/raw", snapshot.Module.Name)
 	}
 	executeTemplate(w, binCoverTemplate, data)
 }
 
-func (serv *HTTPServer) httpBinCoverFunction(w http.ResponseWriter, r *http.Request) {
-	snapshot := serv.BinCover.Load()
-	if snapshot == nil {
-		http.Error(w, "binary coverage is not ready", http.StatusNotFound)
+func (serv *HTTPServer) httpBinCoverSource(w http.ResponseWriter, r *http.Request) {
+	moduleName := strings.TrimSpace(r.FormValue("module"))
+	if moduleName == "" {
+		if snapshot := serv.BinCover.Load(); snapshot != nil && snapshot.Module.Name != "" {
+			http.Redirect(w, r, binCoverModuleURL("/cover", snapshot.Module.Name, "file", r.FormValue("file")),
+				http.StatusFound)
+			return
+		}
+		http.Error(w, "missing module parameter", http.StatusBadRequest)
 		return
 	}
-	name := r.FormValue("name")
+	snapshot, status, msg := serv.binCoverSnapshotForModule(moduleName)
+	if snapshot == nil {
+		http.Error(w, msg, status)
+		return
+	}
+	selected := r.FormValue("file")
+	files := snapshot.pseudocodeFiles()
+	if selected == "" && len(files) != 0 {
+		selected = files[0].Name
+	}
+	header := serv.pageHeader(r, "coverage "+snapshot.Module.Name)
+	header.setBinCoverModule(snapshot.Module.Name)
+	data := UIBinCoverSourcePage{
+		UIPageHeader:  header,
+		Snapshot:      snapshot,
+		Module:        snapshot.Module.Name,
+		Files:         files,
+		SelectedFile:  selected,
+		Functions:     snapshot.pseudocodeForFile(selected),
+		LighthouseURL: binCoverModuleURL("/bincover/lighthouse", snapshot.Module.Name),
+		JSONURL:       binCoverModuleURL("/bincover", snapshot.Module.Name, "json", "1"),
+		RawURL:        binCoverModuleURL("/bincover/raw", snapshot.Module.Name),
+	}
+	executeTemplate(w, binCoverSourceTemplate, data)
+}
+
+func (serv *HTTPServer) httpBinCoverFunction(w http.ResponseWriter, r *http.Request) {
+	moduleName := strings.TrimSpace(r.FormValue("module"))
+	snapshot, status, msg := serv.binCoverSnapshotForModule(moduleName)
+	if snapshot == nil {
+		http.Error(w, msg, status)
+		return
+	}
+	name := r.FormValue("function")
+	if name == "" {
+		name = r.FormValue("name")
+	}
 	if name == "" {
 		http.Error(w, "missing function name", http.StatusBadRequest)
 		return
@@ -146,8 +244,10 @@ func (serv *HTTPServer) httpBinCoverFunction(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	lines := snapshot.findPseudocode(name)
+	header := serv.pageHeader(r, name)
+	header.setBinCoverModule(snapshot.Module.Name)
 	data := UIBinCoverFunctionPage{
-		UIPageHeader: serv.pageHeader(r, name),
+		UIPageHeader: header,
 		Snapshot:     snapshot,
 		Function:     fn,
 		Name:         name,
@@ -157,9 +257,9 @@ func (serv *HTTPServer) httpBinCoverFunction(w http.ResponseWriter, r *http.Requ
 }
 
 func (serv *HTTPServer) httpBinCoverLighthouse(w http.ResponseWriter, r *http.Request) {
-	snapshot := serv.BinCover.Load()
+	snapshot, status, msg := serv.binCoverSnapshotForModule(strings.TrimSpace(r.FormValue("module")))
 	if snapshot == nil {
-		http.Error(w, "binary coverage is not ready", http.StatusNotFound)
+		http.Error(w, msg, status)
 		return
 	}
 	lines := snapshot.lighthouseLines()
@@ -172,6 +272,17 @@ func (serv *HTTPServer) httpBinCoverLighthouse(w http.ResponseWriter, r *http.Re
 	for _, line := range lines {
 		fmt.Fprintln(w, line)
 	}
+}
+
+func (serv *HTTPServer) binCoverSnapshotForModule(moduleName string) (*BinCoverageSnapshot, int, string) {
+	snapshot := serv.BinCover.Load()
+	if snapshot == nil {
+		return nil, http.StatusNotFound, "binary coverage is not ready"
+	}
+	if moduleName != "" && !snapshot.matchesModule(moduleName) {
+		return nil, http.StatusNotFound, "binary coverage for requested module is not ready"
+	}
+	return snapshot, http.StatusOK, ""
 }
 
 func (serv *HTTPServer) httpBinCoverUpload(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +344,7 @@ func (serv *HTTPServer) httpBinCoverRaw(w http.ResponseWriter, r *http.Request) 
 		for updateID := range item.Updates {
 			raw := item.Updates[updateID].RawCover
 			if len(raw) == 0 {
+				rawComplete = false
 				continue
 			}
 			sourceUpdates++
@@ -241,6 +353,9 @@ func (serv *HTTPServer) httpBinCoverRaw(w http.ResponseWriter, r *http.Request) 
 		}
 		if !usedRaw {
 			rawComplete = false
+			if len(item.Cover) != 0 {
+				sourceUpdates++
+			}
 			binCoverAddPCs(item.Cover, module.Addr, module.Size, pcs, unmapped)
 		}
 	}
@@ -282,7 +397,19 @@ func normalizeBinCoverageSnapshot(snapshot *BinCoverageSnapshot) {
 		}
 		return snapshot.Functions[i].Name < snapshot.Functions[j].Name
 	})
+	for index := range snapshot.Functions {
+		fn := &snapshot.Functions[index]
+		fn.File = strings.TrimSpace(fn.File)
+		if fn.File == "" {
+			fn.File = binCoverVirtualFile(snapshot.Module.Name, fn.Name)
+		}
+	}
 	for codeIndex := range snapshot.Pseudocode {
+		code := &snapshot.Pseudocode[codeIndex]
+		code.File = strings.TrimSpace(code.File)
+		if code.File == "" {
+			code.File = binCoverVirtualFile(snapshot.Module.Name, code.Name)
+		}
 		for lineIndex := range snapshot.Pseudocode[codeIndex].Lines {
 			line := &snapshot.Pseudocode[codeIndex].Lines[lineIndex]
 			switch line.State {
@@ -290,14 +417,91 @@ func normalizeBinCoverageSnapshot(snapshot *BinCoverageSnapshot) {
 			default:
 				line.State = "unknown"
 			}
+			sort.Slice(line.Offsets, func(i, j int) bool {
+				return line.Offsets[i] < line.Offsets[j]
+			})
+			line.Offsets = dedupSortedUint64(line.Offsets)
 		}
 	}
+	sort.Slice(snapshot.Pseudocode, func(i, j int) bool {
+		if snapshot.Pseudocode[i].File != snapshot.Pseudocode[j].File {
+			return snapshot.Pseudocode[i].File < snapshot.Pseudocode[j].File
+		}
+		return snapshot.Pseudocode[i].Name < snapshot.Pseudocode[j].Name
+	})
 	sort.Slice(snapshot.CoveredOffsets, func(i, j int) bool {
 		return snapshot.CoveredOffsets[i] < snapshot.CoveredOffsets[j]
 	})
 	snapshot.CoveredOffsets = dedupSortedUint64(snapshot.CoveredOffsets)
 	sort.Strings(snapshot.Lighthouse)
 	snapshot.Lighthouse = dedupSortedStrings(snapshot.Lighthouse)
+}
+
+func (header *UIPageHeader) setBinCoverModule(moduleName string) {
+	moduleName = strings.TrimSpace(moduleName)
+	if moduleName == "" {
+		return
+	}
+	header.CoverURL = binCoverModuleURL("/cover", moduleName)
+	header.BinCoverURL = binCoverModuleURL("/bincover", moduleName)
+}
+
+func (snapshot *BinCoverageSnapshot) uiFunctions() []BinCoverageFunction {
+	functions := append([]BinCoverageFunction(nil), snapshot.Functions...)
+	sort.SliceStable(functions, func(i, j int) bool {
+		if functions[i].CoveredBlocks != functions[j].CoveredBlocks {
+			return functions[i].CoveredBlocks > functions[j].CoveredBlocks
+		}
+		if functions[i].TotalBlocks != functions[j].TotalBlocks {
+			return functions[i].TotalBlocks > functions[j].TotalBlocks
+		}
+		if functions[i].Name != functions[j].Name {
+			return functions[i].Name < functions[j].Name
+		}
+		return functions[i].StartOffset < functions[j].StartOffset
+	})
+	return functions
+}
+
+func (snapshot *BinCoverageSnapshot) matchesModule(moduleName string) bool {
+	moduleName = strings.TrimSpace(moduleName)
+	if moduleName == "" {
+		return true
+	}
+	return strings.EqualFold(snapshot.Module.Name, moduleName) ||
+		strings.EqualFold(binCoverBaseName(snapshot.Module.Path), moduleName)
+}
+
+func (snapshot *BinCoverageSnapshot) UpdatedAtLocal() string {
+	return binCoverLocalTime(snapshot.UpdatedAt)
+}
+
+func (snapshot *BinCoverageSnapshot) ReceivedAtLocal() string {
+	return binCoverLocalTime(snapshot.ReceivedAt)
+}
+
+func binCoverLocalTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Local().Format("2006-01-02 15:04:05 -0700")
+}
+
+func binCoverModuleURL(path, moduleName string, params ...string) string {
+	values := url.Values{}
+	moduleName = strings.TrimSpace(moduleName)
+	if moduleName != "" {
+		values.Set("module", moduleName)
+	}
+	for i := 0; i+1 < len(params); i += 2 {
+		if params[i+1] != "" {
+			values.Set(params[i], params[i+1])
+		}
+	}
+	if len(values) == 0 {
+		return path
+	}
+	return path + "?" + values.Encode()
 }
 
 func (snapshot *BinCoverageSnapshot) findFunction(name string) (BinCoverageFunction, bool) {
@@ -318,6 +522,53 @@ func (snapshot *BinCoverageSnapshot) findPseudocode(name string) []BinCoverageLi
 	return nil
 }
 
+func (snapshot *BinCoverageSnapshot) pseudocodeFiles() []binCoverageFile {
+	files := make(map[string]*binCoverageFile)
+	for _, code := range snapshot.Pseudocode {
+		fileName := code.File
+		if fileName == "" {
+			fileName = binCoverVirtualFile(snapshot.Module.Name, code.Name)
+		}
+		file := files[fileName]
+		if file == nil {
+			file = &binCoverageFile{Name: fileName}
+			files[fileName] = file
+		}
+		file.Functions++
+		for _, line := range code.Lines {
+			switch line.State {
+			case "covered", "partial":
+				file.Covered++
+				file.Total++
+			case "uncovered":
+				file.Total++
+			}
+		}
+	}
+	ret := make([]binCoverageFile, 0, len(files))
+	for _, file := range files {
+		ret = append(ret, *file)
+	}
+	sort.Slice(ret, func(i, j int) bool {
+		return ret[i].Name < ret[j].Name
+	})
+	return ret
+}
+
+func (snapshot *BinCoverageSnapshot) pseudocodeForFile(file string) []BinCoverageFunctionCode {
+	var ret []BinCoverageFunctionCode
+	for _, code := range snapshot.Pseudocode {
+		fileName := code.File
+		if fileName == "" {
+			fileName = binCoverVirtualFile(snapshot.Module.Name, code.Name)
+		}
+		if fileName == file {
+			ret = append(ret, code)
+		}
+	}
+	return ret
+}
+
 func (snapshot *BinCoverageSnapshot) lighthouseLines() []string {
 	if len(snapshot.Lighthouse) != 0 {
 		return append([]string(nil), snapshot.Lighthouse...)
@@ -330,6 +581,18 @@ func (snapshot *BinCoverageSnapshot) lighthouseLines() []string {
 		lines = append(lines, fmt.Sprintf("%s+%x", snapshot.Module.Name, off))
 	}
 	return lines
+}
+
+func binCoverVirtualFile(moduleName, functionName string) string {
+	moduleName = strings.TrimSpace(moduleName)
+	if moduleName == "" {
+		moduleName = "binary"
+	}
+	functionName = strings.TrimSpace(functionName)
+	if functionName == "" {
+		functionName = "unknown"
+	}
+	return moduleName + "/" + functionName + ".pseudo.c"
 }
 
 func findBinCoverModule(coverInfo *CoverageInfo, name string) (*binCoverKernelModule, bool) {

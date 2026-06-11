@@ -526,7 +526,25 @@ const (
 )
 
 func (serv *HTTPServer) httpCover(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("module") != "" {
+		if r.FormValue("function") != "" || r.FormValue("name") != "" {
+			serv.httpBinCoverFunction(w, r)
+			return
+		}
+		serv.httpBinCover(w, r)
+		return
+	}
+	if r.URL.RawQuery == "" {
+		if snapshot := serv.BinCover.Load(); snapshot != nil && snapshot.Module.Name != "" {
+			http.Redirect(w, r, binCoverModuleURL("/cover", snapshot.Module.Name), http.StatusFound)
+			return
+		}
+	}
 	if !serv.Cfg.Cover {
+		if snapshot := serv.BinCover.Load(); snapshot != nil && snapshot.Module.Name != "" {
+			http.Redirect(w, r, binCoverModuleURL("/cover", snapshot.Module.Name), http.StatusFound)
+			return
+		}
 		serv.httpCoverFallback(w, r)
 		return
 	}
@@ -1213,6 +1231,9 @@ type UIPageHeader struct {
 	URLPath string
 	// Relative page URL with GET parameters/fragment/etc (e.g. "/stats?foo=1#bar").
 	CurrentURL string
+	// Coverage navigation URLs. Binary coverage pages set these to module-scoped URLs.
+	CoverURL    string
+	BinCoverURL string
 	// syzkaller build git revision and link.
 	GitRevision     string
 	GitRevisionLink string
@@ -1230,16 +1251,20 @@ func (serv *HTTPServer) pageHeader(r *http.Request, title string) UIPageHeader {
 	url.Scheme = ""
 	url.Host = ""
 	url.User = nil
-	return UIPageHeader{
+	header := UIPageHeader{
 		Name:            serv.Cfg.Name,
 		PageTitle:       title,
 		URLPath:         r.URL.Path,
 		CurrentURL:      url.String(),
+		CoverURL:        "/cover",
+		BinCoverURL:     "/bincover",
 		GitRevision:     revision,
 		GitRevisionLink: revisionLink,
 		ExpertMode:      serv.expertMode,
 		Paused:          serv.paused,
 	}
+	header.setBinCoverModule(r.FormValue("module"))
+	return header
 }
 
 func createPage(name string, data any) *template.Template {
@@ -1310,18 +1335,19 @@ type UITextPage struct {
 }
 
 var (
-	mainTemplate          = createPage("main", UISummaryData{})
-	syscallsTemplate      = createPage("syscalls", UISyscallsData{})
-	vmsTemplate           = createPage("vms", UIVMData{})
-	crashTemplate         = createPage("crash", UICrashPage{})
-	corpusTemplate        = createPage("corpus", UICorpusPage{})
-	binCoverTemplate      = createPage("bin_cover", UIBinCoverPage{})
-	binCoverFuncTemplate  = createPage("bin_cover_function", UIBinCoverFunctionPage{})
-	prioTemplate          = createPage("prio", UIPrioData{})
-	fallbackCoverTemplate = createPage("fallback_cover", UIFallbackCoverData{})
-	rawCoverTemplate      = createPage("raw_cover", UIRawCoverPage{})
-	jobListTemplate       = createPage("job_list", UIJobList{})
-	textTemplate          = createPage("text", UITextPage{})
+	mainTemplate           = createPage("main", UISummaryData{})
+	syscallsTemplate       = createPage("syscalls", UISyscallsData{})
+	vmsTemplate            = createPage("vms", UIVMData{})
+	crashTemplate          = createPage("crash", UICrashPage{})
+	corpusTemplate         = createPage("corpus", UICorpusPage{})
+	binCoverTemplate       = createPage("bin_cover", UIBinCoverPage{})
+	binCoverFuncTemplate   = createPage("bin_cover_function", UIBinCoverFunctionPage{})
+	binCoverSourceTemplate = createPage("bin_cover_source", UIBinCoverSourcePage{})
+	prioTemplate           = createPage("prio", UIPrioData{})
+	fallbackCoverTemplate  = createPage("fallback_cover", UIFallbackCoverData{})
+	rawCoverTemplate       = createPage("raw_cover", UIRawCoverPage{})
+	jobListTemplate        = createPage("job_list", UIJobList{})
+	textTemplate           = createPage("text", UITextPage{})
 )
 
 //go:embed html/*.html

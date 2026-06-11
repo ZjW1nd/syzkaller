@@ -1,0 +1,127 @@
+{{/*
+Copyright 2026 syzkaller project authors. All rights reserved.
+Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
+*/}}
+
+<style>
+.bincover_layout {
+	display: grid;
+	grid-template-columns: minmax(220px, 30%) 1fr;
+	gap: 16px;
+	align-items: start;
+}
+.bincover_code {
+	border-collapse: collapse;
+	font-family: monospace;
+	white-space: pre-wrap;
+	width: 100%;
+}
+.bincover_code td {
+	border: 0;
+	padding: 1px 8px;
+	vertical-align: top;
+}
+.bincover_code .covered {
+	background: #e8ffe8;
+	color: #000000;
+}
+.bincover_code .partial {
+	background: #fff3d6;
+	color: #6f3b00;
+}
+.bincover_code .uncovered {
+	background: #ffe6e6;
+	color: #9b0000;
+}
+.bincover_code .unknown {
+	color: #505050;
+}
+.bincover_offsets {
+	color: #505050;
+	font-size: 90%;
+	white-space: nowrap;
+}
+@media (max-width: 900px) {
+	.bincover_layout {
+		grid-template-columns: 1fr;
+	}
+}
+</style>
+
+{{if not .Snapshot}}
+<p>Binary coverage is not ready. Start ntcover-idalib and upload an analysis snapshot.</p>
+{{else}}
+<p>
+	<a href="{{.BinCoverURL}}">binary coverage</a> |
+	<a href="{{.RawURL}}">raw</a> |
+	<a href="{{.LighthouseURL}}">lighthouse</a> |
+	<a href="{{.JSONURL}}">json</a>
+</p>
+
+<table class="list_table">
+	<caption>Binary coverage for {{.Snapshot.Module.Name}}</caption>
+	<thead>
+	<tr>
+		<th>Blocks</th>
+		<th>Functions</th>
+		<th>Updated (local)</th>
+		<th>Received (local)</th>
+		<th>Tool</th>
+	</tr>
+	</thead>
+	<tbody>
+	<tr>
+		<td>{{.Snapshot.Module.CoveredBlocks}} / {{.Snapshot.Module.TotalBlocks}} / {{.Snapshot.Module.BlockPercent}}</td>
+		<td>{{.Snapshot.Module.CoveredFunctions}} / {{.Snapshot.Module.TotalFunctions}} / {{.Snapshot.Module.FunctionPercent}}</td>
+		<td>{{.Snapshot.UpdatedAtLocal}}</td>
+		<td>{{.Snapshot.ReceivedAtLocal}}</td>
+		<td>{{.Snapshot.Tool}}</td>
+	</tr>
+	</tbody>
+</table>
+
+<div class="bincover_layout">
+<table class="list_table">
+	<caption>Files</caption>
+	<thead>
+	<tr>
+		<th>File</th>
+		<th>Functions</th>
+		<th>Lines</th>
+	</tr>
+	</thead>
+	<tbody>
+	{{range $file := .Files}}
+	<tr>
+		<td><a href="/cover?module={{urlquery $.Module}}&amp;file={{urlquery $file.Name}}">{{$file.Name}}</a></td>
+		<td>{{$file.Functions}}</td>
+		<td>{{$file.Covered}} / {{$file.Total}} / {{$file.Percent}}</td>
+	</tr>
+	{{end}}
+	</tbody>
+</table>
+
+<div>
+{{if not .Functions}}
+<p>No pseudocode lines were uploaded for {{.SelectedFile}}.</p>
+{{else}}
+{{range $code := .Functions}}
+<h3>{{$code.Name}}</h3>
+<table class="bincover_code">
+	<tbody>
+	{{range $line := $code.Lines}}
+	<tr class="{{$line.State}}">
+		<td>{{$line.Line}}</td>
+		<td>{{$line.Text}}</td>
+		<td class="bincover_offsets">
+			{{range $off := $line.Offsets}}0x{{printf "%x" $off}} {{end}}
+		</td>
+	</tr>
+	{{end}}
+	</tbody>
+</table>
+{{end}}
+{{end}}
+</div>
+</div>
+{{end}}

@@ -15,6 +15,7 @@ package vminfo
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,8 @@ type KernelModule struct {
 	Size uint64
 	Path string
 }
+
+const NyxModulesFile = "nyx_modules.json"
 
 type Checker struct {
 	checker
@@ -190,11 +193,29 @@ func (nopChecker) CheckFiles() []string {
 }
 
 func (nopChecker) parseModules(files filesystem) ([]*KernelModule, error) {
-	return nil, nil
+	data, err := files.ReadFile(NyxModulesFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var modules []*KernelModule
+	if err := json.Unmarshal(data, &modules); err != nil {
+		return nil, fmt.Errorf("failed to parse %s: %w", NyxModulesFile, err)
+	}
+	return modules, nil
 }
 
 func (nopChecker) machineInfos() []machineInfoFunc {
-	return nil
+	return []machineInfoFunc{func(files filesystem, w io.Writer) (string, error) {
+		data, err := files.ReadFile(NyxModulesFile)
+		if err != nil {
+			return "", err
+		}
+		_, _ = w.Write(data)
+		return "nyx modules", nil
+	}}
 }
 
 func (nopChecker) syscallCheck(*checkContext, *prog.Syscall) string {
