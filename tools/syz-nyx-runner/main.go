@@ -9,6 +9,7 @@ import (
 	"crypto/sha1"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -28,6 +29,8 @@ import (
 	flatbuffers "github.com/google/flatbuffers/go"
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/log"
+	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/google/syzkaller/pkg/vminfo"
 	"github.com/google/syzkaller/prog"
 	_ "github.com/google/syzkaller/sys"
 	"golang.org/x/sys/unix"
@@ -391,6 +394,21 @@ type callFeedbackSummary struct {
 	Error     int32
 }
 
+type coverageDebugStreamEvent struct {
+	RequestID   int64                     `json:"request_id"`
+	GeneratedAt time.Time                 `json:"generated_at"`
+	Calls       []coverageDebugStreamCall `json:"calls,omitempty"`
+}
+
+type coverageDebugStreamCall struct {
+	CallIndex uint32   `json:"call_index"`
+	CallName  string   `json:"call_name,omitempty"`
+	SlotID    uint32   `json:"slot_id"`
+	Module    string   `json:"module,omitempty"`
+	PCs       []string `json:"pcs"`
+	Offsets   []string `json:"offsets,omitempty"`
+}
+
 type moduleRuntimeRange struct {
 	SlotID uint32
 	Target string
@@ -581,6 +599,12 @@ type nyxVM struct {
 	process     *exec.Cmd
 }
 
+func (vm *nyxVM) debugLogf(msg string, args ...any) {
+	if vm.debug {
+		log.Logf(0, msg, args...)
+	}
+}
+
 func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image string, memoryMB int, payloadSize, bitmapSize int, debug bool, hardTimeout time.Duration, moduleRanges []moduleRangeSpec, windowsMinidump bool, windowsMinidumpTimeout int) *nyxVM {
 	payloadSize = alignUp(payloadSize, nyxPageSize)
 	return &nyxVM{
@@ -712,7 +736,7 @@ func (vm *nyxVM) start(ctx context.Context) error {
 		"-device", nyxDevice,
 		"-fast_vm_reload", fmt.Sprintf("path=%s,load=off", vm.snapshotDir),
 	)
-	vm.process = exec.CommandContext(ctx, vm.qemuPath, args...)
+	vm.process = osutil.CommandContext(ctx, vm.qemuPath, args...)
 	if vm.debug {
 		vm.process.Stdout = os.Stdout
 		vm.process.Stderr = os.Stderr
@@ -978,6 +1002,36 @@ func parseModuleRangesFromAux(text string) []moduleRuntimeRange {
 	return ranges
 }
 
+func nyxModuleInfoFiles(ranges []moduleRuntimeRange) []*flatrpc.FileInfo {
+	if len(ranges) == 0 {
+		return nil
+	}
+	modules := make([]*vminfo.KernelModule, 0, len(ranges))
+	for _, rng := range ranges {
+		if rng.End <= rng.Base || rng.Name == "" {
+			continue
+		}
+		modules = append(modules, &vminfo.KernelModule{
+			Name: rng.Name,
+			Addr: rng.Base,
+			Size: rng.End - rng.Base,
+			Path: rng.Name,
+		})
+	}
+	if len(modules) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(modules)
+	if err != nil {
+		return nil
+	}
+	return []*flatrpc.FileInfo{{
+		Name:   vminfo.NyxModulesFile,
+		Exists: true,
+		Data:   data,
+	}}
+}
+
 func (vm *nyxVM) close() {
 	if vm.aux != nil {
 		vm.aux.close()
@@ -1059,7 +1113,7 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 		return err
 	}
 	for i := 0; i < 16; i++ {
-		log.Logf(0, "runner handshake step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+		vm.debugLogf("runner handshake step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		if err := vm.runQemu(); err != nil {
@@ -1069,13 +1123,13 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 			log.Logf(0, "runner handshake ack observed at step=%d", i)
 			return nil
 		}
-		log.Logf(0, "runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+		vm.debugLogf("runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		switch vm.aux.execCode() {
 		case nyxRCHprintf:
 			vm.recordModuleRangesFromAux()
-			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
+			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 		case nyxRCAbort:
 			return fmt.Errorf("guest abort during handshake: %s", string(vm.aux.misc()))
 		}
@@ -1116,7 +1170,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 			log.Logf(0, "runner exec wait deadline expired before step=%d; synthesizing hanged result", steps)
 			return synthesizeHangedResult(req), nil
 		}
-		log.Logf(0, "runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+		vm.debugLogf("runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		if err := vm.runQemuWithTimeout(remaining); err != nil {
@@ -1127,7 +1181,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 			return nil, err
 		}
 		steps++
-		log.Logf(0, "runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
+		vm.debugLogf("runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		if vm.aux.pageFault() {
@@ -1139,7 +1193,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 			return nil, vm.makeCrashError(vm.aux.execCode(), req)
 		case nyxRCHprintf:
 			vm.recordModuleRangesFromAux()
-			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
+			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 			continue
 		case nyxRCTimeout:
 			log.Logf(0, "runner exec timeout at step=%d; synthesizing hanged result", steps)
@@ -1188,13 +1242,13 @@ func (vm *nyxVM) drainExecReload(id int64, deadline time.Time) error {
 		if remaining > 2*time.Second {
 			remaining = 2 * time.Second
 		}
-		log.Logf(0, "runner exec reload drain step=%d id=%d state=%d exec_done=%v exec_code=%d misc=%q",
+		vm.debugLogf("runner exec reload drain step=%d id=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			step, id, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		if err := vm.runQemuWithTimeout(remaining); err != nil {
 			return fmt.Errorf("drain reload after request %d: %w", id, err)
 		}
-		log.Logf(0, "runner exec reload drain post-step=%d id=%d state=%d exec_done=%v exec_code=%d reloaded=%v misc=%q",
+		vm.debugLogf("runner exec reload drain post-step=%d id=%d state=%d exec_done=%v exec_code=%d reloaded=%v misc=%q",
 			step, id, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(), vm.aux.reloaded(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		if vm.aux.execCode() == 0 {
@@ -1204,7 +1258,7 @@ func (vm *nyxVM) drainExecReload(id int64, deadline time.Time) error {
 		switch vm.aux.execCode() {
 		case nyxRCHprintf:
 			vm.recordModuleRangesFromAux()
-			log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
+			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 		case nyxRCAbort:
 			return fmt.Errorf("guest abort while draining reload after request %d: %s", id, string(vm.aux.misc()))
 		case nyxRCCrash, nyxRCSanitizer:
@@ -1911,18 +1965,19 @@ func execCallNames(data []byte) []string {
 }
 
 type runner struct {
-	id             int
-	addr           string
-	port           string
-	vm             *nyxVM
-	conn           *flatrpc.Conn
-	connectReply   *flatrpc.ConnectReply
-	handshakeReady bool
-	coveragePrimed bool
-	lastEnvFlags   flatrpc.ExecEnv
-	lastSandboxArg int64
-	needRestart    bool
-	keepState      bool
+	id                int
+	addr              string
+	port              string
+	vm                *nyxVM
+	conn              *flatrpc.Conn
+	connectReply      *flatrpc.ConnectReply
+	handshakeReady    bool
+	coveragePrimed    bool
+	lastEnvFlags      flatrpc.ExecEnv
+	lastSandboxArg    int64
+	needRestart       bool
+	keepState         bool
+	coverageDebugPath string
 }
 
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
@@ -1979,7 +2034,9 @@ func (r *runner) connect() error {
 			derivedTimeout, r.vm.hardTimeout, r.connectReply.ProgramTimeoutMs)
 		r.vm.hardTimeout = derivedTimeout
 	}
-	if err := flatrpc.Send(r.conn, &flatrpc.InfoRequest{}); err != nil {
+	if err := flatrpc.Send(r.conn, &flatrpc.InfoRequest{
+		Files: nyxModuleInfoFiles(r.vm.moduleCanonicalizer.CanonicalRanges()),
+	}); err != nil {
 		return err
 	}
 	_, err = flatrpc.Recv[*flatrpc.InfoReplyRaw](r.conn)
@@ -2111,6 +2168,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		AllExtraSignal: hasExtraSignal(req.AllSignal),
 		ProgData:       req.Data,
 	}
+	started := time.Now()
 	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req, !r.keepState)
 	if err != nil {
 		r.markForRestart(fmt.Sprintf("request %d failed: %v", req.Id, err))
@@ -2132,6 +2190,13 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		if covErr == nil {
 			logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit,
 				r.vm.moduleCanonicalizer.CanonicalRanges())
+			if r.coverageDebugPath != "" {
+				if err := appendCoverageDebugStream(r.coverageDebugPath,
+					buildCoverageDebugStreamEvent(req.Id, req.Data, covRecords,
+						r.connectReply.Kernel64Bit, r.vm.moduleCanonicalizer)); err != nil {
+					log.Logf(0, "runner coverage debug stream failed: %v", err)
+				}
+			}
 		}
 	}
 	if covErr != nil {
@@ -2147,8 +2212,9 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	}
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
 		logCallFeedback(req.Id, req.Data, res.Info.Calls)
-		log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d",
-			requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
+		log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
+			requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
+			time.Since(started).Milliseconds(), res.Hanged, res.Error)
 	}
 	return execMsg, nil
 }
@@ -2187,6 +2253,79 @@ func logModuleCoverage(requestID int64, execData []byte, covRecords []nyxCovDump
 		log.Logf(0, "runner call module coverage: id=%d call=%d name=%s slot=%d records=%d pcs=%d",
 			requestID, row.CallIndex, row.CallName, row.SlotID, row.Records, row.PCs)
 	}
+}
+
+func buildCoverageDebugStreamEvent(requestID int64, execData []byte, covRecords []nyxCovDumpRecord,
+	kernel64Bit bool, canonicalizer moduleRangeCanonicalizer) coverageDebugStreamEvent {
+	event := coverageDebugStreamEvent{
+		RequestID:   requestID,
+		GeneratedAt: time.Now().UTC(),
+	}
+	callNames := execCallNames(execData)
+	ranges := canonicalizer.CanonicalRanges()
+	for _, rec := range covRecords {
+		pcs := filterCoveragePCs(canonicalizer.CanonicalizePCs(rec.PCs), kernel64Bit)
+		if len(pcs) == 0 {
+			continue
+		}
+		if len(ranges) == 0 {
+			event.Calls = append(event.Calls, coverageDebugStreamCall{
+				CallIndex: rec.CallIndex,
+				CallName:  callNameForIndex(callNames, rec.CallIndex),
+				SlotID:    rec.SlotID,
+				PCs:       hexUint64List(pcs),
+			})
+			continue
+		}
+		byModule := make(map[string]*coverageDebugStreamCall)
+		for _, pc := range pcs {
+			for _, rng := range ranges {
+				if pc < rng.Base || pc >= rng.End {
+					continue
+				}
+				key := fmt.Sprintf("%d/%s", rng.SlotID, moduleRangeKey(rng))
+				row := byModule[key]
+				if row == nil {
+					row = &coverageDebugStreamCall{
+						CallIndex: rec.CallIndex,
+						CallName:  callNameForIndex(callNames, rec.CallIndex),
+						SlotID:    rng.SlotID,
+						Module:    rng.Name,
+					}
+					byModule[key] = row
+				}
+				row.PCs = append(row.PCs, fmt.Sprintf("0x%x", pc))
+				row.Offsets = append(row.Offsets, fmt.Sprintf("0x%x", pc-rng.Base))
+			}
+		}
+		keys := make([]string, 0, len(byModule))
+		for key := range byModule {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			event.Calls = append(event.Calls, *byModule[key])
+		}
+	}
+	return event
+}
+
+func appendCoverageDebugStream(path string, event coverageDebugStreamEvent) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	enc := json.NewEncoder(file)
+	return enc.Encode(event)
+}
+
+func hexUint64List(values []uint64) []string {
+	ret := make([]string, 0, len(values))
+	for _, value := range values {
+		ret = append(ret, fmt.Sprintf("0x%x", value))
+	}
+	return ret
 }
 
 func summarizeModuleCoverageBySlot(covRecords []nyxCovDumpRecord, kernel64Bit bool, ranges []moduleRuntimeRange) []moduleCoverageSlotSummary {
@@ -3254,6 +3393,7 @@ func main() {
 		standaloneThreaded         = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
 		standaloneKeepState        = flag.Bool("standalone-keep-state", true, "preserve guest state between standalone exec requests")
 		moduleRangesRaw            = flag.String("module-ranges", defaultModuleRangeList(), "comma-separated kernel module PT range targets; suffix :required for mandatory matches")
+		coverageDebugStream        = flag.String("coverage-debug-stream", "", "optional JSONL path for per-exec raw module coverage diagnostics")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
 	flag.Parse()
@@ -3314,6 +3454,7 @@ func main() {
 	}
 	r := newRunner(index, flag.Arg(1), flag.Arg(2), vm)
 	r.keepState = *keepState
+	r.coverageDebugPath = *coverageDebugStream
 	if err := connectWithRetry(r, 30*time.Second); err != nil {
 		vm.close()
 		log.Fatalf("failed to connect to manager: %v", err)

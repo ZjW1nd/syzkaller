@@ -183,7 +183,7 @@ func (inst *instance) Run(ctx context.Context, command string) (<-chan vmimpl.Ch
 	if err != nil {
 		return nil, nil, err
 	}
-	cmd := exec.CommandContext(ctx, inst.pool.cfg.Runner, args...)
+	cmd := osutil.CommandContext(ctx, inst.pool.cfg.Runner, args...)
 	cmd.Stdout = wpipe
 	cmd.Stderr = wpipe
 

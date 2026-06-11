@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/syzkaller/pkg/flatrpc"
+	"github.com/google/syzkaller/pkg/vminfo"
 	"github.com/google/syzkaller/prog"
 )
 
@@ -374,6 +376,50 @@ func TestSummarizeModuleCoverageByCall(t *testing.T) {
 	}
 }
 
+func TestCoverageDebugStreamUsesCanonicalModuleOffsets(t *testing.T) {
+	var canonicalizer moduleRangeCanonicalizer
+	canonicalizer.Record([]moduleRuntimeRange{
+		{SlotID: 2, Target: "afd.sys", Name: "afd.sys", Base: 0xfffff80600000000, End: 0xfffff80600002000},
+	})
+	canonicalizer.Record([]moduleRuntimeRange{
+		{SlotID: 2, Target: "afd.sys", Name: "afd.sys", Base: 0xfffff80f10000000, End: 0xfffff80f10002000},
+	})
+	event := buildCoverageDebugStreamEvent(7, nil, []nyxCovDumpRecord{{
+		CallIndex: 0,
+		SlotID:    2,
+		PCs:       []uint64{0xfffff80f10000100},
+	}}, true, canonicalizer)
+	if len(event.Calls) != 1 {
+		t.Fatalf("debug calls=%d want 1: %+v", len(event.Calls), event.Calls)
+	}
+	call := event.Calls[0]
+	if call.Module != "afd.sys" || call.SlotID != 2 {
+		t.Fatalf("bad debug module row: %+v", call)
+	}
+	if got, want := strings.Join(call.PCs, ","), "0xfffff80600000100"; got != want {
+		t.Fatalf("debug pcs=%s want %s", got, want)
+	}
+	if got, want := strings.Join(call.Offsets, ","), "0x100"; got != want {
+		t.Fatalf("debug offsets=%s want %s", got, want)
+	}
+
+	path := filepath.Join(t.TempDir(), "coverage.jsonl")
+	if err := appendCoverageDebugStream(path, event); err != nil {
+		t.Fatalf("appendCoverageDebugStream: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded coverageDebugStreamEvent
+	if err := json.Unmarshal(bytes.TrimSpace(data), &decoded); err != nil {
+		t.Fatalf("decode JSONL: %v", err)
+	}
+	if decoded.RequestID != 7 || len(decoded.Calls) != 1 {
+		t.Fatalf("bad decoded event: %+v", decoded)
+	}
+}
+
 func TestSummarizeCallFeedback(t *testing.T) {
 	calls := []*flatrpc.CallInfo{
 		{Signal: []uint64{1, 2}, Cover: []uint64{3, 4, 5}, Error: 0},
@@ -406,6 +452,27 @@ func TestParseModuleRangesFromAux(t *testing.T) {
 	if got[1].SlotID != 2 || got[1].Target != "afd.sys" ||
 		got[1].Base != 0xfffff80600000000 || got[1].End != 0xfffff80600001000 {
 		t.Fatalf("unexpected afd range: %+v", got[1])
+	}
+}
+
+func TestNyxModuleInfoFiles(t *testing.T) {
+	files := nyxModuleInfoFiles([]moduleRuntimeRange{
+		{SlotID: 2, Target: "afd.sys", Name: "afd.sys", Base: 0xfffff80600000000, End: 0xfffff80600001000},
+	})
+	if len(files) != 1 {
+		t.Fatalf("files=%d want 1", len(files))
+	}
+	if files[0].Name != vminfo.NyxModulesFile || !files[0].Exists {
+		t.Fatalf("bad module info file metadata: %+v", files[0])
+	}
+	var modules []*vminfo.KernelModule
+	if err := json.Unmarshal(files[0].Data, &modules); err != nil {
+		t.Fatalf("unmarshal module info: %v", err)
+	}
+	if len(modules) != 1 || modules[0].Name != "afd.sys" ||
+		modules[0].Addr != 0xfffff80600000000 || modules[0].Size != 0x1000 ||
+		modules[0].Path != "afd.sys" {
+		t.Fatalf("bad modules: %+v", modules)
 	}
 }
 
