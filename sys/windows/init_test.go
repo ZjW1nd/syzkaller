@@ -224,6 +224,50 @@ func TestWindowsSocketOptionSurfaceUsesTypedSolSocketOptions(t *testing.T) {
 	}
 }
 
+func TestWindowsSlowPublicWinsockSurfaceIsBorrowingOnly(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range []string{
+		"select$afd_basic",
+		"WSAIoctl$sio_address_list_query",
+		"GetAcceptExSockaddrs$inet_tcp",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s should be borrowing-only to keep broad AFD sessions out of known slow waits", name)
+		}
+	}
+
+	sockaddrs := target.SyscallMap["GetAcceptExSockaddrs$inet_tcp"]
+	buf, ok := sockaddrs.Args[0].Type.(*prog.PtrType)
+	if !ok {
+		t.Fatalf("GetAcceptExSockaddrs buffer type is %T, want *prog.PtrType",
+			sockaddrs.Args[0].Type)
+	}
+	st, ok := buf.Elem.(*prog.StructType)
+	if !ok {
+		t.Fatalf("GetAcceptExSockaddrs buffer points to %T, want *prog.StructType", buf.Elem)
+	}
+	if st.Name() != "acceptex_sockaddrs_buffer" {
+		t.Fatalf("GetAcceptExSockaddrs buffer struct=%q, want acceptex_sockaddrs_buffer", st.Name())
+	}
+	for idx, want := range map[int]uint64{1: 0, 2: 32, 3: 32} {
+		arg, ok := sockaddrs.Args[idx].Type.(*prog.ConstType)
+		if !ok {
+			t.Fatalf("GetAcceptExSockaddrs arg %d type is %T, want *prog.ConstType",
+				idx, sockaddrs.Args[idx].Type)
+		}
+		if arg.Val != want {
+			t.Fatalf("GetAcceptExSockaddrs arg %d const=%d, want %d", idx, arg.Val, want)
+		}
+	}
+}
+
 func hasFlagValue(vals []uint64, want uint64) bool {
 	for _, val := range vals {
 		if val == want {
