@@ -191,54 +191,58 @@ func (m *multiFlag) Set(value string) error {
 
 func reorderArgsForFlags(args []string) []string {
 	takesValue := map[string]bool{
-		"-qemu-path":                      true,
-		"-image":                          true,
-		"-workdir":                        true,
-		"-payload-size":                   true,
-		"-bitmap-size":                    true,
-		"-memory":                         true,
-		"-hard-timeout":                   true,
-		"-windows-minidump-timeout":       true,
-		"-standalone-syscall":             true,
-		"-standalone-seed":                true,
-		"-standalone-program":             true,
-		"-standalone-staged-program":      true,
-		"-standalone-rounds":              true,
-		"-standalone-stage-delay-ms":      true,
-		"-standalone-stage-idle-ms":       true,
-		"-standalone-syscall-timeout-ms":  true,
-		"-standalone-program-timeout-ms":  true,
-		"-standalone-keep-state":          true,
-		"-module-ranges":                  true,
-		"-slow-trace-dir":                 true,
-		"-slow-trace-threshold-ms":        true,
-		"-slow-trace-max-events":          true,
-		"-vv":                             true,
-		"-qemu-arg":                       true,
-		"--qemu-path":                     true,
-		"--image":                         true,
-		"--workdir":                       true,
-		"--payload-size":                  true,
-		"--bitmap-size":                   true,
-		"--memory":                        true,
-		"--hard-timeout":                  true,
-		"--windows-minidump-timeout":      true,
-		"--standalone-syscall":            true,
-		"--standalone-seed":               true,
-		"--standalone-program":            true,
-		"--standalone-staged-program":     true,
-		"--standalone-rounds":             true,
-		"--standalone-stage-delay-ms":     true,
-		"--standalone-stage-idle-ms":      true,
-		"--standalone-syscall-timeout-ms": true,
-		"--standalone-program-timeout-ms": true,
-		"--standalone-keep-state":         true,
-		"--module-ranges":                 true,
-		"--slow-trace-dir":                true,
-		"--slow-trace-threshold-ms":       true,
-		"--slow-trace-max-events":         true,
-		"--vv":                            true,
-		"--qemu-arg":                      true,
+		"-qemu-path":                       true,
+		"-image":                           true,
+		"-workdir":                         true,
+		"-payload-size":                    true,
+		"-bitmap-size":                     true,
+		"-memory":                          true,
+		"-hard-timeout":                    true,
+		"-windows-minidump-timeout":        true,
+		"-standalone-syscall":              true,
+		"-standalone-seed":                 true,
+		"-standalone-program":              true,
+		"-standalone-exec-program":         true,
+		"-standalone-staged-program":       true,
+		"-standalone-staged-exec-program":  true,
+		"-standalone-rounds":               true,
+		"-standalone-stage-delay-ms":       true,
+		"-standalone-stage-idle-ms":        true,
+		"-standalone-syscall-timeout-ms":   true,
+		"-standalone-program-timeout-ms":   true,
+		"-standalone-keep-state":           true,
+		"-module-ranges":                   true,
+		"-slow-trace-dir":                  true,
+		"-slow-trace-threshold-ms":         true,
+		"-slow-trace-max-events":           true,
+		"-vv":                              true,
+		"-qemu-arg":                        true,
+		"--qemu-path":                      true,
+		"--image":                          true,
+		"--workdir":                        true,
+		"--payload-size":                   true,
+		"--bitmap-size":                    true,
+		"--memory":                         true,
+		"--hard-timeout":                   true,
+		"--windows-minidump-timeout":       true,
+		"--standalone-syscall":             true,
+		"--standalone-seed":                true,
+		"--standalone-program":             true,
+		"--standalone-exec-program":        true,
+		"--standalone-staged-program":      true,
+		"--standalone-staged-exec-program": true,
+		"--standalone-rounds":              true,
+		"--standalone-stage-delay-ms":      true,
+		"--standalone-stage-idle-ms":       true,
+		"--standalone-syscall-timeout-ms":  true,
+		"--standalone-program-timeout-ms":  true,
+		"--standalone-keep-state":          true,
+		"--module-ranges":                  true,
+		"--slow-trace-dir":                 true,
+		"--slow-trace-threshold-ms":        true,
+		"--slow-trace-max-events":          true,
+		"--vv":                             true,
+		"--qemu-arg":                       true,
 	}
 	var flags []string
 	var pos []string
@@ -3411,6 +3415,60 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 	return nil
 }
 
+func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepState bool,
+	syscallTimeoutMs, programTimeoutMs, rounds int) error {
+	execData, label, err := standaloneExecProgram(programPath)
+	if err != nil {
+		return err
+	}
+	connectReply := standaloneConnectReply(syscallTimeoutMs, programTimeoutMs)
+	execFlags := standaloneExecFlags(threaded)
+	req := &flatrpc.ExecRequest{
+		Type: flatrpc.RequestTypeProgram,
+		ExecOpts: &flatrpc.ExecOpts{
+			EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
+			ExecFlags:  execFlags,
+			SandboxArg: 0,
+		},
+		Data: execData,
+	}
+	r := &runner{
+		id:           index,
+		vm:           vm,
+		connectReply: connectReply,
+		keepState:    keepState,
+	}
+	if rounds <= 0 {
+		rounds = 1
+	}
+	seenSignal := make(map[uint64]struct{})
+	for round := 0; round < rounds; round++ {
+		req.Id = int64(round + 1)
+		log.Logf(0, "standalone exec file program round=%d for %s: %s",
+			round+1, label, describeExecProgram(execData))
+		execMsg, err := r.runRequest(req)
+		if err != nil {
+			return err
+		}
+		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
+		if !ok || res.Info == nil {
+			return fmt.Errorf("unexpected executor message type %T", execMsg.Msg.Value)
+		}
+		newSignal := countNewSignal(res.Info.Calls, seenSignal)
+		log.Logf(0, "standalone exec file finished round=%d: calls=%d cover_records=%d new_signal=%d",
+			round+1, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls), newSignal)
+		for i, call := range res.Info.Calls {
+			if call == nil {
+				log.Logf(0, "exec-file call[%d]: <nil>", i)
+				continue
+			}
+			log.Logf(0, "exec-file call[%d]: errno=%d flags=0x%x cover=%d signal=%d comps=%d",
+				i, call.Error, call.Flags, len(call.Cover), len(call.Signal), len(call.Comps))
+		}
+	}
+	return nil
+}
+
 func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath string, threaded, keepState bool,
 	syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int) error {
 	target, err := prog.GetTarget("windows", "amd64")
@@ -3519,6 +3577,90 @@ func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPa
 	return nil
 }
 
+func runStandaloneExecStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath string, threaded, keepState bool,
+	syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int) error {
+	first, firstLabel, err := standaloneExecProgram(firstProgramPath)
+	if err != nil {
+		return fmt.Errorf("load standalone stage1 exec program: %w", err)
+	}
+	second, secondLabel, err := standaloneExecProgram(secondProgramPath)
+	if err != nil {
+		return fmt.Errorf("load standalone stage2 exec program: %w", err)
+	}
+	connectReply := standaloneConnectReply(syscallTimeoutMs, programTimeoutMs)
+	execFlags := standaloneExecFlags(threaded)
+	r := &runner{
+		id:           index,
+		vm:           vm,
+		connectReply: connectReply,
+		keepState:    keepState,
+	}
+	stages := []struct {
+		id    int64
+		name  string
+		label string
+		data  []byte
+	}{
+		{id: 1, name: "stage1", label: firstLabel, data: first},
+		{id: 2, name: "stage2", label: secondLabel, data: second},
+	}
+	for i, stage := range stages {
+		log.Logf(0, "standalone staged exec-file %s for %s: %s",
+			stage.name, stage.label, describeExecProgram(stage.data))
+		req := &flatrpc.ExecRequest{
+			Id:   stage.id,
+			Type: flatrpc.RequestTypeProgram,
+			ExecOpts: &flatrpc.ExecOpts{
+				EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
+				ExecFlags:  execFlags,
+				SandboxArg: 0,
+			},
+			Data: stage.data,
+		}
+		execMsg, err := r.runRequest(req)
+		if err != nil {
+			return err
+		}
+		res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
+		if !ok || res.Info == nil {
+			return fmt.Errorf("unexpected executor message type %T", execMsg.Msg.Value)
+		}
+		log.Logf(0, "standalone staged exec-file finished %s: calls=%d cover_records=%d",
+			stage.name, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls))
+		for callIndex, call := range res.Info.Calls {
+			if call == nil {
+				log.Logf(0, "staged exec-file %s call[%d]: <nil>", stage.name, callIndex)
+				continue
+			}
+			log.Logf(0, "staged exec-file %s call[%d]: errno=%d flags=0x%x cover=%d signal=%d comps=%d",
+				stage.name, callIndex, call.Error, call.Flags, len(call.Cover), len(call.Signal), len(call.Comps))
+		}
+		if i == 0 && stageDelayMs > 0 {
+			log.Logf(0, "standalone staged host sleep before stage2: %dms (guest is not stepped)", stageDelayMs)
+			time.Sleep(time.Duration(stageDelayMs) * time.Millisecond)
+		}
+		if i == 0 && stageIdleMs > 0 {
+			log.Logf(0, "standalone staged guest idle before stage2: %d yield payloads", stageIdleMs)
+			for idle := 0; idle < stageIdleMs; idle++ {
+				idleMsg, err := vm.executeIdle(0)
+				if err != nil {
+					return fmt.Errorf("standalone staged guest idle %d failed: %w", idle+1, err)
+				}
+				res, ok := idleMsg.Msg.Value.(*flatrpc.ExecResult)
+				if !ok || res.Info == nil {
+					return fmt.Errorf("unexpected idle executor message type %T", idleMsg.Msg.Value)
+				}
+				if idle == 0 || idle+1 == stageIdleMs || (idle+1)%100 == 0 {
+					log.Logf(0, "standalone staged guest idle progress: %d/%d calls=%d hanged=%v error=%q",
+						idle+1, stageIdleMs, len(res.Info.Calls), res.Hanged, res.Error)
+				}
+			}
+			log.Logf(0, "standalone staged guest idle finished: yields=%d", stageIdleMs)
+		}
+	}
+	return nil
+}
+
 func standaloneBaseProgram(target *prog.Target, syscallName string, seed int64, programPath string) (*prog.Prog, bool, string, error) {
 	if programPath != "" {
 		data, err := os.ReadFile(programPath)
@@ -3540,6 +3682,41 @@ func standaloneBaseProgram(target *prog.Target, syscallName string, seed int64, 
 		return nil, false, "", err
 	}
 	return p, bootstrap, syscallName, nil
+}
+
+func standaloneExecProgram(path string) ([]byte, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("read standalone exec program %q: %w", path, err)
+	}
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return nil, "", fmt.Errorf("get target: %w", err)
+	}
+	if _, err := target.DeserializeExec(data, nil); err != nil {
+		return nil, "", fmt.Errorf("deserialize standalone exec program %q: %w", path, err)
+	}
+	return data, path, nil
+}
+
+func standaloneConnectReply(syscallTimeoutMs, programTimeoutMs int) *flatrpc.ConnectReply {
+	return &flatrpc.ConnectReply{
+		Cover:            true,
+		CoverEdges:       true,
+		Kernel64Bit:      true,
+		Procs:            1,
+		Slowdown:         1,
+		SyscallTimeoutMs: int32(syscallTimeoutMs),
+		ProgramTimeoutMs: int32(programTimeoutMs),
+	}
+}
+
+func standaloneExecFlags(threaded bool) flatrpc.ExecFlag {
+	execFlags := flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagDedupCover
+	if threaded {
+		execFlags |= flatrpc.ExecFlagThreaded
+	}
+	return execFlags
 }
 
 func standaloneEnabledCallsForProgram(target *prog.Target, p *prog.Prog) map[*prog.Syscall]bool {
@@ -4031,35 +4208,37 @@ func main() {
 
 	var qemuArgs multiFlag
 	var (
-		qemuPath                   = flag.String("qemu-path", "", "qemu binary path")
-		image                      = flag.String("image", "", "boot image path")
-		workdir                    = flag.String("workdir", "", "nyx runner workdir")
-		purge                      = flag.Bool("purge", false, "remove the existing workdir before starting")
-		hardTimeout                = flag.Duration("hard-timeout", 3*time.Minute, "Nyx/KVM hard timeout fallback (max 255s)")
-		payloadSize                = flag.Int("payload-size", int(flatrpc.ConstMaxInputSize)+4, "nyx payload buffer size")
-		bitmapSize                 = flag.Int("bitmap-size", 0x10000, "nyx bitmap size")
-		memoryMB                   = flag.Int("memory", 2048, "guest memory size in MB")
-		windowsMinidump            = flag.Bool("windows-minidump", false, "preserve Windows minidumps through qemu-nyx")
-		windowsMinidumpTimeout     = flag.Int("windows-minidump-timeout", 120, "Windows minidump completion timeout in seconds")
-		keepState                  = flag.Bool("keep-state", false, "preserve guest state across manager-driven exec requests")
-		debug                      = flag.Bool("debug", false, "inherit qemu stdout/stderr")
-		standalone                 = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
-		standaloneSyscall          = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
-		standaloneSeed             = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
-		standaloneProgramPath      = flag.String("standalone-program", "", "path to a serialized syzkaller program to execute in standalone mode")
-		standaloneStagedProgram    = flag.String("standalone-staged-program", "", "optional second serialized syzkaller program for staged standalone mode")
-		standaloneRounds           = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
-		standaloneStageDelayMs     = flag.Int("standalone-stage-delay-ms", 0, "host-side delay between standalone staged programs")
-		standaloneStageIdleMs      = flag.Int("standalone-stage-idle-ms", 0, "guest-side Nyx yield payload count between standalone staged programs")
-		standaloneSyscallTimeoutMs = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
-		standaloneProgramTimeoutMs = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
-		standaloneThreaded         = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
-		standaloneKeepState        = flag.Bool("standalone-keep-state", true, "preserve guest state between standalone exec requests")
-		moduleRangesRaw            = flag.String("module-ranges", defaultModuleRangeList(), "comma-separated kernel module PT range targets; suffix :required for mandatory matches")
-		coverageDebugStream        = flag.String("coverage-debug-stream", "", "optional JSONL path for per-exec raw module coverage diagnostics")
-		slowTraceDir               = flag.String("slow-trace-dir", "", "slow/hang artifact directory (default: workdir/slow-traces; '-' disables)")
-		slowTraceThresholdMs       = flag.Int("slow-trace-threshold-ms", 2000, "dump a slow trace when execution duration is at least this many ms")
-		slowTraceMaxEvents         = flag.Int("slow-trace-max-events", 4096, "maximum flight-recorder events retained and copied per slow trace")
+		qemuPath                    = flag.String("qemu-path", "", "qemu binary path")
+		image                       = flag.String("image", "", "boot image path")
+		workdir                     = flag.String("workdir", "", "nyx runner workdir")
+		purge                       = flag.Bool("purge", false, "remove the existing workdir before starting")
+		hardTimeout                 = flag.Duration("hard-timeout", 3*time.Minute, "Nyx/KVM hard timeout fallback (max 255s)")
+		payloadSize                 = flag.Int("payload-size", int(flatrpc.ConstMaxInputSize)+4, "nyx payload buffer size")
+		bitmapSize                  = flag.Int("bitmap-size", 0x10000, "nyx bitmap size")
+		memoryMB                    = flag.Int("memory", 2048, "guest memory size in MB")
+		windowsMinidump             = flag.Bool("windows-minidump", false, "preserve Windows minidumps through qemu-nyx")
+		windowsMinidumpTimeout      = flag.Int("windows-minidump-timeout", 120, "Windows minidump completion timeout in seconds")
+		keepState                   = flag.Bool("keep-state", false, "preserve guest state across manager-driven exec requests")
+		debug                       = flag.Bool("debug", false, "inherit qemu stdout/stderr")
+		standalone                  = flag.Bool("standalone", false, "run a local Nyx executor request without syz-manager")
+		standaloneSyscall           = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
+		standaloneSeed              = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
+		standaloneProgramPath       = flag.String("standalone-program", "", "path to a serialized syzkaller program to execute in standalone mode")
+		standaloneExecProgramPath   = flag.String("standalone-exec-program", "", "path to a serialized executor program to execute in standalone mode")
+		standaloneStagedProgram     = flag.String("standalone-staged-program", "", "optional second serialized syzkaller program for staged standalone mode")
+		standaloneStagedExecProgram = flag.String("standalone-staged-exec-program", "", "optional second serialized executor program for staged standalone mode")
+		standaloneRounds            = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
+		standaloneStageDelayMs      = flag.Int("standalone-stage-delay-ms", 0, "host-side delay between standalone staged programs")
+		standaloneStageIdleMs       = flag.Int("standalone-stage-idle-ms", 0, "guest-side Nyx yield payload count between standalone staged programs")
+		standaloneSyscallTimeoutMs  = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
+		standaloneProgramTimeoutMs  = flag.Int("standalone-program-timeout-ms", 60000, "standalone executor program timeout in ms")
+		standaloneThreaded          = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
+		standaloneKeepState         = flag.Bool("standalone-keep-state", true, "preserve guest state between standalone exec requests")
+		moduleRangesRaw             = flag.String("module-ranges", defaultModuleRangeList(), "comma-separated kernel module PT range targets; suffix :required for mandatory matches")
+		coverageDebugStream         = flag.String("coverage-debug-stream", "", "optional JSONL path for per-exec raw module coverage diagnostics")
+		slowTraceDir                = flag.String("slow-trace-dir", "", "slow/hang artifact directory (default: workdir/slow-traces; '-' disables)")
+		slowTraceThresholdMs        = flag.Int("slow-trace-threshold-ms", 2000, "dump a slow trace when execution duration is at least this many ms")
+		slowTraceMaxEvents          = flag.Int("slow-trace-max-events", 4096, "maximum flight-recorder events retained and copied per slow trace")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
 	flag.Parse()
@@ -4090,6 +4269,15 @@ func main() {
 	if *standaloneStagedProgram != "" && *standaloneProgramPath == "" {
 		log.Fatalf("--standalone-staged-program requires --standalone-program")
 	}
+	if *standaloneExecProgramPath != "" && *standaloneProgramPath != "" {
+		log.Fatalf("--standalone-exec-program cannot be combined with --standalone-program")
+	}
+	if *standaloneStagedExecProgram != "" && *standaloneExecProgramPath == "" {
+		log.Fatalf("--standalone-staged-exec-program requires --standalone-exec-program")
+	}
+	if *standaloneStagedExecProgram != "" && *standaloneStagedProgram != "" {
+		log.Fatalf("--standalone-staged-exec-program cannot be combined with --standalone-staged-program")
+	}
 	if *slowTraceThresholdMs < 0 {
 		log.Fatalf("bad slow trace threshold: %d", *slowTraceThresholdMs)
 	}
@@ -4119,10 +4307,24 @@ func main() {
 		log.Fatalf("failed to start Nyx VM: %v", err)
 	}
 	if *standalone {
+		if *standaloneStagedExecProgram != "" {
+			if err := runStandaloneExecStaged(index, vm, *standaloneExecProgramPath, *standaloneStagedExecProgram, *standaloneThreaded,
+				*standaloneKeepState, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
+				log.Fatalf("standalone staged Nyx exec request failed: %v", err)
+			}
+			return
+		}
 		if *standaloneStagedProgram != "" {
 			if err := runStandaloneStaged(index, vm, *standaloneProgramPath, *standaloneStagedProgram, *standaloneThreaded,
 				*standaloneKeepState, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
 				log.Fatalf("standalone staged Nyx request failed: %v", err)
+			}
+			return
+		}
+		if *standaloneExecProgramPath != "" {
+			if err := runStandaloneExec(index, vm, *standaloneExecProgramPath, *standaloneThreaded,
+				*standaloneKeepState, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
+				log.Fatalf("standalone Nyx exec request failed: %v", err)
 			}
 			return
 		}

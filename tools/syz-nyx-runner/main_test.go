@@ -206,6 +206,34 @@ func serializeWindowsTestProgramForExec(t *testing.T, path string) []byte {
 	return execData
 }
 
+func TestStandaloneExecProgramLoadsSerializedExec(t *testing.T) {
+	execData := serializeWindowsTestProgramForExec(t,
+		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_query_readonly.txt"))
+	path := filepath.Join(t.TempDir(), "program.exec.bin")
+	if err := os.WriteFile(path, execData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, label, err := standaloneExecProgram(path)
+	if err != nil {
+		t.Fatalf("standaloneExecProgram: %v", err)
+	}
+	if label != path {
+		t.Fatalf("label=%q want %q", label, path)
+	}
+	if !bytes.Equal(got, execData) {
+		t.Fatal("standaloneExecProgram changed exec data")
+	}
+
+	textPath := filepath.Join(t.TempDir(), "program.txt")
+	if err := os.WriteFile(textPath, []byte("NtYieldExecution()\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := standaloneExecProgram(textPath); err == nil ||
+		!strings.Contains(err.Error(), "deserialize standalone exec program") {
+		t.Fatalf("standaloneExecProgram accepted text program: %v", err)
+	}
+}
+
 func TestParseCoverageDumpMultipleRecords(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syz_cov.bin")
 	want := []nyxCovDumpRecord{

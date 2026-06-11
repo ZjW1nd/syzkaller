@@ -1675,6 +1675,52 @@ func TestStandaloneStagedVNetModeCanKeepGuestState(t *testing.T) {
 	}
 }
 
+func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	mainSrc := string(mainData)
+	for _, want := range []string{
+		"standalone-exec-program",
+		"standalone-staged-exec-program",
+		"runStandaloneExec(",
+		"runStandaloneExecStaged(",
+	} {
+		if !strings.Contains(mainSrc, want) {
+			t.Fatalf("runner standalone exec replay support missing %q", want)
+		}
+	}
+	reorder := extractFunctionBody(t, mainSrc, "func reorderArgsForFlags")
+	for _, want := range []string{
+		"-standalone-exec-program",
+		"-standalone-staged-exec-program",
+		"--standalone-exec-program",
+		"--standalone-staged-exec-program",
+	} {
+		if !strings.Contains(reorder, want) {
+			t.Fatalf("runner arg reordering missing %q", want)
+		}
+	}
+
+	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
+	scriptData, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", scriptPath, err)
+	}
+	scriptSrc := string(scriptData)
+	for _, want := range []string{
+		"--standalone-exec-program",
+		"--standalone-staged-exec-program",
+		"standalone_exec_program",
+		"standalone_staged_exec_program",
+	} {
+		if !strings.Contains(scriptSrc, want) {
+			t.Fatalf("run-nyx-fullchain standalone exec replay support missing %q", want)
+		}
+	}
+}
+
 func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
