@@ -23,8 +23,8 @@ Use of this source code is governed by Apache 2 LICENSE that can be found in the
 				lineWidth: 2,
 				focusTarget: "category",
 				{{if $g.Stacked}} isStacked: true, {{end}}
-				vAxis: {minValue: 1, textPosition: 'in', gridlines: {multiple: 1}, minorGridlines: {multiple: 1}},
-				hAxis: {minValue: 1, textPosition: 'out', maxAlternation: 1, gridlines: {multiple: 1},
+				vAxis: {minValue: 0, title: {{if $g.HasRate}}'events/sec'{{else}}'value'{{end}}, textPosition: 'in'},
+				hAxis: {minValue: 0, title: 'seconds since manager start', textPosition: 'out', maxAlternation: 1, gridlines: {multiple: 1},
 					minorGridlines: {multiple: 1}},
 			})
 		{{end}}

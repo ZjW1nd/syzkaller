@@ -391,6 +391,7 @@ type UIGraph struct {
 	ID      int
 	Title   string
 	Stacked bool
+	HasRate bool
 	Level   Level
 	Lines   []string
 	Points  []UIPoint
@@ -428,8 +429,15 @@ func (s *set) RenderGraphs() []UIGraph {
 			g.Points[i].X = i * tick
 		}
 		for _, ln := range lines {
+			if ln.rate {
+				g.HasRate = true
+			}
 			if ln.hist == nil {
-				g.Lines = append(g.Lines, ln.name+": "+ln.desc)
+				name := ln.name
+				if ln.rate {
+					name += " / sec"
+				}
+				g.Lines = append(g.Lines, name+": "+ln.desc)
 				for i := range s.historyPos {
 					g.Points[i].Y = append(g.Points[i].Y, ln.data[i])
 				}
