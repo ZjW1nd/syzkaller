@@ -87,6 +87,99 @@ type moduleRangeSpec struct {
 	Required bool
 }
 
+type traceEvent struct {
+	Seq          uint64         `json:"seq"`
+	Time         time.Time      `json:"time"`
+	SinceStartMS int64          `json:"since_start_ms"`
+	Source       string         `json:"source"`
+	Stage        string         `json:"stage"`
+	RequestID    int64          `json:"request_id,omitempty"`
+	Fields       map[string]any `json:"fields,omitempty"`
+}
+
+type traceRecorder struct {
+	start  time.Time
+	max    int
+	next   int
+	total  uint64
+	events []traceEvent
+}
+
+func newTraceRecorder(maxEvents int) *traceRecorder {
+	if maxEvents <= 0 {
+		maxEvents = 1
+	}
+	return &traceRecorder{
+		start:  time.Now(),
+		max:    maxEvents,
+		events: make([]traceEvent, 0, maxEvents),
+	}
+}
+
+func (tr *traceRecorder) Add(source, stage string, requestID int64, fields map[string]any) {
+	if tr == nil {
+		return
+	}
+	now := time.Now()
+	event := traceEvent{
+		Seq:          tr.total + 1,
+		Time:         now.UTC(),
+		SinceStartMS: now.Sub(tr.start).Milliseconds(),
+		Source:       source,
+		Stage:        stage,
+		RequestID:    requestID,
+		Fields:       fields,
+	}
+	tr.total++
+	if len(tr.events) < tr.max {
+		tr.events = append(tr.events, event)
+		return
+	}
+	tr.events[tr.next] = event
+	tr.next = (tr.next + 1) % tr.max
+}
+
+func (tr *traceRecorder) Tail(source string, maxEvents int) []traceEvent {
+	if tr == nil || len(tr.events) == 0 {
+		return nil
+	}
+	ordered := make([]traceEvent, 0, len(tr.events))
+	if len(tr.events) < tr.max {
+		ordered = append(ordered, tr.events...)
+	} else {
+		ordered = append(ordered, tr.events[tr.next:]...)
+		ordered = append(ordered, tr.events[:tr.next]...)
+	}
+	if source != "" {
+		filtered := ordered[:0]
+		for _, event := range ordered {
+			if event.Source == source {
+				filtered = append(filtered, event)
+			}
+		}
+		ordered = filtered
+	}
+	if maxEvents > 0 && len(ordered) > maxEvents {
+		ordered = ordered[len(ordered)-maxEvents:]
+	}
+	return append([]traceEvent(nil), ordered...)
+}
+
+func traceFields(kv ...any) map[string]any {
+	if len(kv) == 0 {
+		return nil
+	}
+	fields := make(map[string]any, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		key, ok := kv[i].(string)
+		if !ok || key == "" {
+			continue
+		}
+		fields[key] = kv[i+1]
+	}
+	return fields
+}
+
 func (m *multiFlag) String() string {
 	return strings.Join(*m, " ")
 }
@@ -117,6 +210,9 @@ func reorderArgsForFlags(args []string) []string {
 		"-standalone-program-timeout-ms":  true,
 		"-standalone-keep-state":          true,
 		"-module-ranges":                  true,
+		"-slow-trace-dir":                 true,
+		"-slow-trace-threshold-ms":        true,
+		"-slow-trace-max-events":          true,
 		"-vv":                             true,
 		"-qemu-arg":                       true,
 		"--qemu-path":                     true,
@@ -138,6 +234,9 @@ func reorderArgsForFlags(args []string) []string {
 		"--standalone-program-timeout-ms": true,
 		"--standalone-keep-state":         true,
 		"--module-ranges":                 true,
+		"--slow-trace-dir":                true,
+		"--slow-trace-threshold-ms":       true,
+		"--slow-trace-max-events":         true,
 		"--vv":                            true,
 		"--qemu-arg":                      true,
 	}
@@ -493,6 +592,10 @@ func (a *qemuAux) reloaded() bool {
 	return a.data[nyxResultReloadedOffset] != 0
 }
 
+func (a *qemuAux) ptOverflow() bool {
+	return a.data[nyxResultPtOverflowOff] != 0
+}
+
 func (a *qemuAux) pageFault() bool {
 	return a.data[nyxResultPageFaultOff] != 0
 }
@@ -503,6 +606,9 @@ func (a *qemuAux) pageAddr() uint64 {
 
 func (a *qemuAux) misc() []byte {
 	mlen := binary.LittleEndian.Uint16(a.data[nyxMiscOffset : nyxMiscOffset+2])
+	if nyxMiscOffset+2+int(mlen) > len(a.data) {
+		mlen = uint16(len(a.data) - nyxMiscOffset - 2)
+	}
 	return append([]byte{}, a.data[nyxMiscOffset+2:nyxMiscOffset+2+int(mlen)]...)
 }
 
@@ -597,11 +703,114 @@ type nyxVM struct {
 	control     net.Conn
 	aux         *qemuAux
 	process     *exec.Cmd
+	trace       *traceRecorder
+	traceReqID  int64
 }
 
 func (vm *nyxVM) debugLogf(msg string, args ...any) {
 	if vm.debug {
 		log.Logf(0, msg, args...)
+	}
+}
+
+func (vm *nyxVM) recordTrace(source, stage string, requestID int64, fields map[string]any) {
+	if vm == nil || vm.trace == nil {
+		return
+	}
+	vm.trace.Add(source, stage, requestID, fields)
+}
+
+func (vm *nyxVM) recordAuxTrace(stage string, requestID int64) {
+	if vm == nil || vm.aux == nil || vm.trace == nil {
+		return
+	}
+	fields := traceFields(
+		"state", vm.aux.state(),
+		"exec_done", vm.aux.execDone(),
+		"exec_code", vm.aux.execCode(),
+		"exec_code_name", nyxExitReason(vm.aux.execCode()),
+		"reloaded", vm.aux.reloaded(),
+		"pt_overflow", vm.aux.ptOverflow(),
+		"page_fault", vm.aux.pageFault(),
+	)
+	if vm.aux.pageFault() {
+		fields["page_addr"] = fmt.Sprintf("0x%x", vm.aux.pageAddr())
+	}
+	if misc := cleanAuxMessage(vm.aux.misc()); misc != "" {
+		fields["misc"] = misc
+	}
+	vm.recordTrace("qemu", stage, requestID, fields)
+}
+
+func (vm *nyxVM) recordHprintfTrace(requestID int64) {
+	if vm == nil || vm.aux == nil || vm.trace == nil {
+		return
+	}
+	msg := cleanAuxMessage(vm.aux.misc())
+	if msg == "" {
+		return
+	}
+	fields := traceFields("message", msg)
+	for key, value := range traceKeyValueFields(msg) {
+		fields[key] = value
+	}
+	vm.recordTrace("executor", hprintfStage(msg), requestID, fields)
+}
+
+func cleanAuxMessage(data []byte) string {
+	return strings.TrimSpace(strings.TrimRight(string(data), "\x00"))
+}
+
+func traceKeyValueFields(msg string) map[string]any {
+	fields := map[string]any{}
+	for _, part := range strings.Fields(msg) {
+		key, value, ok := strings.Cut(part, "=")
+		if !ok || key == "" || value == "" {
+			continue
+		}
+		fields[key] = traceScalar(value)
+	}
+	return fields
+}
+
+func traceScalar(value string) any {
+	value = strings.TrimRight(value, ",")
+	if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
+		return value
+	}
+	if parsed, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return parsed
+	}
+	return value
+}
+
+func hprintfStage(msg string) string {
+	if index := strings.Index(msg, "stage="); index >= 0 {
+		value := msg[index+len("stage="):]
+		if end := strings.IndexAny(value, " \n\r\t"); end >= 0 {
+			value = value[:end]
+		}
+		if value != "" {
+			return value
+		}
+	}
+	switch {
+	case strings.HasPrefix(msg, "nyx exec preview"):
+		return "exec_preview"
+	case strings.HasPrefix(msg, "nyx exec req="):
+		return "exec_request"
+	case strings.HasPrefix(msg, "nyx cov dumped"):
+		return "coverage_dump"
+	case strings.HasPrefix(msg, "nyx result dumped"):
+		return "result_dump"
+	case strings.HasPrefix(msg, "nyx result requesting reload"):
+		return "request_reload"
+	case strings.HasPrefix(msg, "nyx handshake"):
+		return "handshake"
+	case strings.HasPrefix(msg, "nyx module range"):
+		return "module_range"
+	default:
+		return "hprintf"
 	}
 }
 
@@ -646,6 +855,11 @@ func alignUp(v, align int) int {
 
 func (vm *nyxVM) start(ctx context.Context) error {
 	vm.ctx = ctx
+	vm.recordTrace("runner", "vm_start", 0, traceFields(
+		"workdir", vm.workdir,
+		"qemu_path", vm.qemuPath,
+		"hard_timeout_ms", vm.hardTimeout.Milliseconds(),
+	))
 	if err := os.MkdirAll(vm.workdir, 0o755); err != nil {
 		return err
 	}
@@ -744,6 +958,7 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	if err := vm.process.Start(); err != nil {
 		return err
 	}
+	vm.recordTrace("runner", "qemu_started", 0, traceFields("pid", vm.process.Process.Pid))
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		conn, err := net.Dial("unix", vm.controlPath)
@@ -773,6 +988,7 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open aux buffer: %w", err)
 	}
+	vm.recordAuxTrace("aux_opened", 0)
 	initTimeout := vm.initWaitTimeout()
 	initDeadline := time.Now().Add(initTimeout)
 	initTimedOut := make(chan struct{}, 1)
@@ -820,10 +1036,12 @@ func (vm *nyxVM) start(ctx context.Context) error {
 		if vm.aux.state() != lastState || time.Since(lastReport) > 10*time.Second {
 			log.Logf(0, "nyx init state=%d exec_code=%d misc=%q",
 				vm.aux.state(), vm.aux.execCode(), strings.TrimSpace(string(vm.aux.misc())))
+			vm.recordAuxTrace("init_wait", 0)
 			lastState = vm.aux.state()
 			lastReport = time.Now()
 		}
 	}
+	vm.recordAuxTrace("init_ready", 0)
 	vm.applyHardTimeout()
 	return nil
 }
@@ -1080,6 +1298,9 @@ func (vm *nyxVM) runQemu() error {
 }
 
 func (vm *nyxVM) runQemuWithTimeout(timeout time.Duration) error {
+	requestID := vm.traceReqID
+	vm.recordTrace("qemu", "kvm_run_begin", requestID, traceFields("timeout_ms", timeout.Milliseconds()))
+	started := time.Now()
 	if timeout > 0 {
 		if err := vm.control.SetDeadline(time.Now().Add(timeout)); err != nil {
 			return err
@@ -1091,6 +1312,11 @@ func (vm *nyxVM) runQemuWithTimeout(timeout time.Duration) error {
 	}
 	var ack [1]byte
 	_, err := vm.control.Read(ack[:])
+	fields := traceFields("duration_ms", time.Since(started).Milliseconds())
+	if err != nil {
+		fields["error"] = err.Error()
+	}
+	vm.recordTrace("qemu", "kvm_run_end", requestID, fields)
 	return err
 }
 
@@ -1107,6 +1333,7 @@ func (vm *nyxVM) setPayload(payload []byte) error {
 }
 
 func (vm *nyxVM) executeHandshake(payload []byte) error {
+	vm.recordTrace("runner", "handshake_begin", 0, traceFields("payload_bytes", len(payload)))
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxHandshakeAck))
 	vm.aux.clearTransientResult()
 	if err := vm.setPayload(payload); err != nil {
@@ -1121,13 +1348,16 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
 			log.Logf(0, "runner handshake ack observed at step=%d", i)
+			vm.recordTrace("runner", "handshake_ack", 0, traceFields("step", i))
 			return nil
 		}
+		vm.recordAuxTrace("handshake_step", 0)
 		vm.debugLogf("runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		switch vm.aux.execCode() {
 		case nyxRCHprintf:
+			vm.recordHprintfTrace(0)
 			vm.recordModuleRangesFromAux()
 			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 		case nyxRCAbort:
@@ -1138,6 +1368,15 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 }
 
 func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainReload bool) (*flatrpc.ExecutorMessage, error) {
+	requestID := reqID(req)
+	vm.traceReqID = requestID
+	defer func() {
+		vm.traceReqID = 0
+	}()
+	vm.recordTrace("runner", "exec_payload_begin", requestID, traceFields(
+		"payload_bytes", len(payload),
+		"drain_reload", drainReload,
+	))
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxExecResult))
 	_ = os.Remove(vm.coverPath)
 	vm.aux.clearTransientResult()
@@ -1150,6 +1389,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 	for {
 		if data, err := os.ReadFile(resultPath); err == nil {
 			log.Logf(0, "runner exec result observed before step=%d", steps)
+			vm.recordTrace("runner", "exec_result_file", requestID, traceFields("step", steps, "bytes", len(data)))
 			msg, err := parseExecResult(data)
 			if err != nil {
 				return nil, err
@@ -1163,6 +1403,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 		}
 		if time.Now().After(deadline) {
 			log.Logf(0, "runner exec wait deadline expired after %d steps; synthesizing hanged result", steps)
+			vm.recordAuxTrace("exec_deadline_expired", requestID)
 			return synthesizeHangedResult(req), nil
 		}
 		remaining := time.Until(deadline)
@@ -1176,33 +1417,41 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 		if err := vm.runQemuWithTimeout(remaining); err != nil {
 			if isTimeoutError(err) {
 				log.Logf(0, "runner exec qemu step timeout at step=%d; synthesizing hanged result", steps)
+				vm.recordAuxTrace("exec_step_timeout", requestID)
 				return synthesizeHangedResult(req), nil
 			}
 			return nil, err
 		}
 		steps++
+		vm.recordAuxTrace("exec_step", requestID)
 		vm.debugLogf("runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		if vm.aux.pageFault() {
+			vm.recordAuxTrace("page_fault", requestID)
 			vm.aux.dumpPage(vm.aux.pageAddr())
 			continue
 		}
 		switch vm.aux.execCode() {
 		case nyxRCCrash, nyxRCSanitizer:
+			vm.recordAuxTrace("exec_crash", requestID)
 			return nil, vm.makeCrashError(vm.aux.execCode(), req)
 		case nyxRCHprintf:
+			vm.recordHprintfTrace(requestID)
 			vm.recordModuleRangesFromAux()
 			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 			continue
 		case nyxRCTimeout:
 			log.Logf(0, "runner exec timeout at step=%d; synthesizing hanged result", steps)
+			vm.recordAuxTrace("exec_timeout", requestID)
 			return synthesizeHangedResult(req), nil
 		case nyxRCAbort:
+			vm.recordAuxTrace("exec_abort", requestID)
 			return nil, fmt.Errorf("guest abort: %s", string(vm.aux.misc()))
 		}
 		if vm.aux.execDone() {
 			log.Logf(0, "runner exec observed exec_done at step=%d but result file is not present yet", steps)
+			vm.recordAuxTrace("exec_done_without_result", requestID)
 		}
 	}
 }
@@ -1234,6 +1483,7 @@ func reqID(req *flatrpc.ExecRequest) int64 {
 }
 
 func (vm *nyxVM) drainExecReload(id int64, deadline time.Time) error {
+	vm.recordTrace("runner", "reload_drain_begin", id, nil)
 	for step := 0; step < 8; step++ {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -1248,15 +1498,18 @@ func (vm *nyxVM) drainExecReload(id int64, deadline time.Time) error {
 		if err := vm.runQemuWithTimeout(remaining); err != nil {
 			return fmt.Errorf("drain reload after request %d: %w", id, err)
 		}
+		vm.recordAuxTrace("reload_drain_step", id)
 		vm.debugLogf("runner exec reload drain post-step=%d id=%d state=%d exec_done=%v exec_code=%d reloaded=%v misc=%q",
 			step, id, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(), vm.aux.reloaded(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		if vm.aux.execCode() == 0 {
 			log.Logf(0, "runner exec reload drained: id=%d steps=%d", id, step+1)
+			vm.recordTrace("runner", "reload_drain_done", id, traceFields("steps", step+1))
 			return nil
 		}
 		switch vm.aux.execCode() {
 		case nyxRCHprintf:
+			vm.recordHprintfTrace(id)
 			vm.recordModuleRangesFromAux()
 			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 		case nyxRCAbort:
@@ -1978,10 +2231,400 @@ type runner struct {
 	needRestart       bool
 	keepState         bool
 	coverageDebugPath string
+	slowTrace         *slowTraceConfig
 }
 
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
 	return &runner{id: id, addr: addr, port: port, vm: vm}
+}
+
+type slowTraceConfig struct {
+	dir       string
+	threshold time.Duration
+	maxEvents int
+}
+
+type slowTraceMetadata struct {
+	GeneratedAt    time.Time         `json:"generated_at"`
+	Reason         string            `json:"reason"`
+	Label          string            `json:"label"`
+	RunnerID       int               `json:"runner_id"`
+	RequestID      int64             `json:"request_id"`
+	DurationMS     int64             `json:"duration_ms"`
+	ThresholdMS    int64             `json:"threshold_ms"`
+	KeepState      bool              `json:"keep_state"`
+	QEMUPID        int               `json:"qemu_pid,omitempty"`
+	Workdir        string            `json:"workdir"`
+	ProgramSHA1    string            `json:"program_sha1"`
+	ProgramSHA256  string            `json:"program_sha256"`
+	ProgramSummary string            `json:"program_summary"`
+	CallCount      int               `json:"call_count"`
+	CallNames      []string          `json:"call_names,omitempty"`
+	Request        map[string]any    `json:"request"`
+	Result         map[string]any    `json:"result,omitempty"`
+	Aux            map[string]any    `json:"aux,omitempty"`
+	Diagnosis      map[string]any    `json:"diagnosis,omitempty"`
+	ArtifactFiles  map[string]string `json:"artifact_files"`
+}
+
+func (r *runner) maybeDumpSlowTrace(req *flatrpc.ExecRequest, label string, started time.Time,
+	duration time.Duration, execMsg *flatrpc.ExecutorMessage, execErr error) {
+	if r.slowTrace == nil || r.slowTrace.dir == "" {
+		return
+	}
+	reason := ""
+	switch {
+	case execResultHanged(execMsg):
+		reason = "hang"
+	case r.slowTrace.threshold > 0 && duration >= r.slowTrace.threshold:
+		if execErr != nil {
+			reason = "slow-error"
+		} else {
+			reason = "slow"
+		}
+	default:
+		return
+	}
+	path, err := r.writeSlowTraceArtifact(req, label, reason, started, duration, execMsg, execErr)
+	if err != nil {
+		log.Logf(0, "runner slow trace dump failed: id=%d reason=%s duration_ms=%d err=%v",
+			reqID(req), reason, duration.Milliseconds(), err)
+		return
+	}
+	log.Logf(0, "runner slow trace saved: id=%d reason=%s duration_ms=%d path=%s",
+		reqID(req), reason, duration.Milliseconds(), path)
+}
+
+func (r *runner) writeSlowTraceArtifact(req *flatrpc.ExecRequest, label, reason string, started time.Time,
+	duration time.Duration, execMsg *flatrpc.ExecutorMessage, execErr error) (string, error) {
+	if req == nil {
+		return "", errors.New("nil exec request")
+	}
+	if err := os.MkdirAll(r.slowTrace.dir, 0o755); err != nil {
+		return "", err
+	}
+	sum1 := sha1.Sum(req.Data)
+	sum256 := sha256.Sum256(req.Data)
+	dir := filepath.Join(r.slowTrace.dir, fmt.Sprintf("%s-vm%d-id%d-%s-%x",
+		time.Now().UTC().Format("20060102-150405.000000000"), r.id, req.Id,
+		sanitizeArtifactName(reason), sum1[:6]))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	files := map[string]string{}
+	writeFile := func(name string, data []byte) error {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			return err
+		}
+		files[name] = path
+		return nil
+	}
+	if err := writeFile("program.exec.bin", req.Data); err != nil {
+		return "", err
+	}
+	if err := writeFile("program.txt", []byte(formatExecProgramForArtifact(req.Data))); err != nil {
+		return "", err
+	}
+	if execMsg != nil {
+		if data, err := json.MarshalIndent(execMsg, "", "\t"); err == nil {
+			if err := writeFile("result.json", data); err != nil {
+				return "", err
+			}
+		}
+	}
+	if execErr != nil {
+		if err := writeFile("error.txt", []byte(execErr.Error()+"\n")); err != nil {
+			return "", err
+		}
+	}
+	trace := r.vm.trace
+	if trace == nil {
+		trace = newTraceRecorder(1)
+	}
+	events := trace.Tail("", r.slowTrace.maxEvents)
+	if err := writeTraceJSONL(filepath.Join(dir, "trace.jsonl"), events); err != nil {
+		return "", err
+	}
+	files["trace.jsonl"] = filepath.Join(dir, "trace.jsonl")
+	for _, source := range []string{"runner", "qemu", "executor"} {
+		name := source + "-trace.jsonl"
+		events := trace.Tail(source, r.slowTrace.maxEvents)
+		if err := writeTraceJSONL(filepath.Join(dir, name), events); err != nil {
+			return "", err
+		}
+		files[name] = filepath.Join(dir, name)
+	}
+	if data, err := tailFile(r.vm.qemuFlightPath(), r.slowTrace.maxEvents, 4<<20); err == nil && len(data) != 0 {
+		if err := writeFile("qemu-flight-tail.jsonl", data); err != nil {
+			return "", err
+		}
+	}
+	meta := slowTraceMetadata{
+		GeneratedAt:    time.Now().UTC(),
+		Reason:         reason,
+		Label:          label,
+		RunnerID:       r.id,
+		RequestID:      req.Id,
+		DurationMS:     duration.Milliseconds(),
+		ThresholdMS:    r.slowTrace.threshold.Milliseconds(),
+		KeepState:      r.keepState,
+		Workdir:        r.vm.workdir,
+		ProgramSHA1:    fmt.Sprintf("%x", sum1),
+		ProgramSHA256:  fmt.Sprintf("%x", sum256),
+		ProgramSummary: describeExecProgram(req.Data),
+		CallCount:      progExecCallCountOrPanic(req.Data),
+		CallNames:      execCallNames(req.Data),
+		Request: map[string]any{
+			"type":        req.Type.String(),
+			"flags":       uint64(req.Flags),
+			"exec_flags":  uint64(req.ExecOpts.ExecFlags),
+			"env_flags":   uint64(req.ExecOpts.EnvFlags),
+			"sandbox_arg": req.ExecOpts.SandboxArg,
+			"all_signal":  req.AllSignal,
+			"started_at":  started.UTC(),
+		},
+		Result:        execResultArtifactSummary(execMsg, execErr),
+		Aux:           r.vm.auxArtifactSummary(),
+		Diagnosis:     slowTraceDiagnosis(events, r.keepState),
+		ArtifactFiles: files,
+	}
+	if r.vm.process != nil && r.vm.process.Process != nil {
+		meta.QEMUPID = r.vm.process.Process.Pid
+	}
+	data, err := json.MarshalIndent(meta, "", "\t")
+	if err != nil {
+		return "", err
+	}
+	if err := writeFile("metadata.json", append(data, '\n')); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func slowTraceDiagnosis(events []traceEvent, keepState bool) map[string]any {
+	if len(events) == 0 {
+		return nil
+	}
+	last := events[len(events)-1]
+	ret := map[string]any{
+		"category":       classifySlowTrace(events),
+		"last_component": last.Source,
+		"last_stage":     last.Stage,
+		"last_seq":       last.Seq,
+		"keep_state":     keepState,
+	}
+	if last.RequestID != 0 {
+		ret["last_request_id"] = last.RequestID
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Source != "executor" || len(event.Fields) == 0 {
+			continue
+		}
+		for _, key := range []string{"call_index", "call_num", "call_name", "stage", "tid", "guest_ms"} {
+			if value, ok := event.Fields[key]; ok {
+				ret["executor_"+key] = value
+			}
+		}
+		break
+	}
+	return ret
+}
+
+func classifySlowTrace(events []traceEvent) string {
+	lastPreAcquire := -1
+	lastPostRelease := -1
+	lastStage := strings.ToLower(events[len(events)-1].Stage)
+	for i, event := range events {
+		stage := strings.ToLower(event.Stage)
+		switch {
+		case strings.Contains(stage, "pre_acquire"):
+			lastPreAcquire = i
+		case strings.Contains(stage, "post_release") || stage == "release":
+			lastPostRelease = i
+		}
+	}
+	switch {
+	case strings.Contains(lastStage, "reload"):
+		return "reload"
+	case strings.Contains(lastStage, "handshake") || strings.Contains(lastStage, "vm_start"):
+		return "restart/handshake"
+	case strings.Contains(lastStage, "coverage") || strings.Contains(lastStage, "cov") ||
+		strings.Contains(lastStage, "pt_"):
+		return "coverage"
+	case lastPreAcquire > lastPostRelease:
+		return "syscall"
+	default:
+		return "runner/qemu"
+	}
+}
+
+func sanitizeArtifactName(name string) string {
+	var b strings.Builder
+	for _, ch := range name {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '-' || ch == '_' {
+			b.WriteRune(ch)
+		}
+	}
+	if b.Len() == 0 {
+		return "trace"
+	}
+	return b.String()
+}
+
+func writeTraceJSONL(path string, events []traceEvent) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	enc := json.NewEncoder(file)
+	for _, event := range events {
+		if err := enc.Encode(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func tailFile(path string, maxLines int, maxBytes int64) ([]byte, error) {
+	if path == "" {
+		return nil, os.ErrNotExist
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	start := int64(0)
+	if maxBytes > 0 && info.Size() > maxBytes {
+		start = info.Size() - maxBytes
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if start != 0 {
+		if _, err := file.Seek(start, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	if start != 0 {
+		if index := bytes.IndexByte(data, '\n'); index >= 0 {
+			data = data[index+1:]
+		}
+	}
+	if maxLines <= 0 {
+		return data, nil
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	if len(lines) != 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	if len(lines) == 0 {
+		return nil, nil
+	}
+	return append(bytes.Join(lines, []byte{'\n'}), '\n'), nil
+}
+
+func execResultArtifactSummary(msg *flatrpc.ExecutorMessage, execErr error) map[string]any {
+	ret := map[string]any{}
+	if execErr != nil {
+		ret["runner_error"] = execErr.Error()
+	}
+	if msg == nil || msg.Msg == nil {
+		return ret
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res == nil {
+		ret["message_type"] = fmt.Sprintf("%T", msg.Msg.Value)
+		return ret
+	}
+	ret["hanged"] = res.Hanged
+	ret["error"] = res.Error
+	ret["proc"] = res.Proc
+	ret["output_bytes"] = len(res.Output)
+	if res.Info != nil {
+		ret["calls"] = len(res.Info.Calls)
+		ret["covered_calls"] = countNonEmptyCover(res.Info.Calls)
+		ret["extra_signal"] = callInfoSignalLen(res.Info.Extra)
+		ret["extra_cover"] = callInfoCoverLen(res.Info.Extra)
+	}
+	return ret
+}
+
+func callInfoSignalLen(info *flatrpc.CallInfo) int {
+	if info == nil {
+		return 0
+	}
+	return len(info.Signal)
+}
+
+func callInfoCoverLen(info *flatrpc.CallInfo) int {
+	if info == nil {
+		return 0
+	}
+	return len(info.Cover)
+}
+
+func (vm *nyxVM) auxArtifactSummary() map[string]any {
+	if vm == nil || vm.aux == nil {
+		return nil
+	}
+	ret := map[string]any{
+		"state":          vm.aux.state(),
+		"exec_done":      vm.aux.execDone(),
+		"exec_code":      vm.aux.execCode(),
+		"exec_code_name": nyxExitReason(vm.aux.execCode()),
+		"reloaded":       vm.aux.reloaded(),
+		"pt_overflow":    vm.aux.ptOverflow(),
+		"page_fault":     vm.aux.pageFault(),
+	}
+	if vm.aux.pageFault() {
+		ret["page_addr"] = fmt.Sprintf("0x%x", vm.aux.pageAddr())
+	}
+	if misc := cleanAuxMessage(vm.aux.misc()); misc != "" {
+		ret["misc"] = misc
+	}
+	return ret
+}
+
+func (vm *nyxVM) qemuFlightPath() string {
+	if vm == nil || vm.workdir == "" {
+		return ""
+	}
+	return filepath.Join(vm.workdir, fmt.Sprintf("nyx_flight_%d.jsonl", vm.index))
+}
+
+func formatExecProgramForArtifact(data []byte) string {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return fmt.Sprintf("decode_target_err=%v\n", err)
+	}
+	decoded, err := target.DeserializeExec(data, nil)
+	if err != nil {
+		return fmt.Sprintf("decode_err=%v\nsummary: %s\n", err, describeExecProgram(data))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "summary: %s\n", describeExecProgram(data))
+	for index, call := range decoded.Calls {
+		name := "<nil>"
+		if call.Meta != nil {
+			name = call.Meta.Name
+		}
+		fmt.Fprintf(&b, "#%d %s args=%d copyin=%d copyout=%d\n",
+			index, name, len(call.Args), len(call.Copyin), len(call.Copyout))
+	}
+	return b.String()
 }
 
 func (r *runner) resetForReconnect() {
@@ -2169,8 +2812,22 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		ProgData:       req.Data,
 	}
 	started := time.Now()
+	r.vm.recordTrace("runner", "request_begin", req.Id, traceFields(
+		"label", requestLabel,
+		"exec_flags", uint64(req.ExecOpts.ExecFlags),
+		"effective_flags", uint64(execFlags),
+		"keep_state", r.keepState,
+		"calls", progExecCallCountOrPanic(req.Data),
+	))
 	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req, !r.keepState)
+	duration := time.Since(started)
 	if err != nil {
+		r.vm.recordTrace("runner", "request_error", req.Id, traceFields(
+			"label", requestLabel,
+			"duration_ms", duration.Milliseconds(),
+			"error", err.Error(),
+		))
+		r.maybeDumpSlowTrace(req, requestLabel, started, duration, nil, err)
 		r.markForRestart(fmt.Sprintf("request %d failed: %v", req.Id, err))
 		return nil, err
 	}
@@ -2210,11 +2867,17 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	if execResultHanged(execMsg) {
 		r.handleHangedRequest(req.Id)
 	}
+	r.vm.recordTrace("runner", "request_end", req.Id, traceFields(
+		"label", requestLabel,
+		"duration_ms", duration.Milliseconds(),
+		"hanged", execResultHanged(execMsg),
+	))
+	r.maybeDumpSlowTrace(req, requestLabel, started, duration, execMsg, nil)
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
 		logCallFeedback(req.Id, req.Data, res.Info.Calls)
 		log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
 			requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
-			time.Since(started).Milliseconds(), res.Hanged, res.Error)
+			duration.Milliseconds(), res.Hanged, res.Error)
 	}
 	return execMsg, nil
 }
@@ -3394,6 +4057,9 @@ func main() {
 		standaloneKeepState        = flag.Bool("standalone-keep-state", true, "preserve guest state between standalone exec requests")
 		moduleRangesRaw            = flag.String("module-ranges", defaultModuleRangeList(), "comma-separated kernel module PT range targets; suffix :required for mandatory matches")
 		coverageDebugStream        = flag.String("coverage-debug-stream", "", "optional JSONL path for per-exec raw module coverage diagnostics")
+		slowTraceDir               = flag.String("slow-trace-dir", "", "slow/hang artifact directory (default: workdir/slow-traces; '-' disables)")
+		slowTraceThresholdMs       = flag.Int("slow-trace-threshold-ms", 2000, "dump a slow trace when execution duration is at least this many ms")
+		slowTraceMaxEvents         = flag.Int("slow-trace-max-events", 4096, "maximum flight-recorder events retained and copied per slow trace")
 	)
 	flag.Var(&qemuArgs, "qemu-arg", "extra qemu argument (repeatable)")
 	flag.Parse()
@@ -3424,11 +4090,25 @@ func main() {
 	if *standaloneStagedProgram != "" && *standaloneProgramPath == "" {
 		log.Fatalf("--standalone-staged-program requires --standalone-program")
 	}
+	if *slowTraceThresholdMs < 0 {
+		log.Fatalf("bad slow trace threshold: %d", *slowTraceThresholdMs)
+	}
+	if *slowTraceMaxEvents <= 0 {
+		log.Fatalf("bad slow trace max events: %d", *slowTraceMaxEvents)
+	}
 	moduleRanges, err := parseModuleRanges(*moduleRangesRaw)
 	if err != nil {
 		log.Fatalf("bad module range config: %v", err)
 	}
 	vm := newNyxVM(index, *workdir, *qemuPath, qemuArgs, *image, *memoryMB, *payloadSize, *bitmapSize, *debug, *hardTimeout, moduleRanges, *windowsMinidump, *windowsMinidumpTimeout)
+	vm.trace = newTraceRecorder(*slowTraceMaxEvents)
+	resolvedSlowTraceDir := *slowTraceDir
+	if resolvedSlowTraceDir == "" {
+		resolvedSlowTraceDir = filepath.Join(*workdir, "slow-traces")
+	}
+	if resolvedSlowTraceDir == "-" {
+		resolvedSlowTraceDir = ""
+	}
 	defer vm.close()
 	if *standalone {
 		applyStandaloneHardTimeout(vm, *standaloneProgramTimeoutMs)
@@ -3455,6 +4135,11 @@ func main() {
 	r := newRunner(index, flag.Arg(1), flag.Arg(2), vm)
 	r.keepState = *keepState
 	r.coverageDebugPath = *coverageDebugStream
+	r.slowTrace = &slowTraceConfig{
+		dir:       resolvedSlowTraceDir,
+		threshold: time.Duration(*slowTraceThresholdMs) * time.Millisecond,
+		maxEvents: *slowTraceMaxEvents,
+	}
 	if err := connectWithRetry(r, 30*time.Second); err != nil {
 		vm.close()
 		log.Fatalf("failed to connect to manager: %v", err)

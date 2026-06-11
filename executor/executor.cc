@@ -900,8 +900,23 @@ static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, 
 	(void)a3;
 	return;
 #else
-	nyx_hprintf("nyx exec execute_one stage=%s a0=0x%llx a1=0x%llx a2=0x%llx a3=0x%llx\n",
+	int call_index = -1;
+	int call_num = -1;
+	const char* call_name = "<none>";
+	if (current_thread && current_thread->executing) {
+		call_index = current_thread->call_index;
+		call_num = current_thread->call_num;
+		if (call_num >= 0 && (uint64)call_num < ARRAY_SIZE(syscalls) && syscalls[call_num].name)
+			call_name = syscalls[call_num].name;
+	}
+	nyx_hprintf("nyx exec execute_one request=%llu guest_ms=%llu tid=%lu stage=%s call_index=%d call_num=%d call_name=%s a0=0x%llx a1=0x%llx a2=0x%llx a3=0x%llx\n",
+		    (unsigned long long)request_id,
+		    (unsigned long long)current_time_ms(),
+		    (unsigned long)GetCurrentThreadId(),
 		    stage,
+		    call_index,
+		    call_num,
+		    call_name,
 		    (unsigned long long)a0,
 		    (unsigned long long)a1,
 		    (unsigned long long)a2,

@@ -64,6 +64,127 @@ func uint64SlicesEqual(left, right []uint64) bool {
 	return true
 }
 
+func TestTraceRecorderTail(t *testing.T) {
+	rec := newTraceRecorder(3)
+	rec.Add("runner", "begin", 1, nil)
+	rec.Add("qemu", "kvm_run_begin", 1, nil)
+	rec.Add("executor", "call_begin", 1, nil)
+	rec.Add("qemu", "kvm_run_end", 1, nil)
+
+	tail := rec.Tail("", 0)
+	if len(tail) != 3 {
+		t.Fatalf("tail len=%d want 3", len(tail))
+	}
+	if tail[0].Stage != "kvm_run_begin" || tail[1].Stage != "call_begin" || tail[2].Stage != "kvm_run_end" {
+		t.Fatalf("bad ordered tail: %#v", tail)
+	}
+	qemuTail := rec.Tail("qemu", 0)
+	if len(qemuTail) != 2 || qemuTail[0].Stage != "kvm_run_begin" || qemuTail[1].Stage != "kvm_run_end" {
+		t.Fatalf("bad qemu tail: %#v", qemuTail)
+	}
+	limited := rec.Tail("", 2)
+	if len(limited) != 2 || limited[0].Stage != "call_begin" || limited[1].Stage != "kvm_run_end" {
+		t.Fatalf("bad limited tail: %#v", limited)
+	}
+}
+
+func TestWriteSlowTraceArtifact(t *testing.T) {
+	execData := serializeWindowsTestProgramForExec(t,
+		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_query_readonly.txt"))
+	auxData := make([]byte, 4096)
+	auxData[nyxStateOffset] = 3
+	auxData[nyxResultExecCodeOffset] = nyxRCTimeout
+	auxData[nyxResultReloadedOffset] = 1
+	misc := []byte("nyx exec execute_one stage=execute_call_pre_acquire call_index=0 call_num=1 call_name=<none> a0=0x1\x00")
+	binary.LittleEndian.PutUint16(auxData[nyxMiscOffset:nyxMiscOffset+2], uint16(len(misc)))
+	copy(auxData[nyxMiscOffset+2:], misc)
+
+	workdir := t.TempDir()
+	vm := &nyxVM{
+		workdir: workdir,
+		aux:     &qemuAux{data: auxData},
+		trace:   newTraceRecorder(8),
+	}
+	vm.recordTrace("runner", "request_begin", 42, nil)
+	vm.recordTrace("qemu", "exec_timeout", 42, traceFields("exec_code", nyxRCTimeout))
+	vm.recordHprintfTrace(42)
+	if err := os.WriteFile(vm.qemuFlightPath(), []byte("{\"event\":\"pt_enable\"}\n{\"event\":\"reload_begin\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &runner{
+		id:        3,
+		vm:        vm,
+		keepState: true,
+		slowTrace: &slowTraceConfig{
+			dir:       filepath.Join(workdir, "slow"),
+			threshold: time.Millisecond,
+			maxEvents: 8,
+		},
+	}
+	req := &flatrpc.ExecRequest{
+		Id:   42,
+		Type: flatrpc.RequestTypeProgram,
+		Data: execData,
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags:  flatrpc.ExecFlagThreaded | flatrpc.ExecFlagCollectCover,
+			SandboxArg: 7,
+		},
+		AllSignal: []int32{0, -1},
+	}
+	artifactDir, err := r.writeSlowTraceArtifact(req, "runner exec", "hang",
+		time.Now().Add(-2*time.Second), 2*time.Second, synthesizeHangedResult(req), nil)
+	if err != nil {
+		t.Fatalf("writeSlowTraceArtifact: %v", err)
+	}
+	for _, name := range []string{
+		"metadata.json",
+		"program.exec.bin",
+		"program.txt",
+		"result.json",
+		"trace.jsonl",
+		"qemu-trace.jsonl",
+		"qemu-flight-tail.jsonl",
+		"executor-trace.jsonl",
+	} {
+		if _, err := os.Stat(filepath.Join(artifactDir, name)); err != nil {
+			t.Fatalf("missing artifact %s: %v", name, err)
+		}
+	}
+	programData, err := os.ReadFile(filepath.Join(artifactDir, "program.exec.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(programData, execData) {
+		t.Fatal("program.exec.bin does not match request data")
+	}
+	metaData, err := os.ReadFile(filepath.Join(artifactDir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta slowTraceMetadata
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		t.Fatalf("metadata json: %v", err)
+	}
+	if meta.Reason != "hang" || meta.RequestID != 42 || !meta.KeepState || meta.DurationMS != 2000 {
+		t.Fatalf("bad metadata: %#v", meta)
+	}
+	if meta.Aux["exec_code_name"] != nyxExitReason(nyxRCTimeout) {
+		t.Fatalf("bad aux metadata: %#v", meta.Aux)
+	}
+	if meta.Diagnosis["category"] != "syscall" ||
+		meta.Diagnosis["executor_stage"] != "execute_call_pre_acquire" ||
+		meta.Diagnosis["executor_call_name"] != "<none>" {
+		t.Fatalf("bad diagnosis: %#v", meta.Diagnosis)
+	}
+	executorTrace, err := os.ReadFile(filepath.Join(artifactDir, "executor-trace.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(executorTrace), "execute_call_pre_acquire") {
+		t.Fatalf("executor trace missing stage: %s", executorTrace)
+	}
+}
+
 func serializeWindowsTestProgramForExec(t *testing.T, path string) []byte {
 	t.Helper()
 	target, err := prog.GetTarget("windows", "amd64")
