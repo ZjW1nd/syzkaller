@@ -923,6 +923,42 @@ static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, 
 		    (unsigned long long)a3);
 #endif
 }
+
+static void nyx_log_thread_stage(const char* stage, const thread_t* th, uint64 a0 = 0,
+				 uint64 a1 = 0, uint64 a2 = 0, uint64 a3 = 0)
+{
+#if SYZ_NYX_WINDOWS_DEMO
+	(void)stage;
+	(void)th;
+	(void)a0;
+	(void)a1;
+	(void)a2;
+	(void)a3;
+	return;
+#else
+	int call_index = -1;
+	int call_num = -1;
+	const char* call_name = "<none>";
+	if (th) {
+		call_index = th->call_index;
+		call_num = th->call_num;
+		if (call_num >= 0 && (uint64)call_num < ARRAY_SIZE(syscalls) && syscalls[call_num].name)
+			call_name = syscalls[call_num].name;
+	}
+	nyx_hprintf("nyx exec execute_one request=%llu guest_ms=%llu tid=%lu stage=%s call_index=%d call_num=%d call_name=%s a0=0x%llx a1=0x%llx a2=0x%llx a3=0x%llx\n",
+		    (unsigned long long)request_id,
+		    (unsigned long long)current_time_ms(),
+		    (unsigned long)GetCurrentThreadId(),
+		    stage,
+		    call_index,
+		    call_num,
+		    call_name,
+		    (unsigned long long)a0,
+		    (unsigned long long)a1,
+		    (unsigned long long)a2,
+		    (unsigned long long)a3);
+#endif
+}
 #endif
 
 #if GOOS_linux
@@ -1663,27 +1699,106 @@ void execute_one()
 
 	if (running > 0) {
 		// Give unfinished syscalls some additional time.
+#if GOOS_windows
+		nyx_log_exec_stage("wait_unfinished_begin", running, completed);
+#endif
 		last_scheduled = 0;
 		uint64 wait_start = current_time_ms();
 		uint64 wait_end = wait_start + 2 * syscall_timeout_ms;
 		wait_end = std::max(wait_end, start + program_timeout_ms / 6);
 		wait_end = std::max(wait_end, wait_start + prog_extra_timeout);
+#if GOOS_windows
+		uint64 next_wait_poll_log = wait_start;
+#endif
 		while (running > 0 && current_time_ms() <= wait_end) {
-			sleep_ms(1 * slowdown_scale);
+#if GOOS_windows
+			uint64 wait_now = current_time_ms();
+			bool log_wait_poll = wait_now >= next_wait_poll_log;
+			if (log_wait_poll)
+				next_wait_poll_log = wait_now + 100;
+			HANDLE wait_handles[kMaxThreads];
+			thread_t* wait_threads[kMaxThreads];
+			DWORD wait_count = 0;
 			for (int i = 0; i < kMaxThreads; i++) {
 				thread_t* th = &threads[i];
-				if (th->executing && event_isset(&th->done))
+				if (!th->executing)
+					continue;
+				wait_handles[wait_count] = event_handle(&th->done);
+				wait_threads[wait_count] = th;
+				wait_count++;
+			}
+			if (wait_count == 0)
+				break;
+			DWORD wait_ms = 1 * slowdown_scale;
+			if (wait_ms == 0)
+				wait_ms = 1;
+			uint64 wait_remaining = wait_now < wait_end ? wait_end - wait_now : 0;
+			if (wait_remaining < wait_ms)
+				wait_ms = (DWORD)wait_remaining;
+			DWORD signaled = WaitForMultipleObjects(wait_count, wait_handles, FALSE, wait_ms);
+			if (signaled >= WAIT_OBJECT_0 && signaled < WAIT_OBJECT_0 + wait_count) {
+				thread_t* th = wait_threads[signaled - WAIT_OBJECT_0];
+				if (th->executing) {
+					nyx_log_thread_stage("wait_unfinished_wait_done_seen", th,
+							     running, current_time_ms() - wait_start);
 					handle_completion(th);
+				}
+			} else if (signaled != WAIT_TIMEOUT) {
+				exitf("WaitForMultipleObjects failed: %lu", (unsigned long)signaled);
+			}
+#else
+			sleep_ms(1 * slowdown_scale);
+#endif
+			for (int i = 0; i < kMaxThreads; i++) {
+				thread_t* th = &threads[i];
+				if (th->executing) {
+#if GOOS_windows
+					int done = event_isset(&th->done);
+					if (log_wait_poll)
+						nyx_log_thread_stage("wait_unfinished_poll", th,
+								     running, wait_now - wait_start,
+								     done, event_isset(&th->ready));
+					if (done) {
+						nyx_log_thread_stage("wait_unfinished_done_seen", th,
+								     running, wait_now - wait_start);
+						handle_completion(th);
+					}
+#else
+					if (event_isset(&th->done))
+						handle_completion(th);
+#endif
+				}
 			}
 		}
+#if GOOS_windows
+		nyx_log_exec_stage("wait_unfinished_done", running, completed,
+				   current_time_ms() - wait_start);
+#endif
 		// Write output coverage for unfinished calls.
 		if (running > 0) {
 			for (int i = 0; i < kMaxThreads; i++) {
 				thread_t* th = &threads[i];
 				if (th->executing) {
-					if (cover_collection_required())
+					if (cover_collection_required()) {
+#if GOOS_windows
+						nyx_log_thread_stage("unfinished_pre_cover_collect", th,
+								     th->cov.size, th->cov.overflow);
+#endif
 						cover_collect(&th->cov);
+#if GOOS_windows
+						nyx_log_thread_stage("unfinished_post_cover_collect", th,
+								     th->cov.size, th->cov.overflow);
+#endif
+					}
+#if GOOS_windows
+					nyx_log_thread_stage("unfinished_pre_write_call_output", th,
+							     running, completed);
+#endif
 					write_call_output(th, false);
+#if GOOS_windows
+					nyx_log_thread_stage("unfinished_post_write_call_output", th,
+							     running, completed);
+#endif
 				}
 			}
 		}
@@ -1693,7 +1808,14 @@ void execute_one()
 	close_fds();
 #endif
 
+#if GOOS_windows
+	nyx_log_exec_stage("execute_one_pre_write_extra_output", running, completed);
+#endif
 	write_extra_output();
+#if GOOS_windows
+	nyx_log_exec_stage("execute_one_post_write_extra_output", running, completed,
+			   output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+#endif
 	if (flag_extra_coverage) {
 		// Check for new extra coverage in small intervals to avoid situation
 		// that we were killed on timeout before we write any.
@@ -1703,9 +1825,17 @@ void execute_one()
 				   output_data->completed.load(std::memory_order_relaxed) < kMaxCalls;
 		     i++) {
 			sleep_ms(kSleepMs);
+#if GOOS_windows
+			nyx_log_exec_stage("execute_one_extra_cover_poll", i, prog_extra_cover_timeout,
+					   output_data->completed.load(std::memory_order_relaxed));
+#endif
 			write_extra_output();
 		}
 	}
+#if GOOS_windows
+	nyx_log_exec_stage("execute_one_done", running, completed,
+			   output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+#endif
 }
 
 thread_t* schedule_call(int call_index, int call_num, uint64 copyout_index, uint64 num_args, uint64* args, uint8* pos, call_props_t call_props)
@@ -1859,16 +1989,47 @@ bool coverage_filter(uint64 pc)
 
 void handle_completion(thread_t* th)
 {
+#if GOOS_windows
+	nyx_log_thread_stage("handle_completion_begin", th, running, completed,
+			     event_isset(&th->done), th->executing);
+#endif
 	if (event_isset(&th->ready) || !event_isset(&th->done) || !th->executing)
 		exitf("bad thread state in completion: ready=%d done=%d executing=%d",
 		      event_isset(&th->ready), event_isset(&th->done), th->executing);
-	if (th->res != (intptr_t)-1)
+	if (th->res != (intptr_t)-1) {
+#if GOOS_windows
+		nyx_log_thread_stage("handle_completion_pre_copyout", th, th->copyout_index,
+				     (uint64)th->res, th->reserrno);
+#endif
 		copyout_call_results(th);
+#if GOOS_windows
+		nyx_log_thread_stage("handle_completion_post_copyout", th, th->copyout_index,
+				     (uint64)th->res, th->reserrno);
+#endif
+	}
 
+#if GOOS_windows
+	nyx_log_thread_stage("handle_completion_pre_write_call_output", th, completed,
+			     output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+#endif
 	write_call_output(th, true);
+#if GOOS_windows
+	nyx_log_thread_stage("handle_completion_post_write_call_output", th, completed,
+			     output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+	nyx_log_thread_stage("handle_completion_pre_write_extra_output", th, completed,
+			     output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+#endif
 	write_extra_output();
+#if GOOS_windows
+	nyx_log_thread_stage("handle_completion_post_write_extra_output", th, completed,
+			     output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+#endif
 	th->executing = false;
 	running--;
+#if GOOS_windows
+	nyx_log_thread_stage("handle_completion_done", th, running, completed,
+			     output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+#endif
 	if (running < 0) {
 		// This fires periodically for the past 2 years (see issue #502).
 		fprintf(stderr, "running=%d completed=%d flag_threaded=%d current=%d\n",
@@ -1919,6 +2080,10 @@ void copyout_call_results(thread_t* th)
 
 void write_output(int index, cover_t* cov, rpc::CallFlag flags, uint32 error, bool all_signal)
 {
+#if GOOS_windows
+	nyx_log_exec_stage("write_output_begin", (uint64)(int64_t)index, static_cast<uint64>(flags), error,
+			   output_data ? output_data->completed.load(std::memory_order_relaxed) : 0);
+#endif
 	CoverAccessScope scope(cov);
 	auto& fbb = *output_builder;
 	const uint32 start_size = output_builder->GetSize();
@@ -1965,6 +2130,10 @@ void write_output(int index, cover_t* cov, rpc::CallFlag flags, uint32 error, bo
 	output_data->completed.store(slot + 1, std::memory_order_release);
 	debug_verbose("out #%u: index=%u errno=%d flags=0x%x total_size=%u\n",
 		      slot + 1, index, error, static_cast<unsigned>(flags), call.data_size - start_size);
+#if GOOS_windows
+	nyx_log_exec_stage("write_output_done", (uint64)(int64_t)index, slot + 1, error,
+			   output_builder->GetSize());
+#endif
 }
 
 void write_call_output(thread_t* th, bool finished)
@@ -2002,6 +2171,9 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 												  : kMaxOutput;
 	uint32 completed = output->completed.load(std::memory_order_relaxed);
 	completed = std::min(completed, kMaxCalls);
+#if GOOS_windows
+	nyx_log_exec_stage("finish_output_begin", num_calls, completed, out_size, hanged);
+#endif
 	debug("handle completion: completed=%u output_size=%u\n", completed, out_size);
 	ShmemBuilder fbb(output, out_size, false);
 	auto empty_call = rpc::CreateCallInfoRawDirect(fbb, rpc::CallFlag::NONE, 998);
@@ -2033,7 +2205,11 @@ flatbuffers::span<uint8_t> finish_output(OutputData* output, int proc_id, uint64
 	auto msg_off = rpc::CreateExecutorMessageRaw(fbb, rpc::ExecutorMessagesRaw::ExecResult,
 						     flatbuffers::Offset<void>(exec_off.o));
 	fbb.FinishSizePrefixed(msg_off);
-	return fbb.GetBufferSpan();
+	auto span = fbb.GetBufferSpan();
+#if GOOS_windows
+	nyx_log_exec_stage("finish_output_done", span.size(), completed, output_off.o, status);
+#endif
+	return span;
 }
 
 #if GOOS_windows
@@ -2482,21 +2658,37 @@ static int nyx_mode_loop(int argc, char** argv)
 
 		uint64_t exec_start = current_time_ms();
 		nyx_hprintf("nyx exec stage=pre_cov_reset request=%lld\n", (long long)meta->request_id);
+		nyx_log_exec_stage("nyx_pre_cov_reset", meta->request_id, msg->num_calls());
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd);
 		nyx_hprintf("nyx exec stage=post_cov_reset request=%lld\n", (long long)meta->request_id);
+		nyx_log_exec_stage("nyx_post_cov_reset", meta->request_id, msg->num_calls());
 		nyx_hprintf("nyx exec stage=pre_execute_one request=%lld\n", (long long)meta->request_id);
+		nyx_log_exec_stage("nyx_pre_execute_one", meta->request_id, msg->num_calls());
 		execute_one();
 		nyx_hprintf("nyx exec stage=post_execute_one request=%lld\n", (long long)meta->request_id);
+		nyx_log_exec_stage("nyx_post_execute_one", meta->request_id, msg->num_calls(),
+				   output_data->completed.load(std::memory_order_relaxed));
 		nyx_hprintf("nyx exec stage=post_release request=%lld\n", (long long)meta->request_id);
 		nyx_hprintf("nyx exec returned request=%lld\n", (long long)meta->request_id);
+		nyx_log_exec_stage("nyx_pre_cov_dump", meta->request_id, msg->num_calls());
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)&cov_cmd);
 		nyx_hprintf("nyx cov dumped request=%lld\n", (long long)meta->request_id);
+		nyx_log_exec_stage("nyx_post_cov_dump", meta->request_id, msg->num_calls(),
+				   output_data->completed.load(std::memory_order_relaxed));
 
+		nyx_log_exec_stage("nyx_pre_finish_output", meta->request_id, msg->num_calls(),
+				   current_time_ms() - exec_start);
 		auto result = finish_output(output_data, meta->proc_id, meta->request_id, msg->num_calls(),
 					    (current_time_ms() - exec_start) * 1000 * 1000,
 					    freshness++, 0, false, nullptr);
-		nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+		nyx_log_exec_stage("nyx_post_finish_output", meta->request_id, result.size(),
+				   output_data->completed.load(std::memory_order_relaxed));
+		nyx_log_exec_stage("nyx_pre_result_dump", meta->request_id, result.size());
+		bool dumped = nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+		nyx_log_exec_stage("nyx_post_result_dump", meta->request_id, result.size(), dumped);
+		nyx_log_exec_stage("nyx_pre_finish_payload", meta->request_id, msg->num_calls());
 		nyx_finish_exec_payload(meta, msg->num_calls());
+		nyx_log_exec_stage("nyx_post_finish_payload", meta->request_id, msg->num_calls());
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)result.size());
 	}
@@ -2536,13 +2728,35 @@ void* worker_thread(void* arg)
 	current_thread = th;
 	for (bool first = true;; first = false) {
 		event_wait(&th->ready);
+#if GOOS_windows
+		nyx_log_thread_stage("worker_ready_seen", th, event_isset(&th->ready),
+				     event_isset(&th->done), th->executing);
+#endif
 		event_reset(&th->ready);
+#if GOOS_windows
+		nyx_log_thread_stage("worker_ready_reset", th, event_isset(&th->ready),
+				     event_isset(&th->done), th->executing);
+#endif
 		// Setup coverage only after receiving the first ready event
 		// because in snapshot mode we don't know coverage mode for precreated threads.
 		if (first && cover_collection_required())
 			cover_enable(&th->cov, flag_comparisons, false);
+#if GOOS_windows
+		nyx_log_thread_stage("worker_pre_execute_call", th, event_isset(&th->done),
+				     th->executing);
+#endif
 		execute_call(th);
+#if GOOS_windows
+		nyx_log_thread_stage("worker_after_execute_call", th, event_isset(&th->done),
+				     th->executing);
+		nyx_log_thread_stage("worker_pre_done_set", th, event_isset(&th->done),
+				     th->executing);
+#endif
 		event_set(&th->done);
+#if GOOS_windows
+		nyx_log_thread_stage("worker_post_done_set", th, event_isset(&th->done),
+				     th->executing);
+#endif
 	}
 	return 0;
 }
@@ -2612,12 +2826,18 @@ void execute_call(thread_t* th)
 	NONFAILING(th->res = execute_syscall(call, th->args));
 #if GOOS_windows
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+	nyx_log_thread_stage("execute_call_after_release", th, (uint64)th->res, errno);
 	// Per-call coverage is dumped by the RELEASE handler in QEMU.
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE
+	nyx_log_thread_stage("execute_call_pre_finish_syscall", th, (uint64)th->res, errno);
 	nyx_finish_syscall(call, th->args);
+	nyx_log_thread_stage("execute_call_post_finish_syscall", th, (uint64)th->res, errno);
 #endif
-	nyx_log_exec_stage("execute_call_post_release", th->id, th->call_num, (uint64)th->res, errno);
+	nyx_log_thread_stage("execute_call_post_release", th, (uint64)th->res, errno);
 windows_nyx_call_done:
+#endif
+#if GOOS_windows
+	nyx_log_thread_stage("execute_call_pre_reserrno", th, (uint64)th->res, errno);
 #endif
 	th->reserrno = errno;
 	// Our pseudo-syscalls may misbehave.
@@ -2625,18 +2845,44 @@ windows_nyx_call_done:
 		th->reserrno = EINVAL;
 	// Reset the flag before the first possible fail().
 	th->soft_fail_state = false;
+#if GOOS_windows
+	nyx_log_thread_stage("execute_call_post_reserrno", th, (uint64)th->res, th->reserrno);
+#endif
 
-	if (flag_coverage)
+	if (flag_coverage) {
+#if GOOS_windows
+		nyx_log_thread_stage("execute_call_pre_cover_collect", th, th->cov.size,
+				     th->cov.overflow);
+#endif
 		cover_collect(&th->cov);
+#if GOOS_windows
+		nyx_log_thread_stage("execute_call_post_cover_collect", th, th->cov.size,
+				     th->cov.overflow);
+#endif
+	}
 	th->fault_injected = false;
 
-	if (th->call_props.fail_nth > 0)
+	if (th->call_props.fail_nth > 0) {
+#if GOOS_windows
+		nyx_log_thread_stage("execute_call_pre_fault_check", th, th->call_props.fail_nth);
+#endif
 		th->fault_injected = fault_injected(fail_fd);
+#if GOOS_windows
+		nyx_log_thread_stage("execute_call_post_fault_check", th, th->fault_injected);
+#endif
+	}
 
 	// If required, run the syscall some more times.
 	// But let's still return res, errno and coverage from the first execution.
-	for (int i = 0; i < th->call_props.rerun; i++)
+	for (int i = 0; i < th->call_props.rerun; i++) {
+#if GOOS_windows
+		nyx_log_thread_stage("execute_call_pre_rerun", th, i, th->call_props.rerun);
+#endif
 		NONFAILING(execute_syscall(call, th->args));
+#if GOOS_windows
+		nyx_log_thread_stage("execute_call_post_rerun", th, i, th->call_props.rerun);
+#endif
+	}
 
 	debug("#%d [%llums] <- %s=0x%llx",
 	      th->id, current_time_ms() - start_time_ms, call->name, (uint64)th->res);
@@ -2649,6 +2895,10 @@ windows_nyx_call_done:
 	if (th->call_props.rerun > 0)
 		debug(" rerun=%d", th->call_props.rerun);
 	debug("\n");
+#if GOOS_windows
+	nyx_log_thread_stage("execute_call_done", th, (uint64)th->res, th->reserrno,
+			     th->cov.size);
+#endif
 }
 
 static uint32 hash(uint32 a)

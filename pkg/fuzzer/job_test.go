@@ -249,6 +249,93 @@ func TestTriageExecuteSignalsReadyAfterSubmit(t *testing.T) {
 	<-done
 }
 
+func TestFuzzerExecuteHonorsRuntimePolicy(t *testing.T) {
+	target := testRuntimePolicyTarget(t)
+	p := testRuntimePolicyProg(t, target)
+	exec := &recordingExecutor{
+		submitted: make(chan *queue.Request, 1),
+		result:    &queue.Result{Status: queue.Success},
+	}
+	fuzzer := &Fuzzer{
+		ctx:    context.Background(),
+		Config: &Config{},
+		target: target,
+	}
+	res := fuzzer.execute(exec, &queue.Request{
+		Prog:   p,
+		Origin: "smash",
+	})
+	assert.Equal(t, queue.ExecFailure, res.Status)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "runtime policy rejected program") {
+		t.Fatalf("bad rejection error: %v", res.Err)
+	}
+	select {
+	case req := <-exec.submitted:
+		t.Fatalf("runtime-rejected request reached executor: %#v", req)
+	default:
+	}
+}
+
+func TestTriageExecuteHonorsRuntimePolicy(t *testing.T) {
+	target := testRuntimePolicyTarget(t)
+	p := testRuntimePolicyProg(t, target)
+	exec := &recordingExecutor{
+		submitted: make(chan *queue.Request, 1),
+		result:    &queue.Result{Status: queue.Success},
+	}
+	job := &triageJob{
+		fuzzer: &Fuzzer{
+			ctx:    context.Background(),
+			Config: &Config{},
+			target: target,
+		},
+		queue: exec,
+		ready: make(chan struct{}),
+		info:  &JobInfo{},
+	}
+	res := job.execute(&queue.Request{
+		Prog:   p,
+		Origin: "triage",
+	}, progInTriage)
+	assert.Equal(t, queue.Success, res.Status)
+	if res.Info != nil {
+		t.Fatalf("runtime-rejected triage execution returned info: %#v", res.Info)
+	}
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "runtime policy rejected program") {
+		t.Fatalf("bad rejection error: %v", res.Err)
+	}
+	select {
+	case <-job.ready:
+	default:
+		t.Fatal("runtime-rejected triage execution did not signal readiness")
+	}
+	select {
+	case req := <-exec.submitted:
+		t.Fatalf("runtime-rejected triage request reached executor: %#v", req)
+	default:
+	}
+}
+
+func testRuntimePolicyTarget(t *testing.T) *prog.Target {
+	t.Helper()
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	assert.NoError(t, err)
+	target = target.Clone()
+	target.RuntimePolicy.ShouldScheduleProgram = func(string, *prog.Prog) bool {
+		return false
+	}
+	return target
+}
+
+func testRuntimePolicyProg(t *testing.T, target *prog.Target) *prog.Prog {
+	t.Helper()
+	p, err := target.Deserialize([]byte(
+		`syz_compare(&AUTO="00000000", 0x4, &AUTO=@conditional={0x0, @void, @void, @void}, AUTO)`),
+		prog.NonStrict)
+	assert.NoError(t, err)
+	return p
+}
+
 func TestWindowsAFDMinimizePreservesFocusedResourceLineage(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -259,7 +346,8 @@ func TestWindowsAFDMinimizePreservesFocusedResourceLineage(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
 	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
 			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
 			"r2 = listen$inet_tcp(r1, 0x1)\n"+
 			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
@@ -312,7 +400,8 @@ func TestTriageMinimizeDoesNotSpawnRecursiveTriageJobs(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
 	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
 			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
 			"r2 = listen$inet_tcp(r1, 0x1)\n"+
 			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
@@ -360,7 +449,8 @@ func TestFocusedResourceTriageDeflakeLogsProgress(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
 	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
 			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
 			"r2 = listen$inet_tcp(r1, 0x1)\n"+
 			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
@@ -435,7 +525,8 @@ func TestWindowsAFDTriageDeflakeStopsForPersistableStableOwner(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
 	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
 			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
 			"r2 = listen$inet_tcp(r1, 0x1)\n"+
 			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
@@ -833,7 +924,8 @@ func TestWindowsAFDSchedulesImmediateCollideForDeepOwner(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
 	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
 			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
 			"r2 = listen$inet_tcp(r1, 0x1)\n"+
 			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
@@ -842,18 +934,30 @@ func TestWindowsAFDSchedulesImmediateCollideForDeepOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Deserialize: %v", err)
 	}
-	fuzzer := NewFuzzer(context.Background(), &Config{
-		Collide:      true,
-		Corpus:       corpus.NewCorpus(context.Background()),
-		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
-	}, rand.New(rand.NewSource(0)), profiled)
+	if len(p.Calls) == 0 || p.Calls[0].Meta.Name != "WSAStartup" {
+		t.Fatalf("test program lost WSAStartup scaffold:\n%s", p.Serialize())
+	}
+	newTestFuzzer := func(seed int64) *Fuzzer {
+		return NewFuzzer(context.Background(), &Config{
+			Collide:      true,
+			Corpus:       corpus.NewCorpus(context.Background()),
+			EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
+		}, rand.New(rand.NewSource(seed)), profiled)
+	}
+	fuzzer := newTestFuzzer(0)
 	job := &triageJob{fuzzer: fuzzer}
 	job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "listen$inet_tcp"))
 	if got := fuzzer.immediateCollideQueue.Len(); got != 0 {
 		t.Fatalf("shallow scaffold scheduled %d immediate collide requests", got)
 	}
-	job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "WSARecv$accept"))
-	req := fuzzer.immediateCollideQueue.Next()
+
+	var req *queue.Request
+	for seed := int64(0); seed < 64 && req == nil; seed++ {
+		fuzzer = newTestFuzzer(seed)
+		job = &triageJob{fuzzer: fuzzer}
+		job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "WSARecv$accept"))
+		req = fuzzer.immediateCollideQueue.Next()
+	}
 	if req == nil {
 		t.Fatal("deep AFD owner did not schedule immediate collide")
 	}
