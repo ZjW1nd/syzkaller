@@ -120,6 +120,8 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 	}
 	var progs []*prog.Prog
 	skippedNoGenerate := 0
+	skippedDisabled := 0
+	disabledCalls := disabledCallIDs(cfg)
 	for _, seed := range seeds {
 		p, err := ParseSeed(cfg.Target, seed.Data)
 		if err != nil {
@@ -131,10 +133,18 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 			log.Logf(1, "borrowing seed %s is skipped: contains no_generate calls", seed.Path)
 			continue
 		}
+		if progContainsDisabledCall(p, disabledCalls) {
+			skippedDisabled++
+			log.Logf(1, "borrowing seed %s is skipped: contains disabled calls", seed.Path)
+			continue
+		}
 		progs = append(progs, p)
 	}
 	if skippedNoGenerate != 0 {
 		log.Logf(0, "skipped %d borrowing-only seeds containing no_generate calls", skippedNoGenerate)
+	}
+	if skippedDisabled != 0 {
+		log.Logf(0, "skipped %d borrowing-only seeds containing disabled calls", skippedDisabled)
 	}
 	if len(progs) != 0 {
 		log.Logf(0, "loaded %d borrowing-only seeds with prefix %q", len(progs),
@@ -143,12 +153,39 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 	return progs
 }
 
+func disabledCallIDs(cfg *mgrconfig.Config) map[int]bool {
+	if cfg == nil || cfg.Target == nil || len(cfg.DisabledSyscalls) == 0 {
+		return nil
+	}
+	disabled := make(map[int]bool)
+	for _, pattern := range cfg.DisabledSyscalls {
+		for _, call := range cfg.Target.Syscalls {
+			if mgrconfig.MatchSyscall(call.Name, pattern) {
+				disabled[call.ID] = true
+			}
+		}
+	}
+	return disabled
+}
+
 func progContainsNoGenerate(p *prog.Prog) bool {
 	if p == nil {
 		return false
 	}
 	for _, call := range p.Calls {
 		if call != nil && call.Meta != nil && call.Meta.Attrs.NoGenerate {
+			return true
+		}
+	}
+	return false
+}
+
+func progContainsDisabledCall(p *prog.Prog, disabled map[int]bool) bool {
+	if p == nil || len(disabled) == 0 {
+		return false
+	}
+	for _, call := range p.Calls {
+		if call != nil && call.Meta != nil && disabled[call.Meta.ID] {
 			return true
 		}
 	}
@@ -390,17 +427,27 @@ type FilteredCandidates struct {
 
 func FilterCandidates(candidates []fuzzer.Candidate, syscalls map[*prog.Syscall]bool,
 	dropMinimize bool) FilteredCandidates {
+	return filterCandidates(candidates, syscalls, nil, dropMinimize)
+}
+
+func FilterCandidatesForConfig(candidates []fuzzer.Candidate, syscalls map[*prog.Syscall]bool,
+	cfg *mgrconfig.Config, dropMinimize bool) FilteredCandidates {
+	return filterCandidates(candidates, syscalls, disabledCallIDs(cfg), dropMinimize)
+}
+
+func filterCandidates(candidates []fuzzer.Candidate, syscalls map[*prog.Syscall]bool,
+	disabled map[int]bool, dropMinimize bool) FilteredCandidates {
 	var ret FilteredCandidates
 	for _, item := range candidates {
 		allowNoGenerate := item.Flags&fuzzer.ProgFromCorpus == 0
-		if !candidateOnlyContains(item.Prog, syscalls, allowNoGenerate) {
+		if !candidateOnlyContains(item.Prog, syscalls, disabled, allowNoGenerate) {
 			ret.ModifiedHashes = append(ret.ModifiedHashes, hash.String(item.Prog.Serialize()))
 			// We cut out the disabled syscalls and retriage/minimize what remains from the prog.
 			// The original prog will be deleted from the corpus.
 			if dropMinimize {
 				item.Flags &= ^fuzzer.ProgMinimized
 			}
-			filterCandidateInplace(item.Prog, syscalls, allowNoGenerate)
+			filterCandidateInplace(item.Prog, syscalls, disabled, allowNoGenerate)
 			if len(item.Prog.Calls) == 0 {
 				continue
 			}
@@ -413,19 +460,21 @@ func FilterCandidates(candidates []fuzzer.Candidate, syscalls map[*prog.Syscall]
 	return ret
 }
 
-func candidateOnlyContains(p *prog.Prog, syscalls map[*prog.Syscall]bool, allowNoGenerate bool) bool {
+func candidateOnlyContains(p *prog.Prog, syscalls map[*prog.Syscall]bool,
+	disabled map[int]bool, allowNoGenerate bool) bool {
 	for _, c := range p.Calls {
-		if !candidateCallAllowed(c.Meta, syscalls, allowNoGenerate) {
+		if !candidateCallAllowed(c.Meta, syscalls, disabled, allowNoGenerate) {
 			return false
 		}
 	}
 	return true
 }
 
-func filterCandidateInplace(p *prog.Prog, allowed map[*prog.Syscall]bool, allowNoGenerate bool) {
+func filterCandidateInplace(p *prog.Prog, allowed map[*prog.Syscall]bool,
+	disabled map[int]bool, allowNoGenerate bool) {
 	for i := 0; i < len(p.Calls); {
 		c := p.Calls[i]
-		if !candidateCallAllowed(c.Meta, allowed, allowNoGenerate) {
+		if !candidateCallAllowed(c.Meta, allowed, disabled, allowNoGenerate) {
 			p.RemoveCall(i)
 			continue
 		}
@@ -433,7 +482,14 @@ func filterCandidateInplace(p *prog.Prog, allowed map[*prog.Syscall]bool, allowN
 	}
 }
 
-func candidateCallAllowed(call *prog.Syscall, allowed map[*prog.Syscall]bool, allowNoGenerate bool) bool {
+func candidateCallAllowed(call *prog.Syscall, allowed map[*prog.Syscall]bool,
+	disabled map[int]bool, allowNoGenerate bool) bool {
+	if call == nil {
+		return false
+	}
+	if disabled[call.ID] {
+		return false
+	}
 	return allowed[call] || allowNoGenerate && (call.Attrs.NoGenerate || call.Attrs.AutomaticHelper)
 }
 

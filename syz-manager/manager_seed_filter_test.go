@@ -382,6 +382,51 @@ func TestLoadBorrowingSeedsFiltersByPrefix(t *testing.T) {
 	}
 }
 
+func TestLoadBorrowingSeedsSkipsDisabledCalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	seedDir := filepath.Join(dir, "sys", "windows", "test")
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good := []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+		"r0 = socket$connected_udp(0x2, 0x2, 0x11)\n" +
+		"connect$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e33, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+		"send$inet_udp(r0, 'ping', 0x4, 0x0)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_allowed.txt"), good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	disabled := []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+		"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+		"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e33, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+		"listen$inet_tcp(r0, 0x1)\n" +
+		"accept$inet_tcp(r0, 0x0, 0x0)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_disabled.txt"), disabled, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &mgrconfig.Config{
+		Syzkaller:        dir,
+		DisabledSyscalls: []string{"accept$inet_tcp"},
+		Experimental: mgrconfig.Experimental{
+			BorrowingSeedPrefix: "nyx_afd_",
+		},
+		Derived: mgrconfig.Derived{
+			TargetOS: "windows",
+			Target:   target,
+		},
+	}
+	progs := manager.LoadBorrowingSeeds(cfg)
+	if len(progs) != 1 {
+		t.Fatalf("got %d borrowing seeds, want only the allowed seed", len(progs))
+	}
+	if strings.Contains(string(progs[0].Serialize()), "accept$inet_tcp") {
+		t.Fatalf("disabled borrowing seed was loaded:\n%s", progs[0].Serialize())
+	}
+}
+
 func assertNoCandidateRunFinish(t *testing.T, finished <-chan error) {
 	t.Helper()
 	select {
@@ -536,6 +581,46 @@ func TestFilterCandidatesKeepsNoGenerateSeedCalls(t *testing.T) {
 	if !strings.Contains(got, "WSAEventSelect$accept") ||
 		!strings.Contains(got, "WSAEnumNetworkEvents$accept") {
 		t.Fatalf("seed-only async calls were filtered out of regular seed:\n%s", got)
+	}
+}
+
+func TestFilterCandidatesForConfigDropsDisabledSeedCalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+		"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n"+
+		"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+		"listen$inet_tcp(r0, 0x1)\n"+
+		"accept$inet_tcp(r0, 0x0, 0x0)\n"+
+		"r1 = socket$connected_udp(0x2, 0x2, 0x11)\n"+
+		"connect$inet_udp(r1, &(0x7f0000000120)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+		"send$inet_udp(r1, 'ping', 0x4, 0x0)\n"))
+	enabled := enabledWithoutNoGenerate(p)
+	cfg := &mgrconfig.Config{
+		DisabledSyscalls: []string{"accept$inet_tcp"},
+		Derived: mgrconfig.Derived{
+			Target: target,
+		},
+	}
+
+	filtered := manager.FilterCandidatesForConfig([]fuzzer.Candidate{{
+		Prog:  p,
+		Flags: fuzzer.ProgMinimized,
+	}}, enabled, cfg, true)
+	if len(filtered.Candidates) != 1 {
+		t.Fatalf("got %d filtered candidates, want 1", len(filtered.Candidates))
+	}
+	if len(filtered.ModifiedHashes) != 1 {
+		t.Fatalf("got %d modified hashes, want 1", len(filtered.ModifiedHashes))
+	}
+	got := string(filtered.Candidates[0].Prog.Serialize())
+	if strings.Contains(got, "accept$inet_tcp") {
+		t.Fatalf("disabled seed call leaked through config-aware filter:\n%s", got)
+	}
+	if !strings.Contains(got, "send$inet_udp") {
+		t.Fatalf("unrelated enabled call was filtered out:\n%s", got)
 	}
 }
 

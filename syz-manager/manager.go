@@ -624,7 +624,7 @@ func (mgr *Manager) preloadCorpus() {
 }
 
 func (mgr *Manager) loadCorpus(enabledSyscalls map[*prog.Syscall]bool) []fuzzer.Candidate {
-	ret := manager.FilterCandidates(<-mgr.corpusPreload, enabledSyscalls, true)
+	ret := manager.FilterCandidatesForConfig(<-mgr.corpusPreload, enabledSyscalls, mgr.cfg, true)
 	if mgr.cfg.PreserveCorpus {
 		for _, hash := range ret.ModifiedHashes {
 			// This program contains a disabled syscall.
