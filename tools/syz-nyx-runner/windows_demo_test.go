@@ -1760,6 +1760,31 @@ func TestRunnerHandshakeUsesTimeoutAndSlowTraceArtifact(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotDrainReloadBeforeNextPayload(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	mainSrc := string(mainData)
+	if strings.Contains(mainSrc, "drainExecReload") ||
+		strings.Contains(mainSrc, "reload_drain") {
+		t.Fatal("runner should not release QEMU to drain reload before writing the next payload")
+	}
+	executeRequest := extractFunctionBody(t, mainSrc, "func (vm *nyxVM) executeRequest")
+	for _, bad := range []string{
+		"drainReload bool",
+		"drain_reload",
+	} {
+		if strings.Contains(executeRequest, bad) {
+			t.Fatalf("executeRequest should not contain post-result reload drain construct %q", bad)
+		}
+	}
+	handle := extractFunctionBody(t, mainSrc, "func (r *runner) executeRequestOnce")
+	if !strings.Contains(handle, "The pending root reload is consumed by the next payload release") {
+		t.Fatal("executeRequestOnce should document that reload is deferred until the next payload is written")
+	}
+}
+
 func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {

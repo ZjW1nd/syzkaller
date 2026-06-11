@@ -1386,7 +1386,7 @@ func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
 	return errors.New("timed out waiting for nyx handshake ack")
 }
 
-func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainReload bool) (*flatrpc.ExecutorMessage, error) {
+func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage, error) {
 	requestID := reqID(req)
 	vm.traceReqID = requestID
 	defer func() {
@@ -1394,7 +1394,6 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 	}()
 	vm.recordTrace("runner", "exec_payload_begin", requestID, traceFields(
 		"payload_bytes", len(payload),
-		"drain_reload", drainReload,
 	))
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxExecResult))
 	_ = os.Remove(vm.coverPath)
@@ -1412,11 +1411,6 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest, drainR
 			msg, err := parseExecResult(data)
 			if err != nil {
 				return nil, err
-			}
-			if drainReload {
-				if err := vm.drainExecReload(reqID(req), deadline); err != nil {
-					return nil, err
-				}
 			}
 			return msg, nil
 		}
@@ -1491,7 +1485,7 @@ func (vm *nyxVM) executeIdle(sleepMs int) (*flatrpc.ExecutorMessage, error) {
 			ExecFlags: 0,
 		},
 	}
-	return vm.executeRequest(packNyxPayload(nyxKindIdle, nil, body.Bytes()), req, false)
+	return vm.executeRequest(packNyxPayload(nyxKindIdle, nil, body.Bytes()), req)
 }
 
 func reqID(req *flatrpc.ExecRequest) int64 {
@@ -1499,45 +1493,6 @@ func reqID(req *flatrpc.ExecRequest) int64 {
 		return 0
 	}
 	return req.Id
-}
-
-func (vm *nyxVM) drainExecReload(id int64, deadline time.Time) error {
-	vm.recordTrace("runner", "reload_drain_begin", id, nil)
-	for step := 0; step < 8; step++ {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return fmt.Errorf("timed out draining reload after request %d", id)
-		}
-		if remaining > 2*time.Second {
-			remaining = 2 * time.Second
-		}
-		vm.debugLogf("runner exec reload drain step=%d id=%d state=%d exec_done=%v exec_code=%d misc=%q",
-			step, id, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
-			strings.TrimSpace(string(vm.aux.misc())))
-		if err := vm.runQemuWithTimeout(remaining); err != nil {
-			return fmt.Errorf("drain reload after request %d: %w", id, err)
-		}
-		vm.recordAuxTrace("reload_drain_step", id)
-		vm.debugLogf("runner exec reload drain post-step=%d id=%d state=%d exec_done=%v exec_code=%d reloaded=%v misc=%q",
-			step, id, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(), vm.aux.reloaded(),
-			strings.TrimSpace(string(vm.aux.misc())))
-		if vm.aux.execCode() == 0 {
-			log.Logf(0, "runner exec reload drained: id=%d steps=%d", id, step+1)
-			vm.recordTrace("runner", "reload_drain_done", id, traceFields("steps", step+1))
-			return nil
-		}
-		switch vm.aux.execCode() {
-		case nyxRCHprintf:
-			vm.recordHprintfTrace(id)
-			vm.recordModuleRangesFromAux()
-			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
-		case nyxRCAbort:
-			return fmt.Errorf("guest abort while draining reload after request %d: %s", id, string(vm.aux.misc()))
-		case nyxRCCrash, nyxRCSanitizer:
-			return fmt.Errorf("guest crash while draining reload after request %d: %s", id, string(vm.aux.misc()))
-		}
-	}
-	return fmt.Errorf("reload boundary was not observed after request %d", id)
 }
 
 func (vm *nyxVM) execWaitTimeout() time.Duration {
@@ -2854,7 +2809,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		"keep_state", r.keepState,
 		"calls", progExecCallCountOrPanic(req.Data),
 	))
-	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req, !r.keepState)
+	execMsg, err := r.vm.executeRequest(packNyxPayload(nyxKindExec, meta, packFlatbuffer(body)), req)
 	duration := time.Since(started)
 	if err != nil {
 		r.vm.recordTrace("runner", "request_error", req.Id, traceFields(
@@ -2867,9 +2822,9 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		return nil, err
 	}
 	if !r.keepState {
-		// A non-keep execution drains the Nyx root-snapshot reload before
-		// returning. The root snapshot is taken before the executor receives
-		// the syzkaller handshake, so the next payload must be a handshake.
+		// The pending root reload is consumed by the next payload release. The
+		// root snapshot is taken before the executor receives the syzkaller
+		// handshake, so the next payload must be a handshake.
 		r.handshakeReady = false
 		r.coveragePrimed = false
 		r.lastEnvFlags = 0
