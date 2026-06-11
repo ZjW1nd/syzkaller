@@ -2165,6 +2165,53 @@ func TestExecutePathsAvoidNyxHprintf(t *testing.T) {
 	}
 }
 
+func TestWindowsExecutorWorkerIdleHandoffIsBounded(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "executor.cc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	src := string(data)
+	helper := extractFunctionBody(t, src, "static int windows_yield_until_event")
+	for _, needle := range []string{
+		"for (uint64 i = 0; i < max_yields; i++)",
+		"event_isset(ev)",
+		"SwitchToThread()",
+		"Sleep(0)",
+	} {
+		if !strings.Contains(helper, needle) {
+			t.Fatalf("windows_yield_until_event missing bounded-yield construct %q", needle)
+		}
+	}
+	if strings.Contains(helper, "event_timedwait") ||
+		strings.Contains(helper, "WaitForSingleObject") {
+		t.Fatal("windows_yield_until_event should not depend on a guest timer wait")
+	}
+
+	threadCreate := extractFunctionBody(t, src, "void thread_create")
+	if strings.Index(threadCreate, "thread_start(worker_thread, th);") >
+		strings.Index(threadCreate, "windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields)") {
+		t.Fatal("Windows thread_create should start the worker before waiting for idle")
+	}
+	if strings.Index(threadCreate, "windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields)") >
+		strings.Index(threadCreate, "event_set(&th->done);") {
+		t.Fatal("Windows thread_create should wait for worker idle before marking done")
+	}
+
+	schedule := extractFunctionBody(t, src, "thread_t* schedule_call")
+	if strings.Contains(schedule, "event_timedwait(&th->idle") {
+		t.Fatal("schedule_call should not use a guest-timer-based idle wait")
+	}
+	if strings.Index(schedule, "windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields)") >
+		strings.Index(schedule, "event_reset(&th->done);") {
+		t.Fatal("schedule_call should observe worker idle before handing off a new call")
+	}
+	if strings.Index(schedule, "event_reset(&th->idle);") >
+		strings.Index(schedule, "event_set(&th->ready);") {
+		t.Fatal("schedule_call should reset idle before waking the worker")
+	}
+}
+
 func TestWindowsExecutorPrefaultsDataSegment(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor_windows.h")
 	data, err := os.ReadFile(path)
