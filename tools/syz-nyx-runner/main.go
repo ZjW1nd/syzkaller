@@ -1336,32 +1336,47 @@ func (vm *nyxVM) setPayload(payload []byte) error {
 	return nil
 }
 
-func (vm *nyxVM) executeHandshake(payload []byte) error {
-	vm.recordTrace("runner", "handshake_begin", 0, traceFields("payload_bytes", len(payload)))
+func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
+	prevReqID := vm.traceReqID
+	vm.traceReqID = requestID
+	defer func() {
+		vm.traceReqID = prevReqID
+	}()
+	vm.recordTrace("runner", "handshake_begin", requestID, traceFields("payload_bytes", len(payload)))
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxHandshakeAck))
 	vm.aux.clearTransientResult()
 	if err := vm.setPayload(payload); err != nil {
 		return err
 	}
+	deadline := time.Now().Add(vm.execWaitTimeout())
 	for i := 0; i < 16; i++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			vm.recordAuxTrace("handshake_deadline_expired", requestID)
+			return errors.New("timed out waiting for nyx handshake ack")
+		}
 		vm.debugLogf("runner handshake step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
-		if err := vm.runQemu(); err != nil {
+		if err := vm.runQemuWithTimeout(remaining); err != nil {
+			if isTimeoutError(err) {
+				vm.recordAuxTrace("handshake_step_timeout", requestID)
+				return fmt.Errorf("timed out waiting for nyx handshake ack at step=%d: %w", i, err)
+			}
 			return err
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
 			log.Logf(0, "runner handshake ack observed at step=%d", i)
-			vm.recordTrace("runner", "handshake_ack", 0, traceFields("step", i))
+			vm.recordTrace("runner", "handshake_ack", requestID, traceFields("step", i))
 			return nil
 		}
-		vm.recordAuxTrace("handshake_step", 0)
+		vm.recordAuxTrace("handshake_step", requestID)
 		vm.debugLogf("runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
 		switch vm.aux.execCode() {
 		case nyxRCHprintf:
-			vm.recordHprintfTrace(0)
+			vm.recordHprintfTrace(requestID)
 			vm.recordModuleRangesFromAux()
 			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 		case nyxRCAbort:
@@ -2707,9 +2722,25 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 		EnvFlags:         envFlags,
 		SandboxArg:       req.ExecOpts.SandboxArg,
 	}
-	if err := r.vm.executeHandshake(packNyxPayload(nyxKindHandshake, nil, packFlatbuffer(msg))); err != nil {
+	started := time.Now()
+	r.vm.recordTrace("runner", "handshake_request_begin", req.Id, traceFields(
+		"env_flags", uint64(envFlags),
+		"sandbox_arg", req.ExecOpts.SandboxArg,
+	))
+	err := r.vm.executeHandshake(packNyxPayload(nyxKindHandshake, nil, packFlatbuffer(msg)), req.Id)
+	duration := time.Since(started)
+	if err != nil {
+		r.vm.recordTrace("runner", "handshake_error", req.Id, traceFields(
+			"duration_ms", duration.Milliseconds(),
+			"error", err.Error(),
+		))
+		r.maybeDumpSlowTrace(req, "runner handshake", started, duration, nil, err)
 		return err
 	}
+	r.vm.recordTrace("runner", "handshake_end", req.Id, traceFields(
+		"duration_ms", duration.Milliseconds(),
+	))
+	r.maybeDumpSlowTrace(req, "runner handshake", started, duration, nil, nil)
 	log.Logf(0, "runner handshake complete")
 	r.handshakeReady = true
 	r.coveragePrimed = false

@@ -1721,6 +1721,42 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 	}
 }
 
+func TestRunnerHandshakeUsesTimeoutAndSlowTraceArtifact(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	mainSrc := string(mainData)
+	if !strings.Contains(mainSrc, "func (vm *nyxVM) executeHandshake(payload []byte, requestID int64)") {
+		t.Fatal("executeHandshake should take the request id used for trace attribution")
+	}
+	executeHandshake := extractFunctionBody(t, mainSrc, "func (vm *nyxVM) executeHandshake")
+	for _, want := range []string{
+		"vm.traceReqID = requestID",
+		"deadline := time.Now().Add(vm.execWaitTimeout())",
+		"runQemuWithTimeout(remaining)",
+		"handshake_step_timeout",
+		"recordHprintfTrace(requestID)",
+	} {
+		if !strings.Contains(executeHandshake, want) {
+			t.Fatalf("executeHandshake missing %q", want)
+		}
+	}
+
+	ensureHandshake := extractFunctionBody(t, mainSrc, "func (r *runner) ensureHandshake")
+	for _, want := range []string{
+		"handshake_request_begin",
+		"executeHandshake(packNyxPayload(nyxKindHandshake, nil, packFlatbuffer(msg)), req.Id)",
+		"handshake_error",
+		`r.maybeDumpSlowTrace(req, "runner handshake"`,
+		"handshake_end",
+	} {
+		if !strings.Contains(ensureHandshake, want) {
+			t.Fatalf("ensureHandshake missing %q", want)
+		}
+	}
+}
+
 func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -2205,6 +2241,42 @@ func TestExecutePathsAvoidNyxHprintf(t *testing.T) {
 	}
 	if strings.Contains(body[release:], "HYPERCALL_KAFL_SYZ_COV_DUMP") {
 		t.Fatal("execute_call should rely on RELEASE handling for per-call coverage dump")
+	}
+}
+
+func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "executor.cc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	body := extractFunctionBody(t, string(data), "thread_t* schedule_call")
+	wantOrder := []string{
+		"schedule_pre_done_reset",
+		"event_reset(&th->done);",
+		"schedule_post_done_reset",
+		"schedule_pre_ready_set",
+		"event_set(&th->ready);",
+		"schedule_post_ready_set",
+		"running++;",
+		"schedule_running_incremented",
+	}
+	last := -1
+	for _, needle := range wantOrder {
+		idx := strings.Index(body, needle)
+		if idx == -1 {
+			t.Fatalf("schedule_call missing handoff breadcrumb %q", needle)
+		}
+		if idx <= last {
+			t.Fatalf("schedule_call breadcrumb %q is out of order", needle)
+		}
+		last = idx
+	}
+	if !strings.Contains(body, "event_isset(&th->ready)") ||
+		!strings.Contains(body, "event_isset(&th->done)") ||
+		!strings.Contains(body, "th->executing") ||
+		!strings.Contains(body, "running") {
+		t.Fatal("schedule_call handoff logs should include ready/done/executing/running state")
 	}
 }
 

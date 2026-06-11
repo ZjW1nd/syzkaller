@@ -1861,7 +1861,15 @@ thread_t* schedule_call(int call_index, int call_num, uint64 copyout_index, uint
 	last_scheduled = th;
 	th->copyout_pos = pos;
 	th->copyout_index = copyout_index;
+#if GOOS_windows
+	nyx_log_thread_stage("schedule_pre_done_reset", th, event_isset(&th->ready),
+			     event_isset(&th->done), th->executing, running);
+#endif
 	event_reset(&th->done);
+#if GOOS_windows
+	nyx_log_thread_stage("schedule_post_done_reset", th, event_isset(&th->ready),
+			     event_isset(&th->done), th->executing, running);
+#endif
 	// We do this both right before execute_syscall in the thread and here because:
 	// the former is useful to reset all unrelated coverage from our syscalls (e.g. futex in event_wait),
 	// while the reset here is useful to avoid the following scenario that the fuzzer was able to trigger.
@@ -1881,8 +1889,20 @@ thread_t* schedule_call(int call_index, int call_num, uint64 copyout_index, uint
 	th->call_props = call_props;
 	for (int i = 0; i < kMaxArgs; i++)
 		th->args[i] = args[i];
+#if GOOS_windows
+	nyx_log_thread_stage("schedule_pre_ready_set", th, event_isset(&th->ready),
+			     event_isset(&th->done), th->executing, running);
+#endif
 	event_set(&th->ready);
+#if GOOS_windows
+	nyx_log_thread_stage("schedule_post_ready_set", th, event_isset(&th->ready),
+			     event_isset(&th->done), th->executing, running);
+#endif
 	running++;
+#if GOOS_windows
+	nyx_log_thread_stage("schedule_running_incremented", th, event_isset(&th->ready),
+			     event_isset(&th->done), th->executing, running);
+#endif
 	return th;
 }
 
