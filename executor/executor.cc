@@ -392,9 +392,13 @@ struct thread_t {
 	bool created;
 	event_t ready;
 	event_t done;
+	event_t idle;
 	uint8* copyout_pos;
 	uint64 copyout_index;
 	bool executing;
+	uint64 handoff_seq;
+	uint64 worker_tid;
+	uint64 worker_wait_seq;
 	int call_index;
 	int call_num;
 	int num_args;
@@ -1643,7 +1647,18 @@ void execute_one()
 			// and then remove this (would also avoid intermixed output).
 			if (flag_debug && timeout_ms < 1000)
 				timeout_ms = 1000;
-			if (event_timedwait(&th->done, timeout_ms))
+#if GOOS_windows
+			uint64 wait_start = current_time_ms();
+			nyx_log_thread_stage("wait_call_done_begin", th, timeout_ms, running,
+					     event_isset(&th->done), event_isset(&th->ready));
+#endif
+			int wait_done = event_timedwait(&th->done, timeout_ms);
+#if GOOS_windows
+			nyx_log_thread_stage("wait_call_done_result", th, wait_done,
+					     current_time_ms() - wait_start,
+					     event_isset(&th->done), event_isset(&th->ready));
+#endif
+			if (wait_done)
 				handle_completion(th);
 
 			// Check if any of previous calls have completed.
@@ -1843,6 +1858,16 @@ thread_t* schedule_call(int call_index, int call_num, uint64 copyout_index, uint
 	if (event_isset(&th->ready) || !event_isset(&th->done) || th->executing)
 		exitf("bad thread state in schedule: ready=%d done=%d executing=%d",
 		      event_isset(&th->ready), event_isset(&th->done), th->executing);
+#if GOOS_windows
+	if (flag_threaded) {
+		uint64 idle_timeout_ms = 1000 * (slowdown_scale ? slowdown_scale : 1);
+		nyx_log_thread_stage("schedule_pre_idle_wait", th, event_isset(&th->idle),
+				     th->handoff_seq, th->worker_tid, running);
+		int idle_seen = event_timedwait(&th->idle, idle_timeout_ms);
+		nyx_log_thread_stage("schedule_post_idle_wait", th, idle_seen,
+				     event_isset(&th->idle), th->worker_tid, running);
+	}
+#endif
 	last_scheduled = th;
 	th->copyout_pos = pos;
 	th->copyout_index = copyout_index;
@@ -1866,6 +1891,10 @@ thread_t* schedule_call(int call_index, int call_num, uint64 copyout_index, uint
 	th->call_props = call_props;
 	for (int i = 0; i < kMaxArgs; i++)
 		th->args[i] = args[i];
+#if GOOS_windows
+	th->handoff_seq++;
+	event_reset(&th->idle);
+#endif
 	event_set(&th->ready);
 	running++;
 	return th;
@@ -2685,6 +2714,12 @@ void thread_create(thread_t* th, int id, bool need_coverage)
 	th->created = true;
 	th->id = id;
 	th->executing = false;
+	th->handoff_seq = 0;
+	th->worker_tid = 0;
+	th->worker_wait_seq = 0;
+	th->call_index = -1;
+	th->call_num = -1;
+	th->num_args = 0;
 	// Lazily set up coverage collection.
 	// It is assumed that actually it's already initialized - with a few rare exceptions.
 	if (need_coverage) {
@@ -2694,6 +2729,7 @@ void thread_create(thread_t* th, int id, bool need_coverage)
 	}
 	event_init(&th->ready);
 	event_init(&th->done);
+	event_init(&th->idle);
 	event_set(&th->done);
 	if (flag_threaded)
 		thread_start(worker_thread, th);
@@ -2711,11 +2747,23 @@ void* worker_thread(void* arg)
 {
 	thread_t* th = (thread_t*)arg;
 	current_thread = th;
+#if GOOS_windows
+	th->worker_tid = GetCurrentThreadId();
+	nyx_log_thread_stage("worker_thread_started", th, th->worker_tid,
+			     th->handoff_seq);
+#endif
 	for (bool first = true;; first = false) {
+#if GOOS_windows
+		th->worker_wait_seq = th->handoff_seq;
+		if (!event_isset(&th->idle))
+			event_set(&th->idle);
+		nyx_log_thread_stage("worker_wait_ready_begin", th, event_isset(&th->ready),
+				     event_isset(&th->done), th->executing, th->handoff_seq);
+#endif
 		event_wait(&th->ready);
 #if GOOS_windows
 		nyx_log_thread_stage("worker_ready_seen", th, event_isset(&th->ready),
-				     event_isset(&th->done), th->executing);
+				     event_isset(&th->done), th->executing, th->handoff_seq);
 #endif
 		event_reset(&th->ready);
 #if GOOS_windows
