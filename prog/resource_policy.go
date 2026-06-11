@@ -536,7 +536,9 @@ func FocusedResourceRuntimePolicy(target *Target, minOwnerScore int) RuntimePoli
 			return ProgramHasResourceOwner(target, p, minOwnerScore)
 		},
 		ShouldScheduleProgram: func(origin string, p *Prog) bool {
-			return ProgramHasResourceOwner(target, p, minOwnerScore) && ProgramHasValidResourceLineage(target, p)
+			return ProgramHasResourceOwner(target, p, minOwnerScore) &&
+				ProgramHasValidResourceLineage(target, p) &&
+				ProgramHasUsefulResourceOutputs(target, p, minOwnerScore)
 		},
 		ShouldScheduleImmediateCollide: func(p *Prog, call int) bool {
 			return CallIndexHasResourceOwner(target, p, call, minOwnerScore)
@@ -577,6 +579,23 @@ func ProgramHasValidResourceLineage(target *Target, p *Prog) bool {
 			continue
 		}
 		if !callHasFocusedResourceLineage(p.Calls, idx, nil) {
+			return false
+		}
+	}
+	return true
+}
+
+func ProgramHasUsefulResourceOutputs(target *Target, p *Prog, minOwnerScore int) bool {
+	if p == nil {
+		return false
+	}
+	for idx, call := range p.Calls {
+		ret := callReturnResource(call)
+		if ret == nil || CallIndexHasResourceOwner(target, p, idx, minOwnerScore) {
+			continue
+		}
+		if !resourceOutputReachesFocusedOwner(target, p, ret, idx, minOwnerScore, nil) &&
+			!callInputResourceReachesFocusedOwner(target, p, idx, minOwnerScore) {
 			return false
 		}
 	}
@@ -643,6 +662,85 @@ func ShouldSkipFocusedResourceProgram(target *Target, p *Prog, minOwnerScore int
 		}
 	}
 	return containsNoGenerate || containsUnownedFocusedCall
+}
+
+func resourceOutputReachesFocusedOwner(target *Target, p *Prog, resource *ResultArg, producerIndex int,
+	minOwnerScore int, seen map[*ResultArg]bool) bool {
+	if resource == nil || p == nil {
+		return false
+	}
+	if seen == nil {
+		seen = make(map[*ResultArg]bool)
+	}
+	if seen[resource] {
+		return false
+	}
+	seen[resource] = true
+	for use := range resource.Uses() {
+		useIndex := resultArgUseCallIndex(p.Calls, use)
+		if useIndex <= producerIndex {
+			continue
+		}
+		if CallIndexHasResourceOwner(target, p, useIndex, minOwnerScore) {
+			return true
+		}
+		if next := callReturnResource(p.Calls[useIndex]); next != nil &&
+			resourceOutputReachesFocusedOwner(target, p, next, useIndex, minOwnerScore, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+func callInputResourceReachesFocusedOwner(target *Target, p *Prog, callIndex int, minOwnerScore int) bool {
+	if p == nil || callIndex < 0 || callIndex >= len(p.Calls) {
+		return false
+	}
+	call := p.Calls[callIndex]
+	if call == nil {
+		return false
+	}
+	reachesOwner := false
+	ForeachArg(call, func(arg Arg, ctx *ArgCtx) {
+		res, ok := arg.(*ResultArg)
+		if !ok || res.Dir() == DirOut || res.Type().Optional() || res.Res == nil {
+			return
+		}
+		if resourceOutputReachesFocusedOwner(target, p, res.Res, callIndex, minOwnerScore, nil) {
+			reachesOwner = true
+			ctx.Stop = true
+		}
+	})
+	return reachesOwner
+}
+
+func resultArgUseCallIndex(calls []*Call, use *ResultArg) int {
+	if use == nil {
+		return -1
+	}
+	for i, call := range calls {
+		if call == nil {
+			continue
+		}
+		found := false
+		ForeachArg(call, func(arg Arg, ctx *ArgCtx) {
+			if arg == use {
+				found = true
+				ctx.Stop = true
+			}
+		})
+		if found {
+			return i
+		}
+	}
+	return -1
+}
+
+func callReturnResource(call *Call) *ResultArg {
+	if call == nil || call.Ret == nil || resultArgResourceDesc(call.Ret) == nil {
+		return nil
+	}
+	return call.Ret
 }
 
 func shouldKeepFocusedResourceOwner(target *Target, origin string, p *Prog, call int, minOwnerScore int) bool {

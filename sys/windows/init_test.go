@@ -116,6 +116,30 @@ func TestWindowsAFDProfileSkipsMalformedWinsockStartupOrder(t *testing.T) {
 	if afd.RuntimePolicy.ShouldScheduleProgram("gen", bad) {
 		t.Fatal("malformed Winsock startup order was scheduled")
 	}
+	duplicate, err := afd.Deserialize([]byte(
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$bound_udp(0x2, 0x2, 0x11)\n"+
+			"sendto$udp_bound(r0, &(0x7f0000000100)='x', 0x1, 0x0, &(0x7f0000000200)={0x2, 0x4e26, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"WSAStartup(0x202, &(0x7f0000000300)=0x0)\n"+
+			"r1 = socket$bound_udp(0x2, 0x2, 0x11)\n"+
+			"sendto$udp_bound(r1, &(0x7f0000000400)='y', 0x1, 0x0, &(0x7f0000000500)={0x2, 0x4e26, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"), prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize duplicate startup program: %v", err)
+	}
+	if afd.RuntimePolicy.ShouldScheduleProgram("gen", duplicate) {
+		t.Fatal("duplicate Winsock startup scaffold was scheduled")
+	}
+	nonFirst, err := afd.Deserialize([]byte(
+		"Sleep(0x0)\n"+
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$bound_udp(0x2, 0x2, 0x11)\n"+
+			"sendto$udp_bound(r0, &(0x7f0000000100)='x', 0x1, 0x0, &(0x7f0000000200)={0x2, 0x4e26, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"), prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize non-first startup program: %v", err)
+	}
+	if afd.RuntimePolicy.ShouldScheduleProgram("gen", nonFirst) {
+		t.Fatal("non-first Winsock startup scaffold was scheduled")
+	}
 	good, err := afd.Deserialize([]byte(
 		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
 			"r0 = socket$bound_udp(0x2, 0x2, 0x11)\n"+
@@ -126,6 +150,87 @@ func TestWindowsAFDProfileSkipsMalformedWinsockStartupOrder(t *testing.T) {
 	if !afd.RuntimePolicy.ShouldScheduleProgram("gen", good) {
 		t.Fatal("valid Winsock startup order was not scheduled")
 	}
+}
+
+func TestWindowsAFDProfileSkipsUnusedResourceScaffolds(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	afd, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	if afd.RuntimePolicy.ShouldScheduleProgram == nil {
+		t.Fatal("AFD profile did not install runtime scheduler policy")
+	}
+	unused, err := afd.Deserialize([]byte(
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$bound_udp(0x2, 0x2, 0x11)\n"+
+			"sendto$udp_bound(r0, &(0x7f0000000100)='x', 0x1, 0x0, &(0x7f0000000200)={0x2, 0x4e26, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r1 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"bind$inet_tcp(r1, &(0x7f0000000300)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"), prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize unused scaffold program: %v", err)
+	}
+	if afd.RuntimePolicy.ShouldScheduleProgram("gen", unused) {
+		t.Fatal("unused resource scaffold was scheduled")
+	}
+	validChain, err := afd.Deserialize([]byte(
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
+			"r1 = bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
+			"r2 = listen$inet_tcp(r1, 0x1)\n"+
+			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
+			"WSARecv$accept(r3, &(0x7f0000000200)=[{0x40, &(0x7f0000000280)='\\x00'/64}], 0x1, &(0x7f0000000300), &(0x7f0000000340)=0x0, 0x0, 0x0)\n"), prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize valid chain program: %v", err)
+	}
+	if !afd.RuntimePolicy.ShouldScheduleProgram("gen", validChain) {
+		t.Fatal("valid resource chain was not scheduled")
+	}
+}
+
+func TestWindowsSocketOptionSurfaceUsesTypedSolSocketOptions(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range []string{
+		"setsockopt$int_tcp", "setsockopt$int_udp", "setsockopt$int_accept",
+		"getsockopt$int_tcp", "getsockopt$int_udp", "getsockopt$int_accept",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		level, ok := call.Args[1].Type.(*prog.ConstType)
+		if !ok {
+			t.Fatalf("%s level type is %T, want *prog.ConstType", name, call.Args[1].Type)
+		}
+		if level.Val != 0xffff {
+			t.Fatalf("%s level=%#x, want SOL_SOCKET", name, level.Val)
+		}
+		optname, ok := call.Args[2].Type.(*prog.FlagsType)
+		if !ok {
+			t.Fatalf("%s optname type is %T, want *prog.FlagsType", name, call.Args[2].Type)
+		}
+		if hasFlagValue(optname.Vals, 0xbfb) {
+			t.Fatalf("%s still permits observed invalid socket option level as an option value", name)
+		}
+		if !hasFlagValue(optname.Vals, 0x4) {
+			t.Fatalf("%s lost SO_REUSEADDR coverage", name)
+		}
+	}
+}
+
+func hasFlagValue(vals []uint64, want uint64) bool {
+	for _, val := range vals {
+		if val == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestWindowsCallRelevance(t *testing.T) {

@@ -101,11 +101,14 @@ func windowsHasValidWinsockStartupOrder(p *prog.Prog) bool {
 		return true
 	}
 	started := false
-	for _, call := range p.Calls {
+	for idx, call := range p.Calls {
 		if call == nil || call.Meta == nil {
 			continue
 		}
 		if call.Meta.Name == "WSAStartup" {
+			if started || idx != 0 {
+				return false
+			}
 			started = true
 			continue
 		}
