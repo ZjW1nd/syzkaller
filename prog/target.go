@@ -153,6 +153,10 @@ type HelperPolicy struct {
 	// AutomaticHelper as top-level exploration targets. Helper syscalls remain generatable
 	// and are still available as resource constructors.
 	DeprioritizeAutomaticHelpers bool
+	// NoGenerateAutomaticHelpers removes AutomaticHelper syscalls from ordinary top-level
+	// choice-table selection. They remain enabled for resource construction, and target
+	// hooks can still insert required scaffolding explicitly.
+	NoGenerateAutomaticHelpers bool
 	// AvoidCollidingAutomaticHelpers avoids marking AutomaticHelper syscalls async in the
 	// generic collide transforms when possible. This keeps helper/resource-constructor calls
 	// stable while still allowing deeper target calls to be perturbed concurrently.

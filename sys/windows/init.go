@@ -26,7 +26,8 @@ func InitTarget(target *prog.Target) {
 	target.SelectCollideCallIndices = func(calls []*prog.Call) ([]int, bool) {
 		return prog.SelectResourceLineageCollideCallIndices(target, calls)
 	}
-	target.ExpandEnabledCalls = prog.ExpandEnabledResourceCtors
+	target.ExpandEnabledCalls = expandWindowsEnabledCalls
+	target.Bias.SelectGeneratedCall = windowsSelectGeneratedCall
 	target.MakeDataMmap = arch.makeMmap
 	target.Neutralize = arch.neutralize
 

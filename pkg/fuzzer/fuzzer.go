@@ -195,6 +195,9 @@ func (fuzzer *Fuzzer) execute(executor queue.Executor, req *queue.Request) *queu
 }
 
 func (fuzzer *Fuzzer) executeWithFlags(executor queue.Executor, req *queue.Request, flags ProgFlags) *queue.Result {
+	if !fuzzer.shouldScheduleProgram(req) {
+		return runtimePolicyRejectedResult(req)
+	}
 	fuzzer.enqueue(executor, req, flags, 0)
 	return req.Wait(fuzzer.ctx)
 }
@@ -468,13 +471,36 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 }
 
 func (fuzzer *Fuzzer) shouldScheduleProgram(req *queue.Request) bool {
-	if req == nil || req.Prog == nil {
+	if req == nil {
+		return false
+	}
+	if req.Type != flatrpc.RequestTypeProgram {
+		return true
+	}
+	if req.Prog == nil {
 		return false
 	}
 	if fuzzer.target == nil || fuzzer.target.RuntimePolicy.ShouldScheduleProgram == nil {
 		return true
 	}
 	return fuzzer.target.RuntimePolicy.ShouldScheduleProgram(req.Origin, req.Prog)
+}
+
+func runtimePolicyRejectedResult(req *queue.Request) *queue.Result {
+	origin := ""
+	if req != nil {
+		origin = req.Origin
+	}
+	return &queue.Result{
+		Status: queue.ExecFailure,
+		Err:    fmt.Errorf("runtime policy rejected program origin=%q", origin),
+	}
+}
+
+func runtimePolicySkippedResult(req *queue.Request) *queue.Result {
+	res := runtimePolicyRejectedResult(req)
+	res.Status = queue.Success
+	return res
 }
 
 func (fuzzer *Fuzzer) collideChanceForProg(p *prog.Prog) int {

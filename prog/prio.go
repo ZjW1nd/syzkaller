@@ -289,6 +289,7 @@ type ChoiceTable struct {
 	runs      [][]int32
 	calls     []*Syscall
 	biasCalls []*Syscall
+	direct    []bool
 }
 
 func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
@@ -300,10 +301,22 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 	slices.SortFunc(generatableCalls, func(a, b *Syscall) int {
 		return cmp.Compare(a.ID, b.ID)
 	})
-	biasCalls := generatableCalls
-	if target.Helpers.DeprioritizeAutomaticHelpers {
-		filtered := make([]*Syscall, 0, len(generatableCalls))
+	directCalls := generatableCalls
+	if target.Helpers.NoGenerateAutomaticHelpers {
+		directCalls = make([]*Syscall, 0, len(generatableCalls))
 		for _, c := range generatableCalls {
+			if !target.CallIsAutomaticHelper(c) {
+				directCalls = append(directCalls, c)
+			}
+		}
+		if len(directCalls) == 0 {
+			panic("no syscalls enabled for direct generation")
+		}
+	}
+	biasCalls := directCalls
+	if target.Helpers.DeprioritizeAutomaticHelpers {
+		filtered := make([]*Syscall, 0, len(directCalls))
+		for _, c := range directCalls {
 			if !target.CallIsAutomaticHelper(c) {
 				filtered = append(filtered, c)
 			}
@@ -323,10 +336,15 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 	for c := range enabledCalls {
 		enabledSlice[c.ID] = true
 	}
+	directSlice := make([]bool, len(target.Syscalls))
+	for _, c := range directCalls {
+		directSlice[c.ID] = true
+	}
 	run := make([][]int32, len(target.Syscalls))
 	// ChoiceTable.runs[][] contains cumulated sum of weighted priority numbers.
 	// This helps in quick binary search with biases when generating programs.
-	// This only applies for system calls that are enabled for the target.
+	// Rows exist for all syscalls enabled for the target, including helper
+	// constructors. Columns are limited to direct top-level choices.
 	for i := range run {
 		if !enabledSlice[i] {
 			continue
@@ -334,7 +352,7 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 		run[i] = make([]int32, len(target.Syscalls))
 		var sum int32
 		for j := range run[i] {
-			if enabledSlice[j] {
+			if directSlice[j] {
 				weight := prios[i][j]
 				if target.Helpers.DeprioritizeAutomaticHelpers && target.CallIsAutomaticHelper(target.Syscalls[j]) && weight > 0 {
 					weight = max(weight/automaticHelperPenaltyDiv, 1)
@@ -344,11 +362,15 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 			run[i][j] = sum
 		}
 	}
-	return &ChoiceTable{target, run, generatableCalls, biasCalls}
+	return &ChoiceTable{target, run, generatableCalls, biasCalls, directSlice}
 }
 
 func (ct *ChoiceTable) Generatable(call int) bool {
 	return ct.runs[call] != nil
+}
+
+func (ct *ChoiceTable) DirectlyGeneratable(call int) bool {
+	return ct.direct[call]
 }
 
 func (ct *ChoiceTable) choose(r *rand.Rand, bias int) int {
@@ -365,11 +387,14 @@ func (ct *ChoiceTable) choose(r *rand.Rand, bias int) int {
 	}
 	run := ct.runs[bias]
 	runSum := int(run[len(run)-1])
+	if runSum == 0 {
+		return ct.biasCalls[r.Intn(len(ct.biasCalls))].ID
+	}
 	x := int32(r.Intn(runSum) + 1)
 	res := sort.Search(len(run), func(i int) bool {
 		return run[i] >= x
 	})
-	if !ct.Generatable(res) {
+	if !ct.DirectlyGeneratable(res) {
 		panic("selected disabled or non-generatable syscall")
 	}
 	return res

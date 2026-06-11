@@ -20,6 +20,9 @@ func TestInitTargetMarksWindowsHelpers(t *testing.T) {
 	if !target.Helpers.DeprioritizeAutomaticHelpers {
 		t.Fatal("windows target did not enable helper deprioritization")
 	}
+	if !target.Helpers.NoGenerateAutomaticHelpers {
+		t.Fatal("windows target did not protect helper syscalls from top-level generation")
+	}
 	if !target.Helpers.AvoidCollidingAutomaticHelpers {
 		t.Fatal("windows target did not avoid colliding automatic helpers")
 	}
@@ -54,6 +57,74 @@ func TestInitTargetMarksWindowsHelpers(t *testing.T) {
 		if !target.CallIsAutomaticHelper(call) {
 			t.Fatalf("syscall %q is not classified as AutomaticHelper", name)
 		}
+	}
+}
+
+func TestWindowsWinsockStartupScaffoldPolicy(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	sendto := target.SyscallMap["sendto$udp_bound"]
+	startup := target.SyscallMap["WSAStartup"]
+	socket := target.SyscallMap["socket$inet_udp"]
+	if sendto == nil || startup == nil || socket == nil {
+		t.Fatal("missing Winsock test syscalls")
+	}
+
+	expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{sendto: true})
+	if !expanded[startup] {
+		t.Fatal("Winsock expansion did not add WSAStartup scaffold")
+	}
+	if !expanded[socket] {
+		t.Fatal("Winsock expansion did not keep UDP socket constructor enabled")
+	}
+	ct := target.BuildChoiceTable(nil, expanded)
+	if !ct.Generatable(socket.ID) {
+		t.Fatal("UDP socket helper should remain enabled as a constructor")
+	}
+	if ct.DirectlyGeneratable(socket.ID) {
+		t.Fatal("UDP socket helper should not be a direct top-level choice")
+	}
+	if ct.DirectlyGeneratable(startup.ID) {
+		t.Fatal("WSAStartup should be inserted by target policy, not random top-level choice")
+	}
+	if got := target.Bias.SelectGeneratedCall(&prog.Prog{Target: target}, 0, -1, ct); got != startup.ID {
+		t.Fatalf("prefix generation selected %d, want WSAStartup id %d", got, startup.ID)
+	}
+}
+
+func TestWindowsAFDProfileSkipsMalformedWinsockStartupOrder(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	afd, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	if afd.RuntimePolicy.ShouldScheduleProgram == nil {
+		t.Fatal("AFD profile did not install runtime scheduler policy")
+	}
+	bad, err := afd.Deserialize([]byte(
+		"r0 = socket$bound_udp(0x2, 0x2, 0x11)\n"+
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"sendto$udp_bound(r0, &(0x7f0000000100)='x', 0x1, 0x0, &(0x7f0000000200)={0x2, 0x4e26, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"), prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize bad program: %v", err)
+	}
+	if afd.RuntimePolicy.ShouldScheduleProgram("gen", bad) {
+		t.Fatal("malformed Winsock startup order was scheduled")
+	}
+	good, err := afd.Deserialize([]byte(
+		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
+			"r0 = socket$bound_udp(0x2, 0x2, 0x11)\n"+
+			"sendto$udp_bound(r0, &(0x7f0000000100)='x', 0x1, 0x0, &(0x7f0000000200)={0x2, 0x4e26, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"), prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize good program: %v", err)
+	}
+	if !afd.RuntimePolicy.ShouldScheduleProgram("gen", good) {
+		t.Fatal("valid Winsock startup order was not scheduled")
 	}
 }
 
@@ -305,7 +376,14 @@ func TestWindowsExpandEnabledCallsDoesNotAddNameOnlyScaffold(t *testing.T) {
 	}
 	root := target.SyscallMap["recv$inet_accept"]
 	expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{root: true})
-	for _, name := range []string{"WSAStartup", "WSACleanup", "closesocket$any"} {
+	startup := target.SyscallMap["WSAStartup"]
+	if startup == nil {
+		t.Fatal("missing syscall \"WSAStartup\"")
+	}
+	if !expanded[startup] {
+		t.Fatal("Winsock resource closure did not add WSAStartup scaffold")
+	}
+	for _, name := range []string{"WSACleanup", "closesocket$any"} {
 		call := target.SyscallMap[name]
 		if call == nil {
 			t.Fatalf("missing syscall %q", name)
@@ -893,6 +971,52 @@ func TestWindowsAFDAsyncSeedOnlyCallsAreNotGeneratedStandalone(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDCompletionStatusSeedsPollWithoutWaiting(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	files, err := filepath.Glob("test/nyx_afd_*.txt")
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	checked := 0
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", file, err)
+		}
+		if !strings.Contains(string(data), "GetQueuedCompletionStatus$socket") {
+			continue
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", file, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta == nil || call.Meta.Name != "GetQueuedCompletionStatus$socket" {
+				continue
+			}
+			checked++
+			if len(call.Args) != 5 {
+				t.Fatalf("%s unexpected GetQueuedCompletionStatus$socket arg count: %d",
+					file, len(call.Args))
+			}
+			timeout, ok := call.Args[4].(*prog.ConstArg)
+			if !ok {
+				t.Fatalf("%s unexpected timeout arg: %#v", file, call.Args[4])
+			}
+			if timeout.Val != 0 {
+				t.Fatalf("%s GetQueuedCompletionStatus$socket timeout=%#x, want non-blocking poll",
+					file, timeout.Val)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no AFD GetQueuedCompletionStatus$socket seeds checked")
+	}
+}
+
 func TestWindowsVNetPseudoSyscallsAreSeedOnly(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -901,6 +1025,10 @@ func TestWindowsVNetPseudoSyscallsAreSeedOnly(t *testing.T) {
 	helper := target.SyscallMap["socket$listener_tcp"]
 	if helper == nil {
 		t.Fatal("socket$listener_tcp missing from windows/amd64 target")
+	}
+	direct := target.SyscallMap["Sleep"]
+	if direct == nil {
+		t.Fatal("Sleep missing from windows/amd64 target")
 	}
 	for _, name := range []string{
 		"syz_emit_ethernet$windows",
@@ -917,6 +1045,7 @@ func TestWindowsVNetPseudoSyscallsAreSeedOnly(t *testing.T) {
 		ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{
 			meta:   true,
 			helper: true,
+			direct: true,
 		})
 		if ct.Generatable(meta.ID) {
 			t.Fatalf("%s should not be chosen as a standalone generated call", name)

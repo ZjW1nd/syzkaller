@@ -156,6 +156,13 @@ func (job *triageJob) execute(req *queue.Request, flags ProgFlags) *queue.Result
 	if req.TraceID == "" {
 		req.TraceID = job.traceID
 	}
+	if job.fuzzer.target != nil && job.fuzzer.target.RuntimePolicy.ShouldScheduleProgram != nil &&
+		!job.fuzzer.shouldScheduleProgram(req) {
+		job.readyOnce.Do(func() {
+			close(job.ready)
+		})
+		return runtimePolicySkippedResult(req)
+	}
 	// Make the request visible to the shared executor queue before unblocking
 	// the request-completion path that is waiting for the first deflake rerun.
 	job.fuzzer.prepare(req, flags, 0)

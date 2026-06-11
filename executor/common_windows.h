@@ -54,64 +54,60 @@ static void thread_start(void* (*fn)(void*), void* arg)
 }
 
 struct event_t {
-	CRITICAL_SECTION cs;
-	CONDITION_VARIABLE cv;
-	int state;
+	HANDLE handle;
 };
 
 static void event_init(event_t* ev)
 {
-	InitializeCriticalSection(&ev->cs);
-	InitializeConditionVariable(&ev->cv);
-	ev->state = 0;
+	ev->handle = CreateEventA(NULL, TRUE, FALSE, NULL);
+	if (ev->handle == NULL)
+		exitf("CreateEvent failed");
 }
 
 static void event_reset(event_t* ev)
 {
-	ev->state = 0;
+	if (!ResetEvent(ev->handle))
+		exitf("ResetEvent failed");
 }
 
 static void event_set(event_t* ev)
 {
-	EnterCriticalSection(&ev->cs);
-	if (ev->state)
+	DWORD state = WaitForSingleObject(ev->handle, 0);
+	if (state == WAIT_OBJECT_0)
 		exitf("event already set");
-	ev->state = 1;
-	LeaveCriticalSection(&ev->cs);
-	WakeAllConditionVariable(&ev->cv);
+	if (state == WAIT_FAILED)
+		exitf("WaitForSingleObject failed");
+	if (!SetEvent(ev->handle))
+		exitf("SetEvent failed");
 }
 
 static void event_wait(event_t* ev)
 {
-	EnterCriticalSection(&ev->cs);
-	while (!ev->state)
-		SleepConditionVariableCS(&ev->cv, &ev->cs, INFINITE);
-	LeaveCriticalSection(&ev->cs);
+	DWORD state = WaitForSingleObject(ev->handle, INFINITE);
+	if (state != WAIT_OBJECT_0)
+		exitf("WaitForSingleObject failed");
 }
 
 static int event_isset(event_t* ev)
 {
-	EnterCriticalSection(&ev->cs);
-	int res = ev->state;
-	LeaveCriticalSection(&ev->cs);
-	return res;
+	DWORD state = WaitForSingleObject(ev->handle, 0);
+	if (state == WAIT_FAILED)
+		exitf("WaitForSingleObject failed");
+	return state == WAIT_OBJECT_0;
 }
 
 static int event_timedwait(event_t* ev, uint64 timeout_ms)
 {
-	EnterCriticalSection(&ev->cs);
-	uint64 start = current_time_ms();
-	for (;;) {
-		if (ev->state)
-			break;
-		uint64 now = current_time_ms();
-		if (now - start > timeout_ms)
-			break;
-		SleepConditionVariableCS(&ev->cv, &ev->cs, timeout_ms - (now - start));
-	}
-	int res = ev->state;
-	LeaveCriticalSection(&ev->cs);
-	return res;
+	DWORD timeout = timeout_ms >= INFINITE ? INFINITE - 1 : (DWORD)timeout_ms;
+	DWORD state = WaitForSingleObject(ev->handle, timeout);
+	if (state == WAIT_FAILED)
+		exitf("WaitForSingleObject failed");
+	return state == WAIT_OBJECT_0;
+}
+
+static HANDLE event_handle(event_t* ev)
+{
+	return ev->handle;
 }
 #endif
 

@@ -171,6 +171,40 @@ func TestAutomaticHelperBiasIsIgnoredDuringGeneration(t *testing.T) {
 	}
 }
 
+func TestAutomaticHelpersCanBeExcludedFromTopLevelGeneration(t *testing.T) {
+	target := initTargetTest(t, "test", "64")
+	clone := *target
+	clone.Helpers.NoGenerateAutomaticHelpers = true
+
+	helper := clone.SyscallMap["test$automatic_helper"]
+	manual := clone.SyscallMap["test$manual"]
+	enabled := map[*Syscall]bool{
+		helper: true,
+		manual: true,
+	}
+	corpus, err := clone.Deserialize([]byte("test$automatic_helper(0x0)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct := clone.BuildChoiceTable([]*Prog{corpus}, enabled)
+	if !ct.Generatable(helper.ID) {
+		t.Fatal("automatic helper should remain enabled for constructor use")
+	}
+	if ct.DirectlyGeneratable(helper.ID) {
+		t.Fatal("automatic helper should not be a direct top-level generation choice")
+	}
+	if !ct.DirectlyGeneratable(manual.ID) {
+		t.Fatal("manual syscall should remain a direct top-level generation choice")
+	}
+
+	r := rand.New(rand.NewSource(0))
+	for range 1000 {
+		if got := clone.Syscalls[ct.choose(r, helper.ID)].Name; got != "test$manual" {
+			t.Fatalf("helper-biased choice picked %q, want test$manual", got)
+		}
+	}
+}
+
 func TestGenerationBiasCallHookOverridesRandomInsertionBias(t *testing.T) {
 	target := initTargetTest(t, "test", "64")
 	clone := *target

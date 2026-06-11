@@ -88,7 +88,14 @@ func TestWindowsStatePolicyExpandsResourceConstructors(t *testing.T) {
 			t.Fatalf("resource constructor closure missing %q", name)
 		}
 	}
-	for _, name := range []string{"WSAStartup", "closesocket$any"} {
+	startup := target.SyscallMap["WSAStartup"]
+	if startup == nil {
+		t.Fatal("missing syscall \"WSAStartup\"")
+	}
+	if !expanded[startup] {
+		t.Fatal("Winsock resource constructor closure did not add WSAStartup scaffold")
+	}
+	for _, name := range []string{"closesocket$any"} {
 		call := target.SyscallMap[name]
 		if call == nil {
 			t.Fatalf("missing syscall %q", name)
@@ -137,9 +144,11 @@ func TestWindowsAFDTargetProfileKeepsDefaultTargetClean(t *testing.T) {
 	if !profiled.CallEligibleForTriage(profiled.SyscallMap["ConnectEx$inet_tcp"]) {
 		t.Fatal("AFD profile should triage deep public resource state transitions")
 	}
+	if target.Bias.SelectGeneratedCall == nil || profiled.Bias.SelectGeneratedCall == nil {
+		t.Fatal("windows targets should keep the generic Winsock startup generation hook")
+	}
 	if profiled.Bias.FilterBiasCalls != nil ||
-		profiled.Bias.SelectGenerationBiasCall != nil ||
-		profiled.Bias.SelectGeneratedCall != nil {
+		profiled.Bias.SelectGenerationBiasCall != nil {
 		t.Fatal("AFD profile must not install AFD-specific generation bias hooks")
 	}
 	if profiled.RuntimePolicy.PreferCollideProgram == nil ||
