@@ -78,6 +78,7 @@ const (
 	nyxMaxModuleRangeTargets    = 16
 	nyxModuleRangeConfigFile    = "syz_nyx_module_ranges.bin"
 	nyxInitMinTimeout           = 2 * time.Minute
+	nyxManagerReconnectBackoff  = time.Second
 )
 
 type multiFlag []string
@@ -3425,8 +3426,9 @@ func main() {
 			vm.close()
 			log.Fatalf("runner loop failed: %v", err)
 		}
-		log.Logf(0, "runner manager connection closed; attempting reconnect")
+		log.Logf(0, "runner manager connection closed; reconnecting after %s", nyxManagerReconnectBackoff)
 		r.resetForReconnect()
+		time.Sleep(nyxManagerReconnectBackoff)
 		if err := connectWithRetry(r, 30*time.Second); err != nil {
 			log.Logf(0, "runner reconnect window expired, exiting: %v", err)
 			return
