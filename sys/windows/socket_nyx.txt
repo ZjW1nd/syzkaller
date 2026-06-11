@@ -39,9 +39,9 @@ sockaddr_in {
 	zero	array[const[0, int8], 8]
 } [size[16]]
 
-timeval {
-	tv_sec	int32[0:1]
-	tv_usec	int32[0:1000]
+timeval_zero {
+	tv_sec	const[0, int32]
+	tv_usec	const[0, int32]
 }
 
 afd_fd_set_accept {
@@ -164,7 +164,7 @@ getsockname$accept(s SOCKET_TCP_ACCEPTED, name ptr[out, sockaddr_in], namelen pt
 getpeername$tcp(s SOCKET_TCP_CONNECTED, name ptr[out, sockaddr_in], namelen ptr[inout, len[name, int32]])
 getpeername$udp(s SOCKET_UDP_PEERED, name ptr[out, sockaddr_in], namelen ptr[inout, len[name, int32]])
 getpeername$accept(s SOCKET_TCP_ACCEPTED, name ptr[out, sockaddr_in], namelen ptr[inout, len[name, int32]])
-select$afd_basic(nfds const[0], readfds ptr[inout, afd_fd_set_accept], writefds ptr[inout, afd_fd_set_accept, opt], exceptfds ptr[inout, afd_fd_set_accept, opt], timeout ptr[inout, timeval, opt])
+select$afd_basic(nfds const[0], readfds ptr[inout, afd_fd_set_accept], writefds ptr[inout, afd_fd_set_accept, opt], exceptfds ptr[inout, afd_fd_set_accept, opt], timeout ptr[in, timeval_zero])
 WSAEventSelect$tcp(s SOCKET_TCP_CONNECTED, hEventObject WSAEVENT_HANDLE, lNetworkEvents flags[wsa_network_events]) (no_generate, no_minimize)
 WSAEventSelect$accept(s SOCKET_TCP_ACCEPTED, hEventObject WSAEVENT_HANDLE, lNetworkEvents flags[wsa_network_events]) (no_generate, no_minimize)
 WSAEnumNetworkEvents$tcp(s SOCKET_TCP_CONNECTED, hEventObject WSAEVENT_HANDLE, lpNetworkEvents ptr[out, WSANETWORKEVENTS]) (no_generate, no_minimize)

@@ -1017,6 +1017,42 @@ func TestWindowsAFDCompletionStatusSeedsPollWithoutWaiting(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDSelectBasicPollsWithoutWaiting(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	meta := target.SyscallMap["select$afd_basic"]
+	if meta == nil {
+		t.Fatal("select$afd_basic missing from windows/amd64 target")
+	}
+	if len(meta.Args) != 5 {
+		t.Fatalf("select$afd_basic arg count=%d, want 5", len(meta.Args))
+	}
+	timeout, ok := meta.Args[4].Type.(*prog.PtrType)
+	if !ok {
+		t.Fatalf("select$afd_basic timeout type=%T, want *prog.PtrType", meta.Args[4].Type)
+	}
+	if timeout.Optional() {
+		t.Fatal("select$afd_basic timeout must not be optional")
+	}
+	tv, ok := timeout.Elem.(*prog.StructType)
+	if !ok || tv.Name() != "timeval_zero" {
+		t.Fatalf("select$afd_basic timeout elem=%T/%q, want timeval_zero", timeout.Elem, timeout.Elem.Name())
+	}
+	for _, field := range tv.Fields {
+		c, ok := field.Type.(*prog.ConstType)
+		var val uint64
+		if ok {
+			val = c.Val
+		}
+		if !ok || c.Val != 0 {
+			t.Fatalf("select$afd_basic timeout field %s type=%T val=%#v, want const[0]",
+				field.Name, field.Type, val)
+		}
+	}
+}
+
 func TestWindowsVNetPseudoSyscallsAreSeedOnly(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
