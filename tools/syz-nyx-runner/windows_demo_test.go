@@ -2255,9 +2255,17 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 	}
 	body := extractFunctionBody(t, string(data), "thread_t* schedule_call")
 	wantOrder := []string{
+		"schedule_pre_idle_wait",
+		"event_timedwait(&th->idle, idle_timeout_ms)",
+		"schedule_post_idle_wait",
 		"schedule_pre_done_reset",
 		"event_reset(&th->done);",
 		"schedule_post_done_reset",
+		"th->handoff_seq++;",
+		"schedule_handoff_seq",
+		"schedule_pre_idle_reset",
+		"event_reset(&th->idle);",
+		"schedule_post_idle_reset",
 		"schedule_pre_ready_set",
 		"event_set(&th->ready);",
 		"schedule_post_ready_set",
@@ -2278,8 +2286,70 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 	if !strings.Contains(body, "event_isset(&th->ready)") ||
 		!strings.Contains(body, "event_isset(&th->done)") ||
 		!strings.Contains(body, "th->executing") ||
-		!strings.Contains(body, "running") {
-		t.Fatal("schedule_call handoff logs should include ready/done/executing/running state")
+		!strings.Contains(body, "running") ||
+		!strings.Contains(body, "th->worker_tid") ||
+		!strings.Contains(body, "th->worker_wait_seq") ||
+		!strings.Contains(body, "event_isset(&th->idle)") {
+		t.Fatal("schedule_call handoff logs should include ready/done/idle/executing/running state")
+	}
+}
+
+func TestWindowsExecutorLogsWorkerHandoffWaits(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "executor.cc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	src := string(data)
+	threadCreate := extractFunctionBody(t, src, "void thread_create")
+	for _, needle := range []string{
+		"th->handoff_seq = 0;",
+		"th->worker_tid = 0;",
+		"th->worker_wait_seq = 0;",
+		"th->call_index = -1;",
+		"th->call_num = -1;",
+		"event_init(&th->idle);",
+	} {
+		if !strings.Contains(threadCreate, needle) {
+			t.Fatalf("thread_create missing initialization %q", needle)
+		}
+	}
+	worker := extractFunctionBody(t, src, "void* worker_thread")
+	for _, needle := range []string{
+		"th->worker_tid = GetCurrentThreadId();",
+		"worker_thread_started",
+		"th->worker_wait_seq = th->handoff_seq;",
+		"event_set(&th->idle);",
+		"worker_wait_ready_begin",
+		"event_wait(&th->ready);",
+		"worker_ready_seen",
+	} {
+		if !strings.Contains(worker, needle) {
+			t.Fatalf("worker_thread missing handoff wait breadcrumb %q", needle)
+		}
+	}
+	if strings.Index(worker, "worker_wait_ready_begin") > strings.Index(worker, "event_wait(&th->ready);") {
+		t.Fatal("worker should log wait begin before blocking on ready")
+	}
+	if strings.Index(worker, "event_set(&th->idle);") > strings.Index(worker, "event_wait(&th->ready);") {
+		t.Fatal("worker should mark itself idle before blocking on ready")
+	}
+	if strings.Index(worker, "event_wait(&th->ready);") > strings.Index(worker, "worker_ready_seen") {
+		t.Fatal("worker should log ready seen after the ready wait returns")
+	}
+	execOne := extractFunctionBody(t, src, "void execute_one()")
+	for _, needle := range []string{
+		"wait_call_done_begin",
+		"event_timedwait(&th->done, timeout_ms)",
+		"wait_call_done_result",
+	} {
+		if !strings.Contains(execOne, needle) {
+			t.Fatalf("execute_one missing immediate wait breadcrumb %q", needle)
+		}
+	}
+	if strings.Index(execOne, "wait_call_done_begin") >
+		strings.Index(execOne, "event_timedwait(&th->done, timeout_ms)") {
+		t.Fatal("execute_one should log before waiting for a scheduled call")
 	}
 }
 
