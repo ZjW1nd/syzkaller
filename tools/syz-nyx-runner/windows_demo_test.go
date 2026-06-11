@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
 )
 
@@ -163,6 +164,7 @@ func loadWindowsServiceEntries(t *testing.T) []struct {
 
 func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	EnabledSyscalls  []string `json:"enable_syscalls"`
+	DisabledSyscalls []string `json:"disable_syscalls"`
 	NoMutateSyscalls []string `json:"no_mutate_syscalls"`
 	VM               struct {
 		ModuleRanges string `json:"module_ranges"`
@@ -183,6 +185,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	}
 	var cfg struct {
 		EnabledSyscalls  []string `json:"enable_syscalls"`
+		DisabledSyscalls []string `json:"disable_syscalls"`
 		NoMutateSyscalls []string `json:"no_mutate_syscalls"`
 		VM               struct {
 			ModuleRanges string `json:"module_ranges"`
@@ -705,6 +708,80 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 			}
 			requireWindowsNyxConfigSyscallsInSparseTable(t, cfgPath)
 		})
+	}
+}
+
+func TestWindowsAfdSessionAvoidsKnownBlockingConstructors(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+	}
+
+	forbidden := []string{
+		"accept",
+		"socket$accept_tcp",
+		"recv$inet_tcp",
+		"recv$inet_accept*",
+		"recv$inet_udp",
+		"WSARecv$tcp",
+		"WSARecv$accept*",
+		"recvfrom$udp_bound",
+		"recvfrom$udp_connected",
+		"WSARecvFrom$udp",
+		"WSARecvMsg$udp",
+		"WSARecvEx$inet_accept",
+		"send$inet_accept*",
+		"WSASend$accept*",
+		"shutdown$accept*",
+		"getsockname$accept",
+		"getpeername$accept",
+		"WSAEventSelect$accept",
+		"WSAEnumNetworkEvents$accept",
+		"CreateIoCompletionPort$accept*",
+		"WSAGetOverlappedResult$accept*",
+		"CancelIoEx$accept*",
+		"CancelIo$accept*",
+		"closesocket$accept*",
+		"AcceptEx$inet_tcp*",
+		"setsockopt$update_accept_context",
+		"TransmitPackets$inet_accept",
+		"setsockopt$int_accept*",
+		"getsockopt$int_accept*",
+		"ioctlsocket$fionbio_accept",
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		for _, pattern := range forbidden {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("broad AFD session directly enables blocking syscall %q via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		for _, pattern := range forbidden {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("broad AFD session leaves blocking syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
 	}
 }
 
