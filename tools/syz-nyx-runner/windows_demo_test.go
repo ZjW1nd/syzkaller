@@ -2431,6 +2431,27 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 	}
 }
 
+func TestFullchainCandidateRunRepeatIsWired(t *testing.T) {
+	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
+	scriptData, err := os.ReadFile(scriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("run-nyx-fullchain.sh is outside this test environment: %v", err)
+		}
+		t.Fatalf("read %s: %v", scriptPath, err)
+	}
+	scriptSrc := string(scriptData)
+	for _, want := range []string{
+		"--candidate-run-repeat",
+		"candidate_run_repeat",
+		"-candidate_run_repeat",
+	} {
+		if !strings.Contains(scriptSrc, want) {
+			t.Fatalf("run-nyx-fullchain candidate-run repeat support missing %q", want)
+		}
+	}
+}
+
 func TestFullchainBincoverEnablesRawCover(t *testing.T) {
 	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
 	scriptData, err := os.ReadFile(scriptPath)

@@ -61,6 +61,7 @@ var (
 	flagMode                  = flag.String("mode", ModeFuzzing.Name, modesDescription())
 	flagTests                 = flag.String("tests", "", "prefix to match test file names (for -mode run-tests)")
 	flagCandidateRunLimit     = flag.Int("candidate_run_limit", 0, "limit number of corpus candidates to run in -mode candidate-run (0 = all)")
+	flagCandidateRunRepeat    = flag.Int("candidate_run_repeat", 1, "number of times to repeat selected corpus candidates in -mode candidate-run")
 	flagFocusedCandidateLimit = flag.Int("focused_candidate_limit", 0,
 		"limit initial corpus candidates enqueued in -mode fuzzing for focused gates (0 = all)")
 	flagFocusedCorpusMin = flag.Int("focused_corpus_min", 0,
@@ -1378,6 +1379,7 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		ctx := &candidateRunSource{
 			candidates: candidates,
 			limit:      *flagCandidateRunLimit,
+			repeat:     *flagCandidateRunRepeat,
 			finish: func(err error) {
 				if err != nil {
 					log.Fatalf("%v mode failed: %v", mgr.mode.Name, err)
@@ -1467,6 +1469,7 @@ func (cr *corpusRunner) Next() *queue.Request {
 type candidateRunSource struct {
 	candidates []fuzzer.Candidate
 	limit      int
+	repeat     int
 	finish     func(error)
 
 	mu        sync.Mutex
@@ -1481,7 +1484,7 @@ func (cr *candidateRunSource) Next() *queue.Request {
 		cr.mu.Unlock()
 		return nil
 	}
-	candidate := cr.candidates[cr.seq]
+	candidate := cr.candidates[cr.seq%cr.selectedCount()]
 	cr.seq++
 	id := cr.seq
 	cr.mu.Unlock()
@@ -1501,10 +1504,21 @@ func (cr *candidateRunSource) Next() *queue.Request {
 }
 
 func (cr *candidateRunSource) targetCount() int {
+	return cr.selectedCount() * cr.repeatCount()
+}
+
+func (cr *candidateRunSource) selectedCount() int {
 	if cr.limit > 0 && cr.limit < len(cr.candidates) {
 		return cr.limit
 	}
 	return len(cr.candidates)
+}
+
+func (cr *candidateRunSource) repeatCount() int {
+	if cr.repeat <= 0 {
+		return 1
+	}
+	return cr.repeat
 }
 
 func (cr *candidateRunSource) onDone(id int, res *queue.Result) {

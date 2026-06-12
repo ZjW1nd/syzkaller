@@ -99,6 +99,51 @@ func TestCandidateRunSourceRunsCandidatesOnceAndStops(t *testing.T) {
 	assertCandidateRunFinish(t, finished, "")
 }
 
+func TestCandidateRunSourceRepeatsCandidatesDeterministically(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"))
+	second := parseSeedProgram(t, target, []byte("WSACleanup()\n"))
+
+	finished := make(chan error, 1)
+	src := &candidateRunSource{
+		candidates: []fuzzer.Candidate{
+			{Prog: first},
+			{Prog: second},
+		},
+		repeat: 2,
+		finish: func(err error) {
+			finished <- err
+		},
+	}
+
+	var requests []*queue.Request
+	for i := 0; i < 4; i++ {
+		req := src.Next()
+		if req == nil {
+			t.Fatalf("candidate-run returned nil at request %d", i+1)
+		}
+		requests = append(requests, req)
+	}
+	if got := src.Next(); got != nil {
+		t.Fatalf("candidate-run produced extra request after repeats: %v", got)
+	}
+	for i, want := range []*prog.Prog{first, second, first, second} {
+		if requests[i].Prog != want {
+			t.Fatalf("request %d program=%p, want %p", i+1, requests[i].Prog, want)
+		}
+	}
+
+	for _, req := range requests[:3] {
+		req.Done(&queue.Result{Status: queue.Success})
+	}
+	assertNoCandidateRunFinish(t, finished)
+	requests[3].Done(&queue.Result{Status: queue.Success})
+	assertCandidateRunFinish(t, finished, "")
+}
+
 func TestCandidateRunSourceStopsAtLimit(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
