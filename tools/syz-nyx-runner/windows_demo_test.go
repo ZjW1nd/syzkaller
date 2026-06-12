@@ -794,10 +794,11 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSASend$accept",
 		"WSARecv$accept_nonblock",
 		"shutdown$accept",
+		"WSAEventSelect$tcp_nonblock",
+		"WSAEnumNetworkEvents$tcp_nonblock",
 		"select$afd_accept_nonblock",
 		"getsockname$accept",
 		"getpeername$accept",
-		"NtDeviceIoControlFile$afd_query_recv_accept",
 		"NtDeviceIoControlFile$afd_query_handles_accept",
 		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_noop_accept",
@@ -820,6 +821,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSARecv$tcp_pending",
 		"WSAEventSelect$tcp",
 		"WSAEnumNetworkEvents$tcp",
+		"WNet*",
 		"ConnectEx$inet_tcp*",
 		"DisconnectEx$inet_tcp*",
 		"recv$inet_udp",
@@ -846,6 +848,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSARecv$accept_pending",
 		"WSAEventSelect$accept",
 		"WSAEnumNetworkEvents$accept",
+		"WSAEventSelect$accept_nonblock",
+		"WSAEnumNetworkEvents$accept_nonblock",
+		"NtDeviceIoControlFile$afd_query_recv_accept",
 		"CreateIoCompletionPort$socket",
 		"CreateIoCompletionPort$accept*",
 		"CreateIoCompletionPort$connect_pending",
@@ -1402,6 +1407,7 @@ func TestWindowsAfdPublicEventConfigUsesNonblockingEvents(t *testing.T) {
 			"WSAEnumNetworkEvents$tcp",
 			"WSAEventSelect$accept",
 			"WSAEnumNetworkEvents$accept",
+			"WNet*",
 			"ioctlsocket$fionbio_accept_nonblock",
 			"CreateIoCompletionPort$accept*",
 			"AcceptEx$inet_tcp*",
@@ -1442,6 +1448,17 @@ func TestWindowsAfdPublicEventConfigCoversSeedSyscalls(t *testing.T) {
 			t.Fatalf("unknown enabled syscall %q", name)
 		}
 		enabled[call] = true
+	}
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	for _, id := range syscalls {
+		if mgrconfig.MatchSyscall(target.Syscalls[id].Name, "WNet*") {
+			t.Fatalf("public AFD event config leaves non-AFD syscall %q enabled",
+				target.Syscalls[id].Name)
+		}
 	}
 	expanded, _ := target.TransitivelyEnabledCalls(enabled)
 	for _, path := range matches {
