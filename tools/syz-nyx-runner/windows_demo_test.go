@@ -783,6 +783,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"getsockname$accept",
 		"getpeername$accept",
 		"NtDeviceIoControlFile$afd_query_recv_accept",
+		"NtDeviceIoControlFile$afd_query_handles_accept",
+		"NtDeviceIoControlFile$afd_get_qos_accept",
+		"NtDeviceIoControlFile$afd_noop_accept",
 		"ioctlsocket$fionbio_accept",
 		"setsockopt$int_accept",
 		"getsockopt$int_accept",
@@ -823,9 +826,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSARecv$accept_pending",
 		"WSAEventSelect$accept",
 		"WSAEnumNetworkEvents$accept",
-		"NtDeviceIoControlFile$afd_query_handles_accept",
-		"NtDeviceIoControlFile$afd_get_qos_accept",
-		"NtDeviceIoControlFile$afd_noop_accept",
 		"CreateIoCompletionPort$socket",
 		"CreateIoCompletionPort$accept*",
 		"CreateIoCompletionPort$connect_pending",
@@ -977,13 +977,16 @@ func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
 		"NtDeviceIoControlFile$afd_query_recv_accept",
 		"NtDeviceIoControlFile$afd_query_handles_tcp",
+		"NtDeviceIoControlFile$afd_query_handles_accept",
 		"NtDeviceIoControlFile$afd_query_handles_udp",
 		"NtDeviceIoControlFile$afd_query_handles_udp_peer",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_tcp",
+		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_get_qos_udp",
 		"NtDeviceIoControlFile$afd_noop_tcp",
+		"NtDeviceIoControlFile$afd_noop_accept",
 		"NtDeviceIoControlFile$afd_noop_udp",
 		"NtDeviceIoControlFile$afd_address_list_query_udp",
 		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
@@ -1768,6 +1771,40 @@ func TestStandaloneStagedVNetModeSupportsGuestIdle(t *testing.T) {
 	}
 }
 
+func TestStandaloneProgramCanApplyWindowsTargetProfile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "afd_accept_get_qos.txt")
+	text := []byte(`WSAStartup(0x202, &(0x7f0000000000)=0x0)
+r0 = socket$accept_tcp(0x2, 0x1, 0x6)
+NtDeviceIoControlFile$afd_get_qos_accept(r0, 0x0, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x12098, 0x0, 0x0, &(0x7f0000000140), 0x58)
+`)
+	if err := os.WriteFile(path, text, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := standaloneTarget("afd")
+	if err != nil {
+		t.Fatalf("standaloneTarget(afd): %v", err)
+	}
+	p, bootstrap, label, err := standaloneBaseProgram(profiled, "", 0, path)
+	if err != nil {
+		t.Fatalf("standaloneBaseProgram with afd profile: %v", err)
+	}
+	if bootstrap {
+		t.Fatal("profiled file program should not be treated as bootstrap")
+	}
+	if label != path {
+		t.Fatalf("label=%q, want %q", label, path)
+	}
+	if !standaloneProgramContainsCall(p, "NtDeviceIoControlFile$afd_get_qos_accept") {
+		t.Fatalf("profiled standalone program missing afd_get_qos_accept:\n%s", p.Serialize())
+	}
+	if _, err := p.SerializeForExec(); err != nil {
+		t.Fatalf("SerializeForExec profiled AFD standalone program: %v", err)
+	}
+	if _, err := standaloneTarget("missing"); err == nil {
+		t.Fatal("standaloneTarget accepted missing profile")
+	}
+}
+
 func TestNyxModeLoopSupportsIdlePayload(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "executor", "executor.cc"))
 	if err != nil {
@@ -2541,7 +2578,7 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 	body := extractFunctionBody(t, string(data), "thread_t* schedule_call")
 	wantOrder := []string{
 		"schedule_pre_idle_wait",
-		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields)",
+		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,",
 		"schedule_post_idle_wait",
 		"schedule_pre_done_reset",
 		"event_reset(&th->done);",
@@ -2571,6 +2608,9 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 	if strings.Contains(body, "event_timedwait(&th->idle") {
 		t.Fatal("schedule_call should not use a guest-timer-based idle wait")
 	}
+	if !strings.Contains(body, "kWindowsWorkerIdleWaitMs") {
+		t.Fatal("schedule_call should pass the worker idle time budget")
+	}
 	if !strings.Contains(body, "event_isset(&th->ready)") ||
 		!strings.Contains(body, "event_isset(&th->done)") ||
 		!strings.Contains(body, "th->executing") ||
@@ -2590,8 +2630,10 @@ func TestWindowsExecutorWorkerIdleWaitIsBounded(t *testing.T) {
 	}
 	helper := extractFunctionBody(t, string(data), "static int windows_yield_until_event")
 	for _, needle := range []string{
+		"uint64 deadline_ms = current_time_ms() + max_wait_ms;",
 		"for (uint64 i = 0; i < max_yields; i++)",
 		"event_isset(ev)",
+		"current_time_ms() >= deadline_ms",
 		"SwitchToThread()",
 		"Sleep(0)",
 	} {
@@ -2601,7 +2643,7 @@ func TestWindowsExecutorWorkerIdleWaitIsBounded(t *testing.T) {
 	}
 	if strings.Contains(helper, "event_timedwait") ||
 		strings.Contains(helper, "WaitForSingleObject") {
-		t.Fatal("windows_yield_until_event should not depend on a guest timer wait")
+		t.Fatal("windows_yield_until_event should not use a blocking guest wait")
 	}
 }
 
@@ -2622,7 +2664,7 @@ func TestWindowsExecutorLogsWorkerHandoffWaits(t *testing.T) {
 		"event_init(&th->idle);",
 		"thread_start(worker_thread, th);",
 		"thread_create_pre_idle_wait",
-		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields)",
+		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,",
 		"thread_create_post_idle_wait",
 		"event_set(&th->done);",
 	} {
@@ -2637,6 +2679,9 @@ func TestWindowsExecutorLogsWorkerHandoffWaits(t *testing.T) {
 	if strings.Index(threadCreate, "thread_create_pre_idle_wait") >
 		strings.Index(threadCreate, "thread_create_post_idle_wait") {
 		t.Fatal("thread_create should log idle wait begin before idle wait result")
+	}
+	if !strings.Contains(threadCreate, "kWindowsWorkerIdleWaitMs") {
+		t.Fatal("thread_create should pass the worker idle time budget")
 	}
 	if strings.Index(threadCreate, "thread_create_post_idle_wait") >
 		strings.Index(threadCreate, "event_set(&th->done);") {

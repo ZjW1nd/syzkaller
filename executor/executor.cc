@@ -846,6 +846,7 @@ static intptr_t SYSCALLAPI WSARecvMsg(intptr_t s, intptr_t msg, intptr_t bytes,
 
 #if GOOS_windows
 static const uint64 kWindowsWorkerIdleYields = 1 << 15;
+static const uint64 kWindowsWorkerIdleWaitMs = 2;
 
 static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 {
@@ -966,11 +967,14 @@ static void nyx_log_thread_stage(const char* stage, const thread_t* th, uint64 a
 #endif
 }
 
-static int windows_yield_until_event(event_t* ev, uint64 max_yields)
+static int windows_yield_until_event(event_t* ev, uint64 max_yields, uint64 max_wait_ms)
 {
+	uint64 deadline_ms = current_time_ms() + max_wait_ms;
 	for (uint64 i = 0; i < max_yields; i++) {
 		if (event_isset(ev))
 			return 1;
+		if (current_time_ms() >= deadline_ms)
+			break;
 		if (!SwitchToThread())
 			Sleep(0);
 	}
@@ -1889,8 +1893,9 @@ thread_t* schedule_call(int call_index, int call_num, uint64 copyout_index, uint
 #if GOOS_windows
 	if (flag_threaded) {
 		nyx_log_thread_stage("schedule_pre_idle_wait", th, event_isset(&th->idle),
-				     th->handoff_seq, th->worker_tid, kWindowsWorkerIdleYields);
-		int idle_seen = windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields);
+				     th->handoff_seq, th->worker_tid, kWindowsWorkerIdleWaitMs);
+		int idle_seen = windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,
+							  kWindowsWorkerIdleWaitMs);
 		nyx_log_thread_stage("schedule_post_idle_wait", th, idle_seen,
 				     event_isset(&th->idle), th->worker_tid, running);
 	}
@@ -2785,8 +2790,9 @@ void thread_create(thread_t* th, int id, bool need_coverage)
 	if (flag_threaded) {
 		thread_start(worker_thread, th);
 		nyx_log_thread_stage("thread_create_pre_idle_wait", th, event_isset(&th->idle),
-				     th->handoff_seq, th->worker_tid, kWindowsWorkerIdleYields);
-		int idle_seen = windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields);
+				     th->handoff_seq, th->worker_tid, kWindowsWorkerIdleWaitMs);
+		int idle_seen = windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,
+							  kWindowsWorkerIdleWaitMs);
 		nyx_log_thread_stage("thread_create_post_idle_wait", th, idle_seen,
 				     event_isset(&th->idle), th->worker_tid, th->worker_wait_seq);
 	}

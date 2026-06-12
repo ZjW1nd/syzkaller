@@ -203,6 +203,7 @@ func reorderArgsForFlags(args []string) []string {
 		"-standalone-syscall":              true,
 		"-standalone-seed":                 true,
 		"-standalone-program":              true,
+		"-standalone-target-profile":       true,
 		"-standalone-exec-program":         true,
 		"-standalone-staged-program":       true,
 		"-standalone-staged-exec-program":  true,
@@ -229,6 +230,7 @@ func reorderArgsForFlags(args []string) []string {
 		"--standalone-syscall":             true,
 		"--standalone-seed":                true,
 		"--standalone-program":             true,
+		"--standalone-target-profile":      true,
 		"--standalone-exec-program":        true,
 		"--standalone-staged-program":      true,
 		"--standalone-staged-exec-program": true,
@@ -1367,7 +1369,7 @@ func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
 			return err
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
-			log.Logf(0, "runner handshake ack observed at step=%d", i)
+			vm.debugLogf("runner handshake ack observed at step=%d", i)
 			vm.recordTrace("runner", "handshake_ack", requestID, traceFields("step", i))
 			return nil
 		}
@@ -1407,7 +1409,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
 	for {
 		if data, err := os.ReadFile(resultPath); err == nil {
-			log.Logf(0, "runner exec result observed before step=%d", steps)
+			vm.debugLogf("runner exec result observed before step=%d", steps)
 			vm.recordTrace("runner", "exec_result_file", requestID, traceFields("step", steps, "bytes", len(data)))
 			msg, err := parseExecResult(data)
 			if err != nil {
@@ -1464,7 +1466,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			return nil, fmt.Errorf("guest abort: %s", string(vm.aux.misc()))
 		}
 		if vm.aux.execDone() {
-			log.Logf(0, "runner exec observed exec_done at step=%d but result file is not present yet", steps)
+			vm.debugLogf("runner exec observed exec_done at step=%d but result file is not present yet", steps)
 			vm.recordAuxTrace("exec_done_without_result", requestID)
 		}
 	}
@@ -2666,7 +2668,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	if r.handshakeReady && r.lastEnvFlags == envFlags && r.lastSandboxArg == req.ExecOpts.SandboxArg {
 		return nil
 	}
-	log.Logf(0, "runner sending handshake: raw_env=0x%x normalized_env=0x%x sandbox_arg=%d",
+	r.vm.debugLogf("runner sending handshake: raw_env=0x%x normalized_env=0x%x sandbox_arg=%d",
 		uint64(req.ExecOpts.EnvFlags), uint64(envFlags), req.ExecOpts.SandboxArg)
 	msg := &flatrpc.SnapshotHandshakeT{
 		CoverEdges:       r.connectReply.CoverEdges,
@@ -2697,7 +2699,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 		"duration_ms", duration.Milliseconds(),
 	))
 	r.maybeDumpSlowTrace(req, "runner handshake", started, duration, nil, nil)
-	log.Logf(0, "runner handshake complete")
+	r.vm.debugLogf("runner handshake complete")
 	r.handshakeReady = true
 	r.coveragePrimed = false
 	r.lastEnvFlags = envFlags
@@ -2766,9 +2768,9 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	if prime {
 		requestLabel = "runner prime"
 	}
-	log.Logf(0, "%s request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
+	r.vm.debugLogf("%s request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
 		requestLabel, req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
-	log.Logf(0, "%s program: id=%d %s", requestLabel, req.Id, describeExecProgram(req.Data))
+	r.vm.debugLogf("%s program: id=%d %s", requestLabel, req.Id, describeExecProgram(req.Data))
 
 	// Control redqueen via aux buffer, mirroring kAFL's set_redqueen_mode().
 	// hintsJob sends CollectComps → enable redqueen before execution.
@@ -2836,8 +2838,10 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		covErr = injectCoverage(req, execMsg, r.connectReply.CoverEdges,
 			r.connectReply.Kernel64Bit, r.vm.moduleCanonicalizer, covRecords, compRecords)
 		if covErr == nil {
-			logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit,
-				r.vm.moduleCanonicalizer.CanonicalRanges())
+			if r.vm.debug {
+				logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit,
+					r.vm.moduleCanonicalizer.CanonicalRanges())
+			}
 			if r.coverageDebugPath != "" {
 				if err := appendCoverageDebugStream(r.coverageDebugPath,
 					buildCoverageDebugStreamEvent(req.Id, req.Data, covRecords,
@@ -2865,10 +2869,18 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	))
 	r.maybeDumpSlowTrace(req, requestLabel, started, duration, execMsg, nil)
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
-		logCallFeedback(req.Id, req.Data, res.Info.Calls)
-		log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
-			requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
-			duration.Milliseconds(), res.Hanged, res.Error)
+		if r.vm.debug {
+			logCallFeedback(req.Id, req.Data, res.Info.Calls)
+		}
+		if res.Hanged || res.Error != "" {
+			log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
+				requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
+				duration.Milliseconds(), res.Hanged, res.Error)
+		} else {
+			r.vm.debugLogf("%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
+				requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
+				duration.Milliseconds(), res.Hanged, res.Error)
+		}
 	}
 	return execMsg, nil
 }
@@ -3203,7 +3215,7 @@ func (r *runner) loop() error {
 		}
 		switch req := msg.Msg.Value.(type) {
 		case *flatrpc.ExecRequest:
-			log.Logf(0, "runner received ExecRequest id=%d type=%v", req.Id, req.Type)
+			r.vm.debugLogf("runner received ExecRequest id=%d type=%v", req.Id, req.Type)
 			executing := &flatrpc.ExecutorMessage{
 				Msg: &flatrpc.ExecutorMessages{
 					Type:  flatrpc.ExecutorMessagesRawExecuting,
@@ -3244,7 +3256,7 @@ func (r *runner) loop() error {
 				return err
 			}
 		case *flatrpc.StateRequest:
-			log.Logf(0, "runner received StateRequest")
+			r.vm.debugLogf("runner received StateRequest")
 			state := &flatrpc.ExecutorMessage{
 				Msg: &flatrpc.ExecutorMessages{
 					Type:  flatrpc.ExecutorMessagesRawState,
@@ -3259,9 +3271,9 @@ func (r *runner) loop() error {
 				return err
 			}
 		case *flatrpc.SignalUpdate:
-			log.Logf(0, "runner received SignalUpdate")
+			r.vm.debugLogf("runner received SignalUpdate")
 		case *flatrpc.CorpusTriaged:
-			log.Logf(0, "runner received CorpusTriaged")
+			r.vm.debugLogf("runner received CorpusTriaged")
 		default:
 			return fmt.Errorf("unhandled host message %T", req)
 		}
@@ -3296,11 +3308,11 @@ func connectWithRetry(r *runner, retryFor time.Duration) error {
 	}
 }
 
-func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, programPath string, threaded, keepState bool,
+func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, programPath, targetProfile string, threaded, keepState bool,
 	syscallTimeoutMs, programTimeoutMs, rounds int) error {
-	target, err := prog.GetTarget("windows", "amd64")
+	target, err := standaloneTarget(targetProfile)
 	if err != nil {
-		return fmt.Errorf("get target: %w", err)
+		return err
 	}
 	p, bootstrap, label, err := standaloneBaseProgram(target, syscallName, seed, programPath)
 	if err != nil {
@@ -3456,11 +3468,11 @@ func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepS
 	return nil
 }
 
-func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath string, threaded, keepState bool,
+func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath, targetProfile string, threaded, keepState bool,
 	syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int) error {
-	target, err := prog.GetTarget("windows", "amd64")
+	target, err := standaloneTarget(targetProfile)
 	if err != nil {
-		return fmt.Errorf("get target: %w", err)
+		return err
 	}
 	first, _, firstLabel, err := standaloneBaseProgram(target, "", 0, firstProgramPath)
 	if err != nil {
@@ -3669,6 +3681,24 @@ func standaloneBaseProgram(target *prog.Target, syscallName string, seed int64, 
 		return nil, false, "", err
 	}
 	return p, bootstrap, syscallName, nil
+}
+
+func standaloneTarget(profile string) (*prog.Target, error) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		return nil, fmt.Errorf("get target: %w", err)
+	}
+	if profile == "" {
+		return target, nil
+	}
+	if target.ApplyTargetProfile == nil {
+		return nil, fmt.Errorf("windows/amd64 target does not support standalone target profile %q", profile)
+	}
+	target, err = target.ApplyTargetProfile(target, profile)
+	if err != nil {
+		return nil, fmt.Errorf("apply standalone target profile %q: %w", profile, err)
+	}
+	return target, nil
 }
 
 func standaloneExecProgram(path string) ([]byte, string, error) {
@@ -4211,6 +4241,7 @@ func main() {
 		standaloneSyscall           = flag.String("standalone-syscall", "NtQuerySystemInformation", "Windows syscall name for standalone mode")
 		standaloneSeed              = flag.Int64("standalone-seed", 1, "program generation seed for standalone mode")
 		standaloneProgramPath       = flag.String("standalone-program", "", "path to a serialized syzkaller program to execute in standalone mode")
+		standaloneTargetProfile     = flag.String("standalone-target-profile", "", "optional target profile applied before parsing/generating standalone syzkaller programs")
 		standaloneExecProgramPath   = flag.String("standalone-exec-program", "", "path to a serialized executor program to execute in standalone mode")
 		standaloneStagedProgram     = flag.String("standalone-staged-program", "", "optional second serialized syzkaller program for staged standalone mode")
 		standaloneStagedExecProgram = flag.String("standalone-staged-exec-program", "", "optional second serialized executor program for staged standalone mode")
@@ -4302,7 +4333,7 @@ func main() {
 			return
 		}
 		if *standaloneStagedProgram != "" {
-			if err := runStandaloneStaged(index, vm, *standaloneProgramPath, *standaloneStagedProgram, *standaloneThreaded,
+			if err := runStandaloneStaged(index, vm, *standaloneProgramPath, *standaloneStagedProgram, *standaloneTargetProfile, *standaloneThreaded,
 				*standaloneKeepState, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
 				log.Fatalf("standalone staged Nyx request failed: %v", err)
 			}
@@ -4315,7 +4346,7 @@ func main() {
 			}
 			return
 		}
-		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneProgramPath, *standaloneThreaded,
+		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneProgramPath, *standaloneTargetProfile, *standaloneThreaded,
 			*standaloneKeepState, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
 			log.Fatalf("standalone Nyx request failed: %v", err)
 		}
