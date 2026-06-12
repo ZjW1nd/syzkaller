@@ -1429,7 +1429,9 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 }
 
 func collideEnabledForConfig(cfg *mgrconfig.Config) bool {
-	_ = cfg
+	if cfg != nil && cfg.Experimental.DisableCollide {
+		return false
+	}
 	return true
 }
 

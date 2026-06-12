@@ -176,6 +176,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
 		WindowsTargetProfile string `json:"windows_target_profile"`
 		ForceGenerateEveryN  int    `json:"force_generate_every_n"`
+		DisableCollide       bool   `json:"disable_collide"`
 	} `json:"experimental"`
 } {
 	t.Helper()
@@ -198,6 +199,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 			BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
 			WindowsTargetProfile string `json:"windows_target_profile"`
 			ForceGenerateEveryN  int    `json:"force_generate_every_n"`
+			DisableCollide       bool   `json:"disable_collide"`
 		} `json:"experimental"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -735,6 +737,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("formal AFD session should disable generic collide while async collide stability is unresolved")
 	}
 	for _, name := range cfg.EnabledSyscalls {
 		call := target.SyscallMap[name]
@@ -1457,9 +1462,10 @@ func TestWindowsAfdSelectConfigCoversSeedSyscalls(t *testing.T) {
 
 func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 	for _, tc := range []struct {
-		cfgPath    string
-		seedPrefix string
-		want       []string
+		cfgPath        string
+		seedPrefix     string
+		disableCollide bool
+		want           []string
 	}{
 		{
 			cfgPath:    "windows-nyx-afd-wsaioctl.cfg",
@@ -1479,8 +1485,9 @@ func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 			},
 		},
 		{
-			cfgPath:    "windows-nyx-afd-wsaioctl-interface-udp-mix.cfg",
-			seedPrefix: "nyx_exp_afd_wsaioctl_interface_udp_mix",
+			cfgPath:        "windows-nyx-afd-wsaioctl-interface-udp-mix.cfg",
+			seedPrefix:     "nyx_exp_afd_wsaioctl_interface_udp_mix",
+			disableCollide: true,
 			want: []string{
 				"bind$inet_udp",
 				"connect$inet_udp",
@@ -1544,6 +1551,9 @@ func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 				cfg.Experimental.BorrowingSeedPrefix != "" {
 				t.Fatalf("WSAIoctl AFD seed prefixes are too broad: seed=%q borrowing=%q",
 					cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+			}
+			if cfg.Experimental.DisableCollide != tc.disableCollide {
+				t.Fatalf("disable_collide=%v, want %v", cfg.Experimental.DisableCollide, tc.disableCollide)
 			}
 			if cfg.VM.KeepState {
 				t.Fatal("WSAIoctl AFD config should reload between requests while isolating low-risk IOCTLs")

@@ -289,6 +289,10 @@ type Experimental struct {
 	// WindowsVMLessCollide is kept for compatibility with existing configs.
 	// Windows VMLess/Nyx collide now follows the normal target-neutral default.
 	WindowsVMLessCollide bool `json:"windows_vmless_collide,omitempty"`
+
+	// DisableCollide disables generic collide transformations for this manager
+	// config while leaving ordinary generation, mutation, and triage enabled.
+	DisableCollide bool `json:"disable_collide,omitempty"`
 }
 
 type FocusArea struct {

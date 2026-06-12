@@ -39,6 +39,10 @@ func TestCollideEnabledForConfig(t *testing.T) {
 	if !collideEnabledForConfig(cfg) {
 		t.Fatal("non-windows targets should keep collide enabled")
 	}
+	cfg.Experimental.DisableCollide = true
+	if collideEnabledForConfig(cfg) {
+		t.Fatal("disable_collide should disable collide")
+	}
 }
 
 func TestModeCandidateRunIsRegistered(t *testing.T) {
