@@ -2181,6 +2181,32 @@ func TestFullchainBincoverEnablesRawCover(t *testing.T) {
 	}
 }
 
+func TestFullchainPersistsSlowTraceArtifacts(t *testing.T) {
+	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
+	scriptData, err := os.ReadFile(scriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("run-nyx-fullchain.sh is outside this test environment: %v", err)
+		}
+		t.Fatalf("read %s: %v", scriptPath, err)
+	}
+	scriptSrc := string(scriptData)
+	for _, want := range []string{
+		`SLOW_TRACE_DIR="${SLOW_TRACE_DIR:-}"`,
+		`SLOW_TRACE_DIR="$(dirname "$MANAGER_LOG")/slow-traces"`,
+		`SYZ_NYX_SLOW_TRACE_DIR="$SLOW_TRACE_DIR"`,
+		`SYZ_NYX_SLOW_TRACE_THRESHOLD_MS="$SLOW_TRACE_THRESHOLD_MS"`,
+		`SYZ_NYX_SLOW_TRACE_MAX_EVENTS="$SLOW_TRACE_MAX_EVENTS"`,
+		`--slow-trace-dir "$SLOW_TRACE_DIR"`,
+		`--slow-trace-threshold-ms "$SLOW_TRACE_THRESHOLD_MS"`,
+		`--slow-trace-max-events "$SLOW_TRACE_MAX_EVENTS"`,
+	} {
+		if !strings.Contains(scriptSrc, want) {
+			t.Fatalf("run-nyx-fullchain slow trace persistence missing %q", want)
+		}
+	}
+}
+
 func TestRunnerHandshakeUsesTimeoutAndSlowTraceArtifact(t *testing.T) {
 	mainData, err := os.ReadFile("main.go")
 	if err != nil {

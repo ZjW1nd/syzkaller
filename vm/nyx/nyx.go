@@ -45,6 +45,9 @@ type Config struct {
 	Debug                  bool     `json:"debug"`
 	Host                   string   `json:"host"`
 	RunnerLog              string   `json:"runner_log"`
+	SlowTraceDir           string   `json:"slow_trace_dir"`
+	SlowTraceThresholdMS   int      `json:"slow_trace_threshold_ms"`
+	SlowTraceMaxEvents     int      `json:"slow_trace_max_events"`
 	WindowsMinidump        bool     `json:"windows_minidump"`
 	WindowsMinidumpTimeout int      `json:"windows_minidump_timeout"`
 	KeepState              bool     `json:"keep_state"`
@@ -113,6 +116,19 @@ func applyEnvOverrides(cfg *Config, env *vmimpl.Env) {
 	}
 	if value := os.Getenv("SYZ_NYX_RUNNER_LOG"); value != "" {
 		cfg.RunnerLog = value
+	}
+	if value := os.Getenv("SYZ_NYX_SLOW_TRACE_DIR"); value != "" {
+		cfg.SlowTraceDir = value
+	}
+	if value := os.Getenv("SYZ_NYX_SLOW_TRACE_THRESHOLD_MS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.SlowTraceThresholdMS = parsed
+		}
+	}
+	if value := os.Getenv("SYZ_NYX_SLOW_TRACE_MAX_EVENTS"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			cfg.SlowTraceMaxEvents = parsed
+		}
 	}
 	if value := os.Getenv("SYZ_NYX_PAYLOAD_SIZE"); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
@@ -289,6 +305,15 @@ func (inst *instance) runnerArgs(host, port string) ([]string, error) {
 	}
 	if cfg.KeepState {
 		args = append(args, "--keep-state")
+	}
+	if cfg.SlowTraceDir != "" {
+		args = append(args, "--slow-trace-dir", inst.expand(cfg.SlowTraceDir))
+	}
+	if cfg.SlowTraceThresholdMS > 0 {
+		args = append(args, "--slow-trace-threshold-ms", strconv.Itoa(cfg.SlowTraceThresholdMS))
+	}
+	if cfg.SlowTraceMaxEvents > 0 {
+		args = append(args, "--slow-trace-max-events", strconv.Itoa(cfg.SlowTraceMaxEvents))
 	}
 	for _, arg := range cfg.QemuArgs {
 		args = append(args, "--qemu-arg", inst.expand(arg))
