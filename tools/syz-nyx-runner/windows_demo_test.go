@@ -1491,6 +1491,18 @@ func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 			},
 		},
 		{
+			cfgPath:    "windows-nyx-afd-wsaioctl-interface-udp-interface-first.cfg",
+			seedPrefix: "nyx_exp_afd_wsaioctl_interface_udp_interface_first",
+			want: []string{
+				"bind$inet_udp",
+				"connect$inet_udp",
+				"WSASendTo$udp",
+				"getpeername$udp",
+				"WSAIoctl$sio_keepalive_vals",
+				"WSAIoctl$sio_get_interface_list",
+			},
+		},
+		{
 			cfgPath:    "windows-nyx-afd-wsaioctl-interface-udp-no-keepalive.cfg",
 			seedPrefix: "nyx_exp_afd_wsaioctl_interface_udp_no_keepalive",
 			want: []string{
@@ -1571,6 +1583,7 @@ func TestWindowsAfdWSAIoctlConfigCoversSeedSyscalls(t *testing.T) {
 	for _, cfgPath := range []string{
 		"windows-nyx-afd-wsaioctl.cfg",
 		"windows-nyx-afd-wsaioctl-interface.cfg",
+		"windows-nyx-afd-wsaioctl-interface-udp-interface-first.cfg",
 		"windows-nyx-afd-wsaioctl-interface-udp-no-getpeername.cfg",
 		"windows-nyx-afd-wsaioctl-interface-udp-no-keepalive.cfg",
 		"windows-nyx-afd-wsaioctl-interface-udp-mix.cfg",
@@ -2373,6 +2386,7 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 	for _, want := range []string{
 		"standalone-exec-program",
 		"standalone-staged-exec-program",
+		"standalone-no-cover",
 		"runStandaloneExec(",
 		"runStandaloneExecStaged(",
 	} {
@@ -2406,6 +2420,7 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 		"--standalone-staged-exec-program",
 		"standalone_exec_program",
 		"standalone_staged_exec_program",
+		"standalone_no_cover",
 	} {
 		if !strings.Contains(scriptSrc, want) {
 			t.Fatalf("run-nyx-fullchain standalone exec replay support missing %q", want)
