@@ -785,15 +785,13 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSASend$accept",
 		"WSARecv$accept_nonblock",
 		"shutdown$accept",
+		"select$afd_accept_nonblock",
 		"getsockname$accept",
 		"getpeername$accept",
 		"NtDeviceIoControlFile$afd_query_recv_accept",
 		"NtDeviceIoControlFile$afd_query_handles_accept",
 		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_noop_accept",
-		"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
-		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
-		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 		"ioctlsocket$fionbio_accept",
 		"setsockopt$int_accept",
 		"getsockopt$int_accept",
@@ -825,6 +823,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept",
 		"NtDeviceIoControlFile$afd_poll_accept",
+		"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
+		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 		"GetAcceptExSockaddrs$inet_tcp",
 		"socket$accept_tcp",
 		"accept$inet_tcp",
@@ -1229,16 +1230,13 @@ func TestWindowsAfdPrivateAcceptConfigCoversSeedSyscalls(t *testing.T) {
 	}
 }
 
-func TestWindowsAfdPrivateEventConfigStaysEventPollOnly(t *testing.T) {
+func TestWindowsAfdPrivateEventConfigKeepsEventPollSeedOnly(t *testing.T) {
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-event.cfg")
 	want := []string{
 		"ioctlsocket$fionbio_listener",
 		"ioctlsocket$fionbio_tcp_created",
 		"connect$inet_tcp_nonblock",
 		"accept$inet_tcp_nonblock",
-		"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
-		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
-		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 	}
 	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("private AFD event enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
@@ -1262,6 +1260,9 @@ func TestWindowsAfdPrivateEventConfigStaysEventPollOnly(t *testing.T) {
 			"accept$inet_tcp",
 			"socket$accept_tcp",
 			"ioctlsocket$fionbio_accept_nonblock",
+			"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
+			"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 			"CreateIoCompletionPort$accept*",
 			"AcceptEx$inet_tcp*",
 			"TransmitPackets$inet_accept",
