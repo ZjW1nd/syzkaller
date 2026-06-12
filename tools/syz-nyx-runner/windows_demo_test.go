@@ -700,6 +700,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-select.cfg",
 		"windows-nyx-afd-wsaioctl.cfg",
 		"windows-nyx-afd-wsaioctl-interface.cfg",
+		"windows-nyx-afd-wsaioctl-interface-udp-mix.cfg",
 		"windows-nyx-afd-wsaioctl-udp-connreset.cfg",
 	} {
 		cfgPath := cfgPath
@@ -1476,6 +1477,18 @@ func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 			},
 		},
 		{
+			cfgPath:    "windows-nyx-afd-wsaioctl-interface-udp-mix.cfg",
+			seedPrefix: "nyx_exp_afd_wsaioctl_interface_udp_mix",
+			want: []string{
+				"bind$inet_udp",
+				"connect$inet_udp",
+				"WSASendTo$udp",
+				"getpeername$udp",
+				"WSAIoctl$sio_keepalive_vals",
+				"WSAIoctl$sio_get_interface_list",
+			},
+		},
+		{
 			cfgPath:    "windows-nyx-afd-wsaioctl-udp-connreset.cfg",
 			seedPrefix: "nyx_afd_wsaioctl_udp_connreset",
 			want: []string{
@@ -1534,6 +1547,7 @@ func TestWindowsAfdWSAIoctlConfigCoversSeedSyscalls(t *testing.T) {
 	for _, cfgPath := range []string{
 		"windows-nyx-afd-wsaioctl.cfg",
 		"windows-nyx-afd-wsaioctl-interface.cfg",
+		"windows-nyx-afd-wsaioctl-interface-udp-mix.cfg",
 		"windows-nyx-afd-wsaioctl-udp-connreset.cfg",
 	} {
 		cfgPath := cfgPath
