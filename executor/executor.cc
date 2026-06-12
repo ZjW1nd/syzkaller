@@ -545,34 +545,16 @@ static intptr_t SYSCALLAPI DisconnectEx(intptr_t s, intptr_t overlapped, intptr_
 static void windows_log_sockaddr_state(const char* op, SOCKET s, const struct sockaddr* addr,
 				       int namelen)
 {
-	if (addr == nullptr) {
-		nyx_hprintf("windows socket state %s socket=0x%llx addr=null namelen=%d\n",
-			    op, (unsigned long long)s, namelen);
-		return;
-	}
-	if (namelen >= (int)sizeof(struct sockaddr_in) && addr->sa_family == AF_INET) {
-		const struct sockaddr_in* in = (const struct sockaddr_in*)addr;
-		uint32 ip = ntohl(in->sin_addr.s_addr);
-		nyx_hprintf("windows socket state %s socket=0x%llx family=AF_INET addr=%u.%u.%u.%u port=%u namelen=%d\n",
-			    op, (unsigned long long)s, (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-			    (ip >> 8) & 0xff, ip & 0xff, (unsigned)ntohs(in->sin_port),
-			    namelen);
-		return;
-	}
-	nyx_hprintf("windows socket state %s socket=0x%llx family=%u namelen=%d\n", op,
-		    (unsigned long long)s, (unsigned)addr->sa_family, namelen);
+	(void)op;
+	(void)s;
+	(void)addr;
+	(void)namelen;
 }
 
 static void windows_log_getsockname_state(const char* op, SOCKET s)
 {
-	struct sockaddr_storage storage = {};
-	int len = sizeof(storage);
-	if (getsockname(s, (struct sockaddr*)&storage, &len) == 0) {
-		windows_log_sockaddr_state(op, s, (const struct sockaddr*)&storage, len);
-		return;
-	}
-	nyx_hprintf("windows socket state %s socket=0x%llx getsockname failed wsa=%d errno=%d\n",
-		    op, (unsigned long long)s, WSAGetLastError(), errno);
+	(void)op;
+	(void)s;
 }
 
 static int windows_wsa_error_to_errno(int wsa)
@@ -606,14 +588,10 @@ static intptr_t SYSCALLAPI windows_bind_state(intptr_t s, intptr_t addr, intptr_
 	errno = 0;
 	if (bind(socket, name, (int)namelen) == 0) {
 		windows_log_getsockname_state("bind result", socket);
-		nyx_hprintf("windows socket state bind ok socket=0x%llx\n",
-			    (unsigned long long)socket);
 		return s;
 	}
 	int wsa = WSAGetLastError();
 	errno = windows_wsa_error_to_errno(wsa);
-	nyx_hprintf("windows socket state bind failed socket=0x%llx wsa=%d errno=%d\n",
-		    (unsigned long long)socket, wsa, errno);
 	return -1;
 }
 
@@ -634,14 +612,10 @@ static intptr_t SYSCALLAPI windows_listen_state(intptr_t s, intptr_t backlog, in
 	errno = 0;
 	if (listen(socket, (int)backlog) == 0) {
 		windows_log_getsockname_state("listen result", socket);
-		nyx_hprintf("windows socket state listen ok socket=0x%llx backlog=%lld\n",
-			    (unsigned long long)socket, (long long)backlog);
 		return s;
 	}
 	int wsa = WSAGetLastError();
 	errno = windows_wsa_error_to_errno(wsa);
-	nyx_hprintf("windows socket state listen failed socket=0x%llx backlog=%lld wsa=%d errno=%d\n",
-		    (unsigned long long)socket, (long long)backlog, wsa, errno);
 	return -1;
 }
 
@@ -849,106 +823,29 @@ static const uint64 kWindowsWorkerIdleYields = 1 << 15;
 
 static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 {
-#if SYZ_NYX_WINDOWS_DEMO
 	(void)prog_data;
 	(void)prog_size;
-	return;
-#else
-	if (!prog_data || prog_size == 0) {
-		nyx_hprintf("nyx exec preview: empty program data\n");
-		return;
-	}
-	uint8* pos = const_cast<uint8*>(prog_data);
-	uint64 total_calls = read_input(&pos);
-	uint64 call_num = read_input(&pos, true);
-	if (call_num == instr_eof) {
-		nyx_hprintf("nyx exec preview: total_calls=%llu first=eof\n",
-			    (unsigned long long)total_calls);
-		return;
-	}
-	if (call_num == instr_copyin || call_num == instr_copyout || call_num == instr_setprops) {
-		nyx_hprintf("nyx exec preview: total_calls=%llu first_instr=%llu\n",
-			    (unsigned long long)total_calls,
-			    (unsigned long long)call_num);
-		return;
-	}
-	const char* name = "<invalid>";
-	if (call_num < ARRAY_SIZE(syscalls) && syscalls[call_num].name)
-		name = syscalls[call_num].name;
-	read_input(&pos); // syscall number
-	uint64 copyout_index = read_input(&pos);
-	uint64 num_args = read_input(&pos);
-	uint64 args[kMaxArgs] = {};
-	uint64 limit = num_args > kMaxArgs ? kMaxArgs : num_args;
-	for (uint64 i = 0; i < limit; i++)
-		args[i] = read_arg(&pos);
-	nyx_hprintf("nyx exec preview: total_calls=%llu call=%llu name=%s copyout=%llu nargs=%llu args=[0x%llx,0x%llx,0x%llx,0x%llx]\n",
-		    (unsigned long long)total_calls,
-		    (unsigned long long)call_num,
-		    name,
-		    (unsigned long long)copyout_index,
-		    (unsigned long long)num_args,
-		    (unsigned long long)args[0],
-		    (unsigned long long)args[1],
-		    (unsigned long long)args[2],
-		    (unsigned long long)args[3]);
-#endif
 }
 
 static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, uint64 a2 = 0,
 			       uint64 a3 = 0)
 {
-#if SYZ_NYX_WINDOWS_DEMO
 	(void)stage;
 	(void)a0;
 	(void)a1;
 	(void)a2;
 	(void)a3;
-	return;
-#else
-	nyx_hprintf("nyx exec execute_one stage=%s a0=0x%llx a1=0x%llx a2=0x%llx a3=0x%llx\n",
-		    stage,
-		    (unsigned long long)a0,
-		    (unsigned long long)a1,
-		    (unsigned long long)a2,
-		    (unsigned long long)a3);
-#endif
 }
 
 static void nyx_log_thread_stage(const char* stage, const thread_t* th, uint64 a0 = 0,
 				 uint64 a1 = 0, uint64 a2 = 0, uint64 a3 = 0)
 {
-#if SYZ_NYX_WINDOWS_DEMO
 	(void)stage;
 	(void)th;
 	(void)a0;
 	(void)a1;
 	(void)a2;
 	(void)a3;
-	return;
-#else
-	int call_index = -1;
-	int call_num = -1;
-	const char* call_name = "<none>";
-	if (th) {
-		call_index = th->call_index;
-		call_num = th->call_num;
-		if (call_num >= 0 && (uint64)call_num < ARRAY_SIZE(syscalls) && syscalls[call_num].name)
-			call_name = syscalls[call_num].name;
-	}
-	nyx_hprintf("nyx exec execute_one request=%llu guest_ms=%llu tid=%lu stage=%s call_index=%d call_num=%d call_name=%s a0=0x%llx a1=0x%llx a2=0x%llx a3=0x%llx\n",
-		    (unsigned long long)request_id,
-		    (unsigned long long)current_time_ms(),
-		    (unsigned long)GetCurrentThreadId(),
-		    stage,
-		    call_index,
-		    call_num,
-		    call_name,
-		    (unsigned long long)a0,
-		    (unsigned long long)a1,
-		    (unsigned long long)a2,
-		    (unsigned long long)a3);
-#endif
 }
 
 static int windows_yield_until_event(event_t* ev, uint64 max_yields)
@@ -2473,13 +2370,9 @@ static flatbuffers::span<uint8_t> nyx_demo_execute_request(OutputData* output,
 
 static void nyx_finish_exec_payload(const nyx_exec_meta_t* meta, uint32 calls)
 {
-	if (meta->flags & SYZ_NYX_EXEC_KEEP_STATE) {
-		nyx_hprintf("nyx result kept guest state request=%lld calls=%u flags=0x%x\n",
-			    (long long)meta->request_id, calls, (unsigned)meta->flags);
+	if (meta->flags & SYZ_NYX_EXEC_KEEP_STATE)
 		return;
-	}
-	nyx_hprintf("nyx result requesting reload request=%lld calls=%u flags=0x%x\n",
-		    (long long)meta->request_id, calls, (unsigned)meta->flags);
+	(void)calls;
 	nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);
 }
 
@@ -2517,11 +2410,6 @@ static int nyx_mode_loop(int argc, char** argv)
 	initialize_windows_net_injection();
 #endif
 
-	nyx_hprintf("nyx executor build marker=20260427b demo=%d sparse=%d generic=%d\n",
-		    (int)SYZ_NYX_WINDOWS_DEMO,
-		    (int)SYZ_NYX_WINDOWS_SPARSE_TABLE,
-		    (int)SYZ_NYX_USE_GENERIC_PATH);
-
 	std::vector<uint8_t> output_mem;
 	uint64_t freshness = 1;
 	bool have_handshake = false;
@@ -2540,17 +2428,8 @@ static int nyx_mode_loop(int argc, char** argv)
 			fail("Nyx payload body overflow");
 
 		const uint8_t* body = payload->data + sizeof(*header);
-		nyx_hprintf("nyx payload header kind=%u body=%u total=%d\n",
-			    (unsigned)header->kind,
-			    (unsigned)header->body_size,
-			    (int)payload->size);
 		if (header->kind == SYZ_NYX_KIND_HANDSHAKE) {
-			nyx_hprintf("nyx handshake body ready body=%u total=%d\n",
-				    (unsigned)header->body_size,
-				    (int)payload->size);
 			auto* msg = flatbuffers::GetRoot<rpc::SnapshotHandshake>(body);
-			nyx_hprintf("nyx handshake root parsed body=%u\n",
-				    (unsigned)header->body_size);
 			hs = {
 			    .magic = kInMagic,
 			    .use_cover_edges = msg->cover_edges(),
@@ -2562,30 +2441,15 @@ static int nyx_mode_loop(int argc, char** argv)
 			    .program_timeout_ms = static_cast<uint64>(msg->program_timeout_ms()),
 			    .slowdown_scale = static_cast<uint64>(msg->slowdown()),
 			};
-			nyx_hprintf("nyx handshake begin env=0x%llx features=0x%llx slowdown=%llu timeouts=%llu/%llu\n",
-				    (unsigned long long)msg->env_flags(),
-				    (unsigned long long)msg->features(),
-				    (unsigned long long)msg->slowdown(),
-				    (unsigned long long)msg->syscall_timeout_ms(),
-				    (unsigned long long)msg->program_timeout_ms());
 			parse_handshake(hs);
 			setup_coverage();
 #if SYZ_NYX_WINDOWS_SUBMIT_CR3
 			uint64_t cr3 = 0;
-			if (nyx_query_cr3(&cr3)) {
-				nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
-					    (unsigned long long)cr3);
+			if (nyx_query_cr3(&cr3))
 				nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
-			} else {
-				nyx_hprintf("nyx handshake query_cr3 unavailable\n");
-			}
-#else
-			nyx_hprintf("nyx handshake submit_cr3 disabled at build time\n");
 #endif
 			have_handshake = true;
-			nyx_hprintf("nyx handshake dumping ack\n");
 			nyx_dump_ack();
-			nyx_hprintf("nyx handshake ack dumped\n");
 			continue;
 		}
 
@@ -2598,8 +2462,6 @@ static int nyx_mode_loop(int argc, char** argv)
 			uint32 sleep_ms = idle->sleep_ms;
 			if (sleep_ms > 10000)
 				fail("Nyx idle payload sleep too large");
-			if (sleep_ms != 0)
-				nyx_hprintf("nyx idle begin sleep_ms=%u\n", (unsigned)sleep_ms);
 #if GOOS_windows
 			Sleep(sleep_ms);
 #else
@@ -2620,10 +2482,6 @@ static int nyx_mode_loop(int argc, char** argv)
 			auto result = finish_output(output_data, 0, 0, 0, (uint64)sleep_ms * 1000 * 1000,
 						    freshness++, 0, false, nullptr);
 			nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
-			nyx_hprintf("nyx idle kept guest state sleep_ms=%u\n", (unsigned)sleep_ms);
-			if (sleep_ms != 0)
-				nyx_hprintf("nyx idle result dumped sleep_ms=%u bytes=%u\n",
-					    (unsigned)sleep_ms, (unsigned)result.size());
 			continue;
 		}
 
@@ -2645,10 +2503,6 @@ static int nyx_mode_loop(int argc, char** argv)
 		};
 		parse_execute(req);
 		input_data = const_cast<uint8*>(msg->prog_data() ? msg->prog_data()->Data() : nullptr);
-		nyx_hprintf("nyx exec req=%lld proc=%d body=%u prog=%u calls=%d threaded=%d exec_flags=0x%llx\n",
-			    (long long)meta->request_id, meta->proc_id, header->body_size,
-			    msg->prog_data() ? msg->prog_data()->size() : 0, msg->num_calls(),
-			    flag_threaded, (unsigned long long)req.exec_flags);
 		nyx_log_exec_preview(input_data, msg->prog_data() ? msg->prog_data()->size() : 0);
 
 		memset(results, 0, sizeof(results));
@@ -2668,37 +2522,24 @@ static int nyx_mode_loop(int argc, char** argv)
 		cov_cmd.flags = 0;
 
 #if SYZ_NYX_WINDOWS_DEMO && !SYZ_NYX_USE_GENERIC_PATH
-		nyx_hprintf("nyx demo direct path forced calls=%u prog=%u\n",
-			    msg->num_calls(),
-			    msg->prog_data() ? msg->prog_data()->size() : 0);
 		auto demo_result = nyx_demo_execute_request(output_data, meta->proc_id,
 							    meta->request_id, freshness++,
 							    msg, &cov_cmd);
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
 		nyx_finish_exec_payload(meta, msg->num_calls());
-		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
-			    (long long)meta->request_id, (unsigned)demo_result.size());
 		continue;
 #endif
-		nyx_hprintf("nyx generic branch selected calls=%u\n", msg->num_calls());
 
 		uint64_t exec_start = current_time_ms();
-		nyx_hprintf("nyx exec stage=pre_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_cov_reset", meta->request_id, msg->num_calls());
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd);
-		nyx_hprintf("nyx exec stage=post_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_cov_reset", meta->request_id, msg->num_calls());
-		nyx_hprintf("nyx exec stage=pre_execute_one request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_execute_one", meta->request_id, msg->num_calls());
 		execute_one();
-		nyx_hprintf("nyx exec stage=post_execute_one request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_execute_one", meta->request_id, msg->num_calls(),
 				   output_data->completed.load(std::memory_order_relaxed));
-		nyx_hprintf("nyx exec stage=post_release request=%lld\n", (long long)meta->request_id);
-		nyx_hprintf("nyx exec returned request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_cov_dump", meta->request_id, msg->num_calls());
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)&cov_cmd);
-		nyx_hprintf("nyx cov dumped request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_cov_dump", meta->request_id, msg->num_calls(),
 				   output_data->completed.load(std::memory_order_relaxed));
 
@@ -2715,8 +2556,6 @@ static int nyx_mode_loop(int argc, char** argv)
 		nyx_log_exec_stage("nyx_pre_finish_payload", meta->request_id, msg->num_calls());
 		nyx_finish_exec_payload(meta, msg->num_calls());
 		nyx_log_exec_stage("nyx_post_finish_payload", meta->request_id, msg->num_calls());
-		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
-			    (long long)meta->request_id, (unsigned)result.size());
 	}
 }
 #endif

@@ -879,7 +879,7 @@ func (vm *nyxVM) stepUntilReady(timeout time.Duration) error {
 	switch vm.aux.execCode() {
 	case nyxRCHprintf:
 		vm.recordModuleRangesFromAux()
-		log.Logf(0, "nyx hprintf: %s", string(vm.aux.misc()))
+		vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
 	case nyxRCAbort:
 		return fmt.Errorf("guest abort during init: %s", string(vm.aux.misc()))
 	}
@@ -1113,15 +1113,23 @@ func (vm *nyxVM) executeHandshake(payload []byte) error {
 	if err := vm.setPayload(payload); err != nil {
 		return err
 	}
+	deadline := time.Now().Add(vm.execWaitTimeout())
 	for i := 0; i < 16; i++ {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return errors.New("timed out waiting for nyx handshake ack")
+		}
 		vm.debugLogf("runner handshake step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			i, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
-		if err := vm.runQemu(); err != nil {
+		if err := vm.runQemuWithTimeout(remaining); err != nil {
+			if isTimeoutError(err) {
+				return fmt.Errorf("timed out waiting for nyx handshake ack at step=%d: %w", i, err)
+			}
 			return err
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
-			log.Logf(0, "runner handshake ack observed at step=%d", i)
+			vm.debugLogf("runner handshake ack observed at step=%d", i)
 			return nil
 		}
 		vm.debugLogf("runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
@@ -1611,7 +1619,6 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 		}
 	}
 	if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectComps != 0 {
-		total := 0
 		for _, crec := range compRecords {
 			if int(crec.CallIndex) >= len(res.Info.Calls) {
 				return fmt.Errorf("comparison record for call %d out of range (%d calls)",
@@ -1626,11 +1633,6 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 					IsConst: comp.IsImm != 0,
 				})
 			}
-			total += len(crec.Comps)
-		}
-		if total > 0 {
-			log.Logf(0, "runner injected comps: id=%d total=%d records=%d",
-				msg.Id, total, len(compRecords))
 		}
 	}
 	return nil
@@ -2009,7 +2011,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	if r.handshakeReady && r.lastEnvFlags == envFlags && r.lastSandboxArg == req.ExecOpts.SandboxArg {
 		return nil
 	}
-	log.Logf(0, "runner sending handshake: raw_env=0x%x normalized_env=0x%x sandbox_arg=%d",
+	r.vm.debugLogf("runner sending handshake: raw_env=0x%x normalized_env=0x%x sandbox_arg=%d",
 		uint64(req.ExecOpts.EnvFlags), uint64(envFlags), req.ExecOpts.SandboxArg)
 	msg := &flatrpc.SnapshotHandshakeT{
 		CoverEdges:       r.connectReply.CoverEdges,
@@ -2024,7 +2026,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	if err := r.vm.executeHandshake(packNyxPayload(nyxKindHandshake, nil, packFlatbuffer(msg))); err != nil {
 		return err
 	}
-	log.Logf(0, "runner handshake complete")
+	r.vm.debugLogf("runner handshake complete")
 	r.handshakeReady = true
 	r.coveragePrimed = false
 	r.lastEnvFlags = envFlags
@@ -2093,9 +2095,11 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	if prime {
 		requestLabel = "runner prime"
 	}
-	log.Logf(0, "%s request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
-		requestLabel, req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
-	log.Logf(0, "%s program: id=%d %s", requestLabel, req.Id, describeExecProgram(req.Data))
+	if r.vm.debug {
+		log.Logf(0, "%s request: id=%d prog_calls=%d flags=0x%x effective_flags=0x%x all_signal=%v",
+			requestLabel, req.Id, progExecCallCountOrPanic(req.Data), req.ExecOpts.ExecFlags, execFlags, req.AllSignal)
+		log.Logf(0, "%s program: id=%d %s", requestLabel, req.Id, describeExecProgram(req.Data))
+	}
 
 	// Control redqueen via aux buffer, mirroring kAFL's set_redqueen_mode().
 	// hintsJob sends CollectComps → enable redqueen before execution.
@@ -2150,8 +2154,10 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		covErr = injectCoverage(req, execMsg, r.connectReply.CoverEdges,
 			r.connectReply.Kernel64Bit, r.vm.moduleCanonicalizer, covRecords, compRecords)
 		if covErr == nil {
-			logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit,
-				r.vm.moduleCanonicalizer.CanonicalRanges())
+			if r.vm.debug {
+				logModuleCoverage(req.Id, req.Data, covRecords, r.connectReply.Kernel64Bit,
+					r.vm.moduleCanonicalizer.CanonicalRanges())
+			}
 			if r.coverageDebugPath != "" {
 				if err := appendCoverageDebugStream(r.coverageDebugPath,
 					buildCoverageDebugStreamEvent(req.Id, req.Data, covRecords,
@@ -2173,10 +2179,12 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		r.handleHangedRequest(req.Id)
 	}
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
-		logCallFeedback(req.Id, req.Data, res.Info.Calls)
-		log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
-			requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
-			duration.Milliseconds(), res.Hanged, res.Error)
+		if r.vm.debug {
+			logCallFeedback(req.Id, req.Data, res.Info.Calls)
+			log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
+				requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
+				duration.Milliseconds(), res.Hanged, res.Error)
+		}
 	}
 	return execMsg, nil
 }
@@ -2414,7 +2422,7 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		if primeResultCanReturn(primeMsg) {
 			return primeMsg, nil
 		}
-		log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
+		r.vm.debugLogf("runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
 		return r.executeRequestOnce(req, false)
 	}
 	if requestNeedsCoveragePriming(req) {
@@ -2511,7 +2519,7 @@ func (r *runner) loop() error {
 		}
 		switch req := msg.Msg.Value.(type) {
 		case *flatrpc.ExecRequest:
-			log.Logf(0, "runner received ExecRequest id=%d type=%v", req.Id, req.Type)
+			r.vm.debugLogf("runner received ExecRequest id=%d type=%v", req.Id, req.Type)
 			executing := &flatrpc.ExecutorMessage{
 				Msg: &flatrpc.ExecutorMessages{
 					Type:  flatrpc.ExecutorMessagesRawExecuting,
@@ -2552,7 +2560,7 @@ func (r *runner) loop() error {
 				return err
 			}
 		case *flatrpc.StateRequest:
-			log.Logf(0, "runner received StateRequest")
+			r.vm.debugLogf("runner received StateRequest")
 			state := &flatrpc.ExecutorMessage{
 				Msg: &flatrpc.ExecutorMessages{
 					Type:  flatrpc.ExecutorMessagesRawState,
@@ -2567,9 +2575,9 @@ func (r *runner) loop() error {
 				return err
 			}
 		case *flatrpc.SignalUpdate:
-			log.Logf(0, "runner received SignalUpdate")
+			r.vm.debugLogf("runner received SignalUpdate")
 		case *flatrpc.CorpusTriaged:
-			log.Logf(0, "runner received CorpusTriaged")
+			r.vm.debugLogf("runner received CorpusTriaged")
 		default:
 			return fmt.Errorf("unhandled host message %T", req)
 		}

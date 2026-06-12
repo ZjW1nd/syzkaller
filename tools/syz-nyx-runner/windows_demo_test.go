@@ -1639,11 +1639,8 @@ func TestNyxModeLoopSupportsIdlePayload(t *testing.T) {
 	for _, want := range []string{
 		"SYZ_NYX_KIND_IDLE",
 		"nyx_idle_meta_t",
-		"if (sleep_ms != 0)",
-		"nyx idle begin sleep_ms=%u",
 		"Sleep(sleep_ms)",
-		"nyx idle kept guest state sleep_ms=%u",
-		"nyx idle result dumped sleep_ms=%u bytes=%u",
+		"nyx_dump_exec_result(NYX_RESULT_BASENAME, result)",
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("executor.cc is missing Nyx idle support %q", want)
@@ -1658,6 +1655,9 @@ func TestNyxModeLoopSupportsIdlePayload(t *testing.T) {
 	idleBlock := body[idle:exec]
 	if strings.Contains(idleBlock, "HYPERCALL_KAFL_REQUEST_RELOAD") {
 		t.Fatal("Nyx idle payload must preserve guest state for staged standalone programs")
+	}
+	if strings.Contains(idleBlock, "nyx_hprintf(") {
+		t.Fatal("Nyx idle payload should not emit per-idle debug logs")
 	}
 }
 
@@ -1925,6 +1925,59 @@ func TestRunQemuWithTimeoutReturnsNetTimeout(t *testing.T) {
 	}
 }
 
+func TestRunnerHandshakeUsesBoundedQemuWait(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	body := extractFunctionBody(t, string(mainData), "func (vm *nyxVM) executeHandshake")
+	for _, want := range []string{
+		"deadline := time.Now().Add(vm.execWaitTimeout())",
+		"remaining := time.Until(deadline)",
+		"runQemuWithTimeout(remaining)",
+		"isTimeoutError(err)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("executeHandshake missing bounded wait construct %q", want)
+		}
+	}
+	if strings.Contains(body, "vm.runQemu();") {
+		t.Fatal("executeHandshake should not use an unbounded QEMU wait")
+	}
+}
+
+func TestRunnerHighFrequencyLogsAreDebugOnly(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(mainData)
+	execBody := extractFunctionBody(t, src, "func (r *runner) executeRequestOnce")
+	for _, want := range []string{
+		"if r.vm.debug {\n\t\tlog.Logf(0, \"%s request:",
+		"if r.vm.debug {\n\t\t\t\tlogModuleCoverage(",
+		"if r.vm.debug {\n\t\t\tlogCallFeedback(",
+	} {
+		if !strings.Contains(execBody, want) {
+			t.Fatalf("executeRequestOnce should gate high-frequency logging with debug, missing %q", want)
+		}
+	}
+	loopBody := extractFunctionBody(t, src, "func (r *runner) loop")
+	for _, want := range []string{
+		`r.vm.debugLogf("runner received ExecRequest`,
+		`r.vm.debugLogf("runner received StateRequest`,
+		`r.vm.debugLogf("runner received SignalUpdate`,
+		`r.vm.debugLogf("runner received CorpusTriaged`,
+	} {
+		if !strings.Contains(loopBody, want) {
+			t.Fatalf("runner loop should log protocol chatter only in debug mode, missing %q", want)
+		}
+	}
+	if strings.Contains(src, "runner injected comps") {
+		t.Fatal("comparison injection should not emit per-request stdout logs")
+	}
+}
+
 func TestExecutorInitializesInputDataBeforeNyxPreview(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
@@ -1983,7 +2036,7 @@ func TestNyxModeLoopInitializesCoverageAfterHandshake(t *testing.T) {
 	}
 }
 
-func TestNyxModeLoopLogsBeforeHandshakeDecode(t *testing.T) {
+func TestNyxModeLoopBuildsHandshakeAfterPayloadBodySetup(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1999,24 +2052,12 @@ func TestNyxModeLoopLogsBeforeHandshakeDecode(t *testing.T) {
 		t.Fatal("Nyx handshake assignment block not found in executor.cc")
 	}
 	block := src[start : start+endRel]
-	headerLog := strings.Index(block, "nyx_hprintf(\"nyx payload header kind=%u body=%u total=%d\\n\"")
-	if headerLog == -1 {
-		t.Fatal("Nyx payload header log not found before handshake decode")
-	}
-	bodyLog := strings.Index(block, "nyx_hprintf(\"nyx handshake body ready body=%u total=%d\\n\"")
-	if bodyLog == -1 {
-		t.Fatal("Nyx handshake body-ready log not found before handshake decode")
-	}
-	rootLog := strings.Index(block, "nyx_hprintf(\"nyx handshake root parsed body=%u\\n\"")
-	if rootLog == -1 {
-		t.Fatal("Nyx handshake root-parsed log not found before handshake decode")
-	}
 	rootCall := strings.Index(block, "flatbuffers::GetRoot<rpc::SnapshotHandshake>(body)")
 	if rootCall == -1 {
 		t.Fatal("Nyx handshake flatbuffers GetRoot call not found")
 	}
-	if rootLog < rootCall {
-		t.Fatal("Nyx handshake root-parsed log appears before GetRoot call")
+	if strings.Contains(block[:rootCall], "nyx_hprintf(") {
+		t.Fatal("Nyx handshake decode should not depend on debug hprintf side effects")
 	}
 }
 
@@ -2037,27 +2078,20 @@ func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 		if finish == -1 {
 			t.Fatalf("%s: exec finish helper not found", label)
 		}
-		log := strings.Index(block, "nyx_hprintf(\"nyx result dumped request=%lld bytes=%u\\n\"")
-		if log == -1 {
-			t.Fatalf("%s: result-dumped log not found", label)
-		}
-		if !(dump < finish && finish < log) {
-			t.Fatalf("%s: expected dump < finish < result-log, got dump=%d finish=%d log=%d",
-				label, dump, finish, log)
+		if dump > finish {
+			t.Fatalf("%s: expected dump before finish, got dump=%d finish=%d", label, dump, finish)
 		}
 	}
 	helper := extractFunctionBody(t, src, "static void nyx_finish_exec_payload")
 	for _, want := range []string{
 		"meta->flags & SYZ_NYX_EXEC_KEEP_STATE",
-		"nyx result kept guest state request=%lld calls=%u flags=0x%x",
-		"nyx result requesting reload request=%lld calls=%u flags=0x%x",
 		"nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);",
 	} {
 		if !strings.Contains(helper, want) {
 			t.Fatalf("exec finish helper missing %q", want)
 		}
 	}
-	keep := strings.Index(helper, "nyx result kept guest state")
+	keep := strings.Index(helper, "meta->flags & SYZ_NYX_EXEC_KEEP_STATE")
 	reload := strings.Index(helper, "nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);")
 	if keep == -1 || reload == -1 || keep > reload {
 		t.Fatalf("keep-state branch must return before default reload, keep=%d reload=%d", keep, reload)
@@ -2088,8 +2122,10 @@ func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 		}
 	}
 
-	if strings.Contains(src, "nyx result skipped request reload request=%lld calls=%u") {
-		t.Fatal("executor must use explicit keep-state/reload logs, not unconditional skip logs")
+	if strings.Contains(src, "nyx result skipped request reload") ||
+		strings.Contains(src, "nyx result kept guest state") ||
+		strings.Contains(src, "nyx result requesting reload") {
+		t.Fatal("executor should not emit per-request reload debug logs")
 	}
 	unconditionalReloads := strings.Count(src, "nyx_hypercall(HYPERCALL_KAFL_REQUEST_RELOAD, 0);")
 	if unconditionalReloads != 1 {
@@ -2644,7 +2680,7 @@ func TestWindowsNyxExecutorBuildEnablesNetInjection(t *testing.T) {
 	}
 }
 
-func TestWindowsSocketStateWrappersLogWinsockErrors(t *testing.T) {
+func TestWindowsSocketStateWrappersMapWinsockErrors(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -2659,27 +2695,24 @@ func TestWindowsSocketStateWrappersLogWinsockErrors(t *testing.T) {
 		"return EADDRNOTAVAIL;",
 		"WSASetLastError(0)",
 		"WSAGetLastError()",
-		"getsockname(s, (struct sockaddr*)&storage, &len)",
-		"windows socket state %s socket=0x%llx family=AF_INET addr=%u.%u.%u.%u port=%u namelen=%d",
 		"windows_log_sockaddr_state(\"bind input\"",
-		"windows socket state bind failed socket=0x%llx wsa=%d errno=%d",
-		"windows socket state bind ok socket=0x%llx",
 		"windows_log_getsockname_state(\"listen before\"",
-		"windows socket state listen failed socket=0x%llx backlog=%lld wsa=%d errno=%d",
-		"windows socket state listen ok socket=0x%llx backlog=%lld",
 	} {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("executor.cc is missing Windows socket diagnostic %q", needle)
+			t.Fatalf("executor.cc is missing Windows socket state helper construct %q", needle)
 		}
+	}
+	if strings.Contains(src, "windows socket state") {
+		t.Fatal("executor should not emit per-call Windows socket state diagnostics")
 	}
 	bindBody := extractFunctionBody(t, src, "static intptr_t SYSCALLAPI windows_bind_state")
 	if strings.Index(bindBody, "windows_log_sockaddr_state(\"bind input\"") >
 		strings.Index(bindBody, "bind(socket, name, (int)namelen)") {
-		t.Fatal("windows_bind_state should log the sockaddr before bind")
+		t.Fatal("windows_bind_state should capture the sockaddr state before bind")
 	}
 	listenBody := extractFunctionBody(t, src, "static intptr_t SYSCALLAPI windows_listen_state")
 	if strings.Index(listenBody, "windows_log_getsockname_state(\"listen before\"") >
 		strings.Index(listenBody, "listen(socket, (int)backlog)") {
-		t.Fatal("windows_listen_state should log getsockname before listen")
+		t.Fatal("windows_listen_state should capture getsockname state before listen")
 	}
 }
