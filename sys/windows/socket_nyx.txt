@@ -5,11 +5,15 @@
 resource SOCKET[int64]: -1
 resource SOCKET_TCP[SOCKET]
 resource SOCKET_TCP_CREATED[SOCKET_TCP]
+resource SOCKET_TCP_CREATED_NONBLOCK[SOCKET_TCP_CREATED]
 resource SOCKET_TCP_BOUND[SOCKET_TCP]
 resource SOCKET_TCP_CONNECTEX_BOUND[SOCKET_TCP_BOUND]
 resource SOCKET_TCP_LISTENING[SOCKET_TCP_BOUND]
+resource SOCKET_TCP_LISTENING_NONBLOCK[SOCKET_TCP_LISTENING]
 resource SOCKET_TCP_CONNECTED[SOCKET_TCP]
+resource SOCKET_TCP_CONNECTED_NONBLOCK[SOCKET_TCP_CONNECTED]
 resource SOCKET_TCP_ACCEPTED[SOCKET_TCP]
+resource SOCKET_TCP_ACCEPTED_NONBLOCK[SOCKET_TCP_ACCEPTED]
 resource SOCKET_TCP_CONNECTING[SOCKET_TCP_CONNECTED]
 resource SOCKET_TCP_ACCEPT_PENDING[SOCKET_TCP_ACCEPTED]
 resource SOCKET_TCP_ACCEPTED_UPDATED[SOCKET_TCP_ACCEPTED]
@@ -23,8 +27,10 @@ resource SOCKET_TCP_DISCONNECTED_REUSABLE[SOCKET_TCP_CONNECTED]
 resource SOCKET_UDP[SOCKET]
 resource SOCKET_UDP_CREATED[SOCKET_UDP]
 resource SOCKET_UDP_BOUND[SOCKET_UDP]
+resource SOCKET_UDP_BOUND_NONBLOCK[SOCKET_UDP_BOUND]
 resource SOCKET_UDP_CONNECTED[SOCKET_UDP]
 resource SOCKET_UDP_PEERED[SOCKET_UDP_CONNECTED]
+resource SOCKET_UDP_PEERED_NONBLOCK[SOCKET_UDP_PEERED]
 resource SOCKET_LISTENER[SOCKET_TCP_LISTENING]
 resource SOCKET_CONNECTED[SOCKET_TCP_CONNECTED]
 resource SOCKET_ACCEPT[SOCKET_TCP_ACCEPTED]
@@ -130,9 +136,11 @@ bind$inet_tcp(s SOCKET_TCP_CREATED, addr ptr[in, sockaddr_in], namelen len[addr]
 bind$inet_udp(s SOCKET_UDP_CREATED, addr ptr[in, sockaddr_in], namelen len[addr]) SOCKET_UDP_BOUND
 bind$connectex_tcp(s SOCKET_TCP_CREATED, addr ptr[in, sockaddr_in], namelen len[addr]) SOCKET_TCP_CONNECTEX_BOUND
 connect$inet_tcp(s SOCKET_TCP_CREATED, name ptr[in, sockaddr_in], namelen len[name]) SOCKET_TCP_CONNECTED
+connect$inet_tcp_nonblock(s SOCKET_TCP_CREATED_NONBLOCK, name ptr[in, sockaddr_in], namelen len[name]) SOCKET_TCP_CONNECTED
 connect$inet_udp(s SOCKET_UDP_CREATED, name ptr[in, sockaddr_in], namelen len[name]) SOCKET_UDP_PEERED
 listen$inet_tcp(s SOCKET_TCP_BOUND, backlog int32) SOCKET_TCP_LISTENING
 accept$inet_tcp(s SOCKET_TCP_LISTENING, addr ptr[inout, sockaddr_in, opt], addrlen ptr[inout, len[addr, int32], opt]) SOCKET_TCP_ACCEPTED
+accept$inet_tcp_nonblock(s SOCKET_TCP_LISTENING_NONBLOCK, addr ptr[inout, sockaddr_in, opt], addrlen ptr[inout, len[addr, int32], opt]) SOCKET_TCP_ACCEPTED_NONBLOCK
 
 send$inet_tcp(s SOCKET_TCP_CONNECTED, buf buffer[in], len len[buf], flags int32)
 send$inet_udp(s SOCKET_UDP_PEERED, buf buffer[in], len len[buf], flags int32)
@@ -142,20 +150,28 @@ recv$inet_tcp(s SOCKET_TCP_CONNECTED, buf buffer[out], len len[buf], flags int32
 recv$inet_udp(s SOCKET_UDP_BOUND, buf buffer[out], len len[buf], flags int32)
 recv$inet_accept(s SOCKET_TCP_ACCEPTED, buf buffer[out], len len[buf], flags int32)
 recv$inet_accept_updated(s SOCKET_TCP_ACCEPTED_UPDATED, buf buffer[out], len len[buf], flags int32) (no_generate, no_minimize)
+recv$inet_tcp_nonblock(s SOCKET_TCP_CONNECTED_NONBLOCK, buf buffer[out], len len[buf], flags int32)
+recv$inet_udp_nonblock(s SOCKET_UDP_BOUND_NONBLOCK, buf buffer[out], len len[buf], flags int32)
+recv$inet_accept_nonblock(s SOCKET_TCP_ACCEPTED_NONBLOCK, buf buffer[out], len len[buf], flags int32)
 WSASend$tcp(s SOCKET_TCP_CONNECTED, lpBuffers ptr[in, array[WSABUF_IN, 1]], dwBufferCount const[1], lpNumberOfBytesSent ptr[out, int32], dwFlags int32, lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSASend$tcp_pending(s SOCKET_TCP_CONNECTED, lpBuffers ptr[in, array[WSABUF_IN, 1]], dwBufferCount const[1], lpNumberOfBytesSent ptr[out, int32], dwFlags int32, lpOverlapped ptr[inout, OVERLAPPED], lpCompletionRoutine ptr[in, intptr, opt]) SOCKET_TCP_SEND_PENDING (no_generate, no_minimize)
 WSASend$accept(s SOCKET_TCP_ACCEPTED, lpBuffers ptr[in, array[WSABUF_IN, 1]], dwBufferCount const[1], lpNumberOfBytesSent ptr[out, int32], dwFlags int32, lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSASend$accept_pending(s SOCKET_TCP_ACCEPTED, lpBuffers ptr[in, array[WSABUF_IN, 1]], dwBufferCount const[1], lpNumberOfBytesSent ptr[out, int32], dwFlags int32, lpOverlapped ptr[inout, OVERLAPPED], lpCompletionRoutine ptr[in, intptr, opt]) SOCKET_TCP_ACCEPT_SEND_PENDING (no_generate, no_minimize)
 WSARecv$tcp(s SOCKET_TCP_CONNECTED, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
+WSARecv$tcp_nonblock(s SOCKET_TCP_CONNECTED_NONBLOCK, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSARecv$tcp_pending(s SOCKET_TCP_CONNECTED, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED], lpCompletionRoutine ptr[in, intptr, opt]) SOCKET_TCP_RECV_PENDING (no_generate, no_minimize)
 WSARecv$accept(s SOCKET_TCP_ACCEPTED, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
+WSARecv$accept_nonblock(s SOCKET_TCP_ACCEPTED_NONBLOCK, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSARecv$accept_pending(s SOCKET_TCP_ACCEPTED, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpOverlapped ptr[inout, OVERLAPPED], lpCompletionRoutine ptr[in, intptr, opt]) SOCKET_TCP_ACCEPT_RECV_PENDING (no_generate, no_minimize)
 sendto$udp_bound(s SOCKET_UDP_BOUND, buf buffer[in], len len[buf], flags int32, to ptr[in, sockaddr_in], tolen len[to])
 sendto$udp_connected(s SOCKET_UDP_PEERED, buf buffer[in], len len[buf], flags int32, to ptr[in, sockaddr_in], tolen len[to])
 recvfrom$udp_bound(s SOCKET_UDP_BOUND, buf buffer[out], len len[buf], flags int32, from ptr[out, sockaddr_in], fromlen ptr[inout, len[from, int32]])
 recvfrom$udp_connected(s SOCKET_UDP_PEERED, buf buffer[out], len len[buf], flags int32, from ptr[out, sockaddr_in], fromlen ptr[inout, len[from, int32]])
+recvfrom$udp_bound_nonblock(s SOCKET_UDP_BOUND_NONBLOCK, buf buffer[out], len len[buf], flags int32, from ptr[out, sockaddr_in], fromlen ptr[inout, len[from, int32]])
+recvfrom$udp_connected_nonblock(s SOCKET_UDP_PEERED_NONBLOCK, buf buffer[out], len len[buf], flags int32, from ptr[out, sockaddr_in], fromlen ptr[inout, len[from, int32]])
 WSASendTo$udp(s SOCKET_UDP_PEERED, lpBuffers ptr[in, array[WSABUF_IN, 1]], dwBufferCount const[1], lpNumberOfBytesSent ptr[out, int32], dwFlags int32, lpTo ptr[in, sockaddr_in], iTolen len[lpTo], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSARecvFrom$udp(s SOCKET_UDP_BOUND, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpFrom ptr[out, sockaddr_in], lpFromlen ptr[inout, len[lpFrom, int32]], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
+WSARecvFrom$udp_nonblock(s SOCKET_UDP_BOUND_NONBLOCK, lpBuffers ptr[in, array[WSABUF_OUT, 1]], dwBufferCount const[1], lpNumberOfBytesRecvd ptr[out, int32], lpFlags ptr[inout, int32], lpFrom ptr[out, sockaddr_in], lpFromlen ptr[inout, len[lpFrom, int32]], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 shutdown$tcp(s SOCKET_TCP_CONNECTED, how flags[shutdown_how])
 shutdown$accept(s SOCKET_TCP_ACCEPTED, how flags[shutdown_how])
 shutdown$tcp_rd(s SOCKET_TCP_CONNECTED, how const[0]) SOCKET_TCP_SHUTDOWN_RD
@@ -218,8 +234,14 @@ WSAIoctl$sio_keepalive_vals(s SOCKET_TCP_CONNECTED, dwIoControlCode const[0x9800
 WSAIoctl$sio_get_extension_function_pointer(s SOCKET_TCP_CONNECTED, dwIoControlCode const[0xc8000006], lpvInBuffer ptr[in, wsa_guid_connectex], cbInBuffer bytesize[lpvInBuffer], lpvOutBuffer ptr[out, intptr], cbOutBuffer bytesize[lpvOutBuffer], lpcbBytesReturned ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 
 ioctlsocket$fionbio_tcp(s SOCKET_CONNECTED, cmd const[0x8004667e], argp ptr[inout, int32])
+ioctlsocket$fionbio_tcp_created(s SOCKET_TCP_CREATED, cmd const[0x8004667e], argp ptr[in, const[1, int32]]) SOCKET_TCP_CREATED_NONBLOCK
+ioctlsocket$fionbio_tcp_connected(s SOCKET_TCP_CONNECTED, cmd const[0x8004667e], argp ptr[in, const[1, int32]]) SOCKET_TCP_CONNECTED_NONBLOCK
 ioctlsocket$fionbio_udp(s SOCKET_UDP, cmd const[0x8004667e], argp ptr[inout, int32])
+ioctlsocket$fionbio_udp_bound(s SOCKET_UDP_BOUND, cmd const[0x8004667e], argp ptr[in, const[1, int32]]) SOCKET_UDP_BOUND_NONBLOCK
+ioctlsocket$fionbio_udp_peer(s SOCKET_UDP_PEERED, cmd const[0x8004667e], argp ptr[in, const[1, int32]]) SOCKET_UDP_PEERED_NONBLOCK
+ioctlsocket$fionbio_listener(s SOCKET_TCP_LISTENING, cmd const[0x8004667e], argp ptr[in, const[1, int32]]) SOCKET_TCP_LISTENING_NONBLOCK
 ioctlsocket$fionbio_accept(s SOCKET_ACCEPT, cmd const[0x8004667e], argp ptr[inout, int32])
+ioctlsocket$fionbio_accept_nonblock(s SOCKET_TCP_ACCEPTED, cmd const[0x8004667e], argp ptr[in, const[1, int32]]) SOCKET_TCP_ACCEPTED_NONBLOCK
 setsockopt$int_tcp(s SOCKET_TCP_CONNECTED, level const[0xffff], optname flags[sol_socket_int_set_opts], optval ptr[in, int32], optlen len[optval])
 setsockopt$int_udp(s SOCKET_UDP, level const[0xffff], optname flags[sol_socket_int_set_opts], optval ptr[in, int32], optlen len[optval])
 setsockopt$int_accept(s SOCKET_TCP_ACCEPTED, level const[0xffff], optname flags[sol_socket_int_set_opts], optval ptr[in, int32], optlen len[optval])
@@ -239,7 +261,9 @@ ConnectEx$inet_tcp_reuse(s SOCKET_TCP_DISCONNECTED_REUSABLE, name ptr[in, sockad
 GetAcceptExSockaddrs$inet_tcp(lpOutputBuffer ptr[inout, acceptex_sockaddrs_buffer], dwReceiveDataLength const[0], dwLocalAddressLength const[32], dwRemoteAddressLength const[32], LocalSockaddr ptr[out, ptr[out, sockaddr_in]], LocalSockaddrLength ptr[out, int32], RemoteSockaddr ptr[out, ptr[out, sockaddr_in]], RemoteSockaddrLength ptr[out, int32]) (no_generate, no_minimize)
 TransmitPackets$inet_accept(hSocket SOCKET_ACCEPT, lpPacketArray ptr[in, array[transmit_packet_memory, 1]], nElementCount const[1], nSendSize int32[0:4096], lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags flags[transmit_packets_flags])
 WSARecvMsg$udp(s SOCKET_UDP_BOUND, lpMsg ptr[inout, WSAMSG_OUT], lpdwNumberOfBytesRecvd ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
+WSARecvMsg$udp_nonblock(s SOCKET_UDP_BOUND_NONBLOCK, lpMsg ptr[inout, WSAMSG_OUT], lpdwNumberOfBytesRecvd ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSARecvEx$inet_accept(s SOCKET_TCP_ACCEPTED, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
+WSARecvEx$inet_accept_nonblock(s SOCKET_TCP_ACCEPTED_NONBLOCK, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
 TransmitFile$inet_accept(hSocket SOCKET_TCP_ACCEPTED, hFile FILE_HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, OVERLAPPED, opt], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)
 
 shutdown_how = 0, 1, 2
