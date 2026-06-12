@@ -232,6 +232,7 @@ func TestWindowsSlowPublicWinsockSurfaceIsBorrowingOnly(t *testing.T) {
 	for _, name := range []string{
 		"select$afd_basic",
 		"WSAIoctl$sio_address_list_query",
+		"WSAIoctl$sio_get_interface_list",
 		"GetAcceptExSockaddrs$inet_tcp",
 	} {
 		call := target.SyscallMap[name]
