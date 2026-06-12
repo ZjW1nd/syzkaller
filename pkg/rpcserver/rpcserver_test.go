@@ -5,7 +5,10 @@ package rpcserver
 
 import (
 	"context"
+	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -422,6 +425,48 @@ func TestRunnerInflightLimitDoesNotSpecialCaseReturnAllSignal(t *testing.T) {
 	}
 	if got := len(runner.requests); got != limit {
 		t.Fatalf("runner queued %d requests, want %d", got, limit)
+	}
+}
+
+func TestRunnerRequestHistoryWritesProgramText(t *testing.T) {
+	target, err := prog.GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := target.Deserialize([]byte("test$manual(0x1)\n"), prog.Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	t.Setenv(managerRequestHistoryDirEnv, dir)
+
+	runner := &Runner{id: 7}
+	req := &queue.Request{
+		Type:      flatrpc.RequestTypeProgram,
+		Prog:      p,
+		ExecOpts:  flatrpc.ExecOpts{ExecFlags: flatrpc.ExecFlagCollectCover, EnvFlags: flatrpc.ExecEnvSandboxNone},
+		Origin:    "fuzz",
+		TraceID:   "trace-1",
+		Important: true,
+	}
+	runner.writeRequestHistory(42, req)
+
+	data, err := os.ReadFile(filepath.Join(dir, "manager-requests-vm7.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec requestHistoryRecord
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(data))), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.VM != 7 || rec.RequestID != 42 || rec.Origin != "fuzz" || rec.TraceID != "trace-1" {
+		t.Fatalf("bad history metadata: %+v", rec)
+	}
+	if rec.ProgramSHA1 == "" || !strings.Contains(rec.Program, "test$manual") {
+		t.Fatalf("history did not include replayable program: %+v", rec)
+	}
+	if len(rec.CallNames) != 1 || rec.CallNames[0] != "test$manual" {
+		t.Fatalf("call names = %v, want test$manual", rec.CallNames)
 	}
 }
 

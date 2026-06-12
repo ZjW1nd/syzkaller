@@ -5,9 +5,12 @@ package rpcserver
 
 import (
 	"bytes"
+	"crypto/sha1"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"time"
@@ -23,6 +26,8 @@ import (
 	"github.com/google/syzkaller/sys/targets"
 	"github.com/google/syzkaller/vm/dispatcher"
 )
+
+const managerRequestHistoryDirEnv = "SYZ_MANAGER_REQUEST_HISTORY_DIR"
 
 type Runner struct {
 	id            int
@@ -61,6 +66,25 @@ type runnerStats struct {
 	statExecBufferTooSmall *stat.Val
 	statNoExecRequests     *stat.Val
 	statNoExecDuration     *stat.Val
+}
+
+type requestHistoryRecord struct {
+	Time        time.Time `json:"time"`
+	VM          int       `json:"vm"`
+	RequestID   int64     `json:"request_id"`
+	Type        string    `json:"type"`
+	Origin      string    `json:"origin,omitempty"`
+	TraceID     string    `json:"trace_id,omitempty"`
+	ExecFlags   uint64    `json:"exec_flags"`
+	EnvFlags    uint64    `json:"env_flags"`
+	SandboxArg  int64     `json:"sandbox_arg,omitempty"`
+	Important   bool      `json:"important,omitempty"`
+	NoPrefetch  bool      `json:"no_prefetch,omitempty"`
+	ProgramSHA1 string    `json:"program_sha1,omitempty"`
+	CallNames   []string  `json:"call_names,omitempty"`
+	Program     string    `json:"program,omitempty"`
+	BinaryFile  string    `json:"binary_file,omitempty"`
+	GlobPattern string    `json:"glob_pattern,omitempty"`
 }
 
 type handshakeConfig struct {
@@ -342,6 +366,7 @@ func (runner *Runner) sendRequest(req *queue.Request) error {
 	default:
 		panic("unhandled request type")
 	}
+	runner.writeRequestHistory(id, req)
 	var avoid uint64
 	for _, id := range req.Avoid {
 		if id.VM == runner.id {
@@ -364,6 +389,70 @@ func (runner *Runner) sendRequest(req *queue.Request) error {
 	}
 	runner.requests[id] = req
 	return flatrpc.Send(runner.conn, msg)
+}
+
+func (runner *Runner) writeRequestHistory(id int64, req *queue.Request) {
+	dir := os.Getenv(managerRequestHistoryDirEnv)
+	if dir == "" || req == nil {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Logf(0, "failed to create manager request history dir %q: %v", dir, err)
+		return
+	}
+	path := filepath.Join(dir, fmt.Sprintf("manager-requests-vm%d.jsonl", runner.id))
+	data, err := json.Marshal(requestHistoryRecordFor(id, runner.id, req))
+	if err != nil {
+		log.Logf(0, "failed to encode manager request history: %v", err)
+		return
+	}
+	data = append(data, '\n')
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Logf(0, "failed to open manager request history %q: %v", path, err)
+		return
+	}
+	defer file.Close()
+	if _, err := file.Write(data); err != nil {
+		log.Logf(0, "failed to write manager request history %q: %v", path, err)
+	}
+}
+
+func requestHistoryRecordFor(id int64, vm int, req *queue.Request) requestHistoryRecord {
+	rec := requestHistoryRecord{
+		Time:       time.Now().UTC(),
+		VM:         vm,
+		RequestID:  id,
+		Type:       req.Type.String(),
+		Origin:     req.Origin,
+		TraceID:    req.TraceID,
+		ExecFlags:  uint64(req.ExecOpts.ExecFlags),
+		EnvFlags:   uint64(req.ExecOpts.EnvFlags),
+		SandboxArg: req.ExecOpts.SandboxArg,
+		Important:  req.Important,
+		NoPrefetch: req.NoPrefetch,
+	}
+	switch req.Type {
+	case flatrpc.RequestTypeProgram:
+		if req.Prog != nil {
+			data := req.Prog.Serialize()
+			sum := sha1.Sum(data)
+			rec.ProgramSHA1 = fmt.Sprintf("%x", sum)
+			rec.Program = string(data)
+			for _, call := range req.Prog.Calls {
+				name := "<nil>"
+				if call != nil && call.Meta != nil {
+					name = call.Meta.Name
+				}
+				rec.CallNames = append(rec.CallNames, name)
+			}
+		}
+	case flatrpc.RequestTypeBinary:
+		rec.BinaryFile = req.BinaryFile
+	case flatrpc.RequestTypeGlob:
+		rec.GlobPattern = req.GlobPattern
+	}
+	return rec
 }
 
 func (runner *Runner) handleExecutingMessage(msg *flatrpc.ExecutingMessage) error {

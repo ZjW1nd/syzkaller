@@ -2431,7 +2431,7 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 	}
 }
 
-func TestFullchainCandidateRunRepeatIsWired(t *testing.T) {
+func TestFullchainManagerReplayDiagnosticsAreWired(t *testing.T) {
 	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
 	scriptData, err := os.ReadFile(scriptPath)
 	if err != nil {
@@ -2445,9 +2445,12 @@ func TestFullchainCandidateRunRepeatIsWired(t *testing.T) {
 		"--candidate-run-repeat",
 		"candidate_run_repeat",
 		"-candidate_run_repeat",
+		"--manager-request-history-dir",
+		"MANAGER_REQUEST_HISTORY_DIR",
+		"SYZ_MANAGER_REQUEST_HISTORY_DIR",
 	} {
 		if !strings.Contains(scriptSrc, want) {
-			t.Fatalf("run-nyx-fullchain candidate-run repeat support missing %q", want)
+			t.Fatalf("run-nyx-fullchain manager replay diagnostics missing %q", want)
 		}
 	}
 }
