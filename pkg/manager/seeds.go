@@ -112,6 +112,11 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 	if cfg == nil || cfg.Target == nil || cfg.Experimental.BorrowingSeedPrefix == "" {
 		return nil
 	}
+	allowed, err := enabledCallSetForConfig(cfg)
+	if err != nil {
+		log.Logf(0, "failed to calculate borrowing seed syscall set: %v", err)
+		return nil
+	}
 	seedPath := filepath.Join("sys", cfg.TargetOS, "test")
 	seeds, err := readSeedInputs(cfg, seedPath, cfg.Experimental.BorrowingSeedPrefix)
 	if err != nil {
@@ -121,6 +126,7 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 	var progs []*prog.Prog
 	skippedNoGenerate := 0
 	skippedDisabled := 0
+	skippedNotEnabled := 0
 	disabledCalls := disabledCallIDs(cfg)
 	for _, seed := range seeds {
 		p, err := ParseSeed(cfg.Target, seed.Data)
@@ -138,6 +144,11 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 			log.Logf(1, "borrowing seed %s is skipped: contains disabled calls", seed.Path)
 			continue
 		}
+		if !candidateOnlyContains(p, allowed, disabledCalls, false) {
+			skippedNotEnabled++
+			log.Logf(1, "borrowing seed %s is skipped: contains syscalls not enabled by config", seed.Path)
+			continue
+		}
 		progs = append(progs, p)
 	}
 	if skippedNoGenerate != 0 {
@@ -146,11 +157,27 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 	if skippedDisabled != 0 {
 		log.Logf(0, "skipped %d borrowing-only seeds containing disabled calls", skippedDisabled)
 	}
+	if skippedNotEnabled != 0 {
+		log.Logf(0, "skipped %d borrowing-only seeds containing non-enabled calls", skippedNotEnabled)
+	}
 	if len(progs) != 0 {
 		log.Logf(0, "loaded %d borrowing-only seeds with prefix %q", len(progs),
 			cfg.Experimental.BorrowingSeedPrefix)
 	}
 	return progs
+}
+
+func enabledCallSetForConfig(cfg *mgrconfig.Config) (map[*prog.Syscall]bool, error) {
+	ids, err := mgrconfig.ParseEnabledSyscalls(cfg.Target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		return nil, err
+	}
+	enabled := make(map[*prog.Syscall]bool, len(ids))
+	for _, id := range ids {
+		enabled[cfg.Target.Syscalls[id]] = true
+	}
+	return enabled, nil
 }
 
 func disabledCallIDs(cfg *mgrconfig.Config) map[int]bool {

@@ -488,6 +488,14 @@ func TestWindowsExpandEnabledCallsAddsFileAndObjectConstructors(t *testing.T) {
 				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp", "WSACreateEvent",
 			},
 		},
+		{
+			root: "NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+			want: []string{
+				"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+				"socket$inet_tcp", "bind$inet_tcp", "listen$inet_tcp",
+				"ioctlsocket$fionbio_listener", "accept$inet_tcp_nonblock",
+			},
+		},
 	}
 	for _, test := range tests {
 		root := target.SyscallMap[test.root]
@@ -727,6 +735,9 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("NtDeviceIoControlFile$afd_event_select_accept", 0, "SOCKET_TCP_ACCEPTED")
 	assertResource("NtDeviceIoControlFile$afd_enum_network_events_accept", 0, "SOCKET_TCP_ACCEPTED")
 	assertResource("NtDeviceIoControlFile$afd_poll_accept", 0, "SOCKET_TCP_ACCEPTED")
+	assertResource("NtDeviceIoControlFile$afd_event_select_accept_nonblock", 0, "SOCKET_TCP_ACCEPTED_NONBLOCK")
+	assertResource("NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock", 0, "SOCKET_TCP_ACCEPTED_NONBLOCK")
+	assertResource("NtDeviceIoControlFile$afd_poll_accept_nonblock", 0, "SOCKET_TCP_ACCEPTED_NONBLOCK")
 	assertResource("NtFsControlFile", 0, "FILE_HANDLE")
 	assertResource("NtFsControlFile", 1, "EVENT_HANDLE")
 	assertResource("NtFsControlFile$ntfs_get_compression", 0, "FILE_HANDLE")
@@ -766,6 +777,10 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertPtrStruct("NtDeviceIoControlFile$afd_enum_network_events_accept", 8, "AFD_ENUM_NETWORK_EVENTS_INFO")
 	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept", 6, "AFD_POLL_INFO")
 	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept", 8, "AFD_POLL_INFO")
+	assertPtrStruct("NtDeviceIoControlFile$afd_event_select_accept_nonblock", 6, "AFD_EVENT_SELECT_INFO_NOEVENT")
+	assertPtrStruct("NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock", 8, "AFD_ENUM_NETWORK_EVENTS_INFO")
+	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept_nonblock", 6, "AFD_POLL_INFO_ACCEPT_NONBLOCK")
+	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept_nonblock", 8, "AFD_POLL_INFO_ACCEPT_NONBLOCK")
 	assertPtrStruct("AcceptEx$inet_tcp", 7, "OVERLAPPED")
 	assertResource("AcceptEx$inet_tcp_pending", 0, "SOCKET_LISTENER")
 	assertResource("AcceptEx$inet_tcp_pending", 1, "SOCKET_ACCEPT")
@@ -892,8 +907,11 @@ func TestWindowsObjectStructLayouts(t *testing.T) {
 		{name: "AFD_HANDLE_INFO", size: 0x10},
 		{name: "AFD_QOS_INFO", size: 0x58},
 		{name: "AFD_POLL_HANDLE_INFO", size: 0x10},
+		{name: "AFD_POLL_HANDLE_INFO_ACCEPT_NONBLOCK", size: 0x10},
 		{name: "AFD_POLL_INFO", size: 0x20},
+		{name: "AFD_POLL_INFO_ACCEPT_NONBLOCK", size: 0x20},
 		{name: "AFD_EVENT_SELECT_INFO", size: 0x10},
+		{name: "AFD_EVENT_SELECT_INFO_NOEVENT", size: 0x10},
 		{name: "AFD_ENUM_NETWORK_EVENTS_INFO", size: 0x38},
 		{name: "tcp_keepalive", size: 0xc},
 		{name: "wsa_guid_connectex", size: 0x10},
@@ -937,6 +955,9 @@ func TestWindowsNtControlCallsHaveFullArity(t *testing.T) {
 		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept",
 		"NtDeviceIoControlFile$afd_poll_accept",
+		"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
+		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 		"NtFsControlFile",
 		"NtFsControlFile$ntfs_get_compression",
 		"NtFsControlFile$ntfs_set_compression",

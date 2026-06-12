@@ -427,6 +427,59 @@ func TestLoadBorrowingSeedsSkipsDisabledCalls(t *testing.T) {
 	}
 }
 
+func TestLoadBorrowingSeedsSkipsCallsNotEnabledByConfig(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	seedDir := filepath.Join(dir, "sys", "windows", "test")
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	good := []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+		"r0 = socket$connected_udp(0x2, 0x2, 0x11)\n" +
+		"connect$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e33, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+		"send$inet_udp(r0, 'ping', 0x4, 0x0)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_allowed.txt"), good, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	notEnabled := []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+		"r0 = socket$connected_udp(0x2, 0x2, 0x11)\n" +
+		"connect$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e34, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+		"WSAIoctl$sio_get_interface_list(r0, 0x4004747f, 0x0, 0x0, &(0x7f0000000180)=[{}], 0x130, &(0x7f0000000300), 0x0, 0x0)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_not_enabled.txt"), notEnabled, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &mgrconfig.Config{
+		Syzkaller: dir,
+		EnabledSyscalls: []string{
+			"WSAStartup",
+			"socket$connected_udp",
+			"connect$inet_udp",
+			"send$inet_udp",
+		},
+		Experimental: mgrconfig.Experimental{
+			BorrowingSeedPrefix: "nyx_afd_",
+		},
+		Derived: mgrconfig.Derived{
+			TargetOS: "windows",
+			Target:   target,
+		},
+	}
+	progs := manager.LoadBorrowingSeeds(cfg)
+	if len(progs) != 1 {
+		t.Fatalf("got %d borrowing seeds, want only the enabled seed", len(progs))
+	}
+	got := string(progs[0].Serialize())
+	if !strings.Contains(got, "send$inet_udp") {
+		t.Fatalf("enabled borrowing seed was not loaded:\n%s", got)
+	}
+	if strings.Contains(got, "WSAIoctl$sio_get_interface_list") {
+		t.Fatalf("non-enabled borrowing seed was loaded:\n%s", got)
+	}
+}
+
 func assertNoCandidateRunFinish(t *testing.T, finished <-chan error) {
 	t.Helper()
 	select {

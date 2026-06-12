@@ -779,7 +779,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"ioctlsocket$fionbio_listener",
 		"accept$inet_tcp_nonblock",
 		"send$inet_accept",
-		"ioctlsocket$fionbio_accept_nonblock",
 		"recv$inet_accept_nonblock",
 		"WSASend$accept",
 		"WSARecv$accept_nonblock",
@@ -790,6 +789,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_query_handles_accept",
 		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_noop_accept",
+		"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
+		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 		"ioctlsocket$fionbio_accept",
 		"setsockopt$int_accept",
 		"getsockopt$int_accept",
@@ -824,6 +826,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"GetAcceptExSockaddrs$inet_tcp",
 		"socket$accept_tcp",
 		"accept$inet_tcp",
+		"ioctlsocket$fionbio_accept_nonblock",
 		"recv$inet_accept",
 		"WSARecv$accept",
 		"WSARecvEx$inet_accept",
@@ -848,6 +851,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"CancelIo$accept*",
 		"CancelIo$connect_pending",
 		"CancelIo$tcp_*_pending",
+		"closesocket$any",
 		"closesocket$accept*",
 		"closesocket$connect_pending",
 		"closesocket$tcp_*_pending",
@@ -1163,9 +1167,9 @@ func TestWindowsAfdPrivateAcceptConfigUsesNonblockingAcceptOnly(t *testing.T) {
 			"socket$accept_tcp",
 			"WSAEventSelect$accept",
 			"WSAEnumNetworkEvents$accept",
-			"NtDeviceIoControlFile$afd_event_select_accept",
-			"NtDeviceIoControlFile$afd_enum_network_events_accept",
-			"NtDeviceIoControlFile$afd_poll_accept",
+			"NtDeviceIoControlFile$afd_event_select_accept*",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept*",
+			"NtDeviceIoControlFile$afd_poll_accept*",
 			"CreateIoCompletionPort$accept*",
 			"AcceptEx$inet_tcp*",
 		} {
@@ -1226,19 +1230,46 @@ func TestWindowsAfdPrivateAcceptConfigCoversSeedSyscalls(t *testing.T) {
 func TestWindowsAfdPrivateEventConfigStaysEventPollOnly(t *testing.T) {
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-event.cfg")
 	want := []string{
-		"connect$inet_tcp",
-		"NtDeviceIoControlFile$afd_event_select_accept",
-		"NtDeviceIoControlFile$afd_enum_network_events_accept",
-		"NtDeviceIoControlFile$afd_poll_accept",
+		"ioctlsocket$fionbio_listener",
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
+		"accept$inet_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
+		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 	}
 	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("private AFD event enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
 			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
 	}
-	if cfg.Experimental.SeedPrefix != "nyx_afd_private_query_event_poll" ||
+	if cfg.Experimental.SeedPrefix != "nyx_afd_private_event_nonblock" ||
 		cfg.Experimental.BorrowingSeedPrefix != "" {
 		t.Fatalf("private AFD event seed prefixes are too broad: seed=%q borrowing=%q",
 			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if cfg.Experimental.ForceGenerateEveryN != 1 {
+		t.Fatalf("private AFD event force_generate_every_n=%d, want 1",
+			cfg.Experimental.ForceGenerateEveryN)
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("private AFD event config must reload between requests while isolating event/poll IOCTLs")
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		for _, pattern := range []string{
+			"connect$inet_tcp",
+			"accept$inet_tcp",
+			"socket$accept_tcp",
+			"ioctlsocket$fionbio_accept_nonblock",
+			"CreateIoCompletionPort$accept*",
+			"AcceptEx$inet_tcp*",
+			"TransmitPackets$inet_accept",
+			"TransmitFile$inet_accept",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("private AFD event config directly enables risky syscall %q via %q",
+					name, pattern)
+			}
+		}
 	}
 }
 
@@ -1248,6 +1279,16 @@ func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
 		t.Fatalf("GetTarget: %v", err)
 	}
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-event.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{"nyx_afd_private_event_nonblock.txt"}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("private AFD event seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
 	enabled := make(map[*prog.Syscall]bool)
 	for _, name := range cfg.EnabledSyscalls {
 		call := target.SyscallMap[name]
@@ -1257,7 +1298,7 @@ func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
 		enabled[call] = true
 	}
 	expanded, _ := target.TransitivelyEnabledCalls(enabled)
-	for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
+	for _, path := range matches {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -1267,6 +1308,16 @@ func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
 			t.Fatalf("deserialize %s: %v", path, err)
 		}
 		for _, call := range p.Calls {
+			for _, forbidden := range []string{
+				"connect$inet_tcp",
+				"accept$inet_tcp",
+				"socket$accept_tcp",
+			} {
+				if call.Meta.Name == forbidden {
+					t.Fatalf("%s uses blocking accept scaffold %s",
+						filepath.Base(path), call.Meta.Name)
+				}
+			}
 			if call.Meta.Attrs.AutomaticHelper {
 				continue
 			}
@@ -1341,9 +1392,9 @@ func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 					"WSAGetOverlappedResult$*",
 					"CancelIoEx$*",
 					"CancelIo$*",
-					"NtDeviceIoControlFile$afd_event_select_accept",
-					"NtDeviceIoControlFile$afd_enum_network_events_accept",
-					"NtDeviceIoControlFile$afd_poll_accept",
+					"NtDeviceIoControlFile$afd_event_select_accept*",
+					"NtDeviceIoControlFile$afd_enum_network_events_accept*",
+					"NtDeviceIoControlFile$afd_poll_accept*",
 				} {
 					if mgrconfig.MatchSyscall(name, pattern) {
 						t.Fatalf("WSAIoctl AFD config directly enables risky syscall %q via %q",
