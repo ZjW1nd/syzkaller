@@ -760,6 +760,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_noop_udp",
 		"WSAIoctl$sio_address_list_query",
 		"WSAIoctl$sio_routing_interface_query",
+		"WSAIoctl$sio_get_interface_list",
 		"ioctlsocket$fionbio_tcp_created",
 		"connect$inet_tcp_nonblock",
 		"send$inet_tcp",
