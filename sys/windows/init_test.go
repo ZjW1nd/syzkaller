@@ -785,6 +785,9 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("WSAIoctl$sio_routing_interface_query", 0, "SOCKET_UDP_PEERED")
 	assertPtrStruct("WSAIoctl$sio_keepalive_vals", 2, "tcp_keepalive")
 	assertPtrStruct("WSAIoctl$sio_get_extension_function_pointer", 2, "wsa_guid_connectex")
+	assertResource("WSAIoctl$sio_get_interface_list", 0, "SOCKET_UDP_BOUND")
+	assertPtrArrayStruct("WSAIoctl$sio_get_interface_list", 4, "wsa_interface_info")
+	assertResource("WSAIoctl$sio_udp_connreset", 0, "SOCKET_UDP_BOUND")
 	assertResource("ConnectEx$inet_tcp", 0, "SOCKET_TCP_CONNECTEX_BOUND")
 	assertResource("ConnectEx$inet_tcp", -1, "SOCKET_TCP_CONNECTED")
 	assertPtrStruct("ConnectEx$inet_tcp", 1, "sockaddr_in")
@@ -895,6 +898,8 @@ func TestWindowsObjectStructLayouts(t *testing.T) {
 		{name: "tcp_keepalive", size: 0xc},
 		{name: "wsa_guid_connectex", size: 0x10},
 		{name: "afd_address_list", size: 0x44},
+		{name: "wsa_sockaddr_gen", size: 0x18},
+		{name: "wsa_interface_info", size: 0x4c},
 		{name: "WSAMSG_OUT", size: 0x38},
 		{name: "transmit_packet_memory", size: 0x18},
 		{name: "WSANETWORKEVENTS", size: 0x2c},
