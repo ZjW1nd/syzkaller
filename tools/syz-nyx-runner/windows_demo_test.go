@@ -973,21 +973,27 @@ func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
 }
 
 func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
 	want := []string{
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
-		"NtDeviceIoControlFile$afd_query_recv_accept",
 		"NtDeviceIoControlFile$afd_query_handles_tcp",
-		"NtDeviceIoControlFile$afd_query_handles_accept",
 		"NtDeviceIoControlFile$afd_query_handles_udp",
 		"NtDeviceIoControlFile$afd_query_handles_udp_peer",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_tcp",
-		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_get_qos_udp",
 		"NtDeviceIoControlFile$afd_noop_tcp",
-		"NtDeviceIoControlFile$afd_noop_accept",
 		"NtDeviceIoControlFile$afd_noop_udp",
 		"NtDeviceIoControlFile$afd_address_list_query_udp",
 		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
@@ -997,10 +1003,62 @@ func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
 			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
 	}
 	for _, name := range cfg.EnabledSyscalls {
-		if strings.Contains(name, "event_select") ||
+		if strings.Contains(name, "_accept") ||
+			strings.Contains(name, "event_select") ||
 			strings.Contains(name, "enum_network_events") ||
 			strings.Contains(name, "poll") {
 			t.Fatalf("private AFD config should keep %s seed-only", name)
+		}
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_afd_private_core_" ||
+		cfg.Experimental.BorrowingSeedPrefix != "nyx_afd_private_core_" {
+		t.Fatalf("private AFD seed prefixes are too broad: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("private AFD config must reload between requests for core query isolation")
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	forbidden := []string{
+		"connect$inet_tcp",
+		"recv$inet_tcp",
+		"WSARecv$tcp",
+		"WSAEventSelect$tcp",
+		"WSAEnumNetworkEvents$tcp",
+		"ConnectEx$inet_tcp*",
+		"DisconnectEx$inet_tcp*",
+		"recv$inet_udp",
+		"recvfrom$udp_bound",
+		"recvfrom$udp_connected",
+		"WSARecvFrom$udp",
+		"WSARecvMsg$udp",
+		"accept$inet_tcp",
+		"socket$accept_tcp",
+		"recv$inet_accept",
+		"WSARecv$accept",
+		"WSARecvEx$inet_accept",
+		"NtDeviceIoControlFile$afd_*_accept",
+		"CreateIoCompletionPort$*",
+		"GetQueuedCompletionStatus$socket",
+		"WSAGetOverlappedResult$*",
+		"CancelIoEx$*",
+		"CancelIo$*",
+		"AcceptEx$inet_tcp*",
+		"TransmitPackets$inet_accept",
+		"TransmitFile$inet_accept",
+	}
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		for _, pattern := range forbidden {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("private AFD config leaves risky expanded syscall %q enabled via %q",
+					name, pattern)
+			}
 		}
 	}
 }
@@ -1019,6 +1077,16 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 		t.Fatalf("GetTarget: %v", err)
 	}
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{"nyx_afd_private_core_readonly.txt"}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("private AFD core seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
 	enabled := make(map[*prog.Syscall]bool)
 	for _, name := range cfg.EnabledSyscalls {
 		call := target.SyscallMap[name]
@@ -1028,7 +1096,7 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 		enabled[call] = true
 	}
 	expanded, _ := target.TransitivelyEnabledCalls(enabled)
-	for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
+	for _, path := range matches {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -1038,6 +1106,13 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 			t.Fatalf("deserialize %s: %v", path, err)
 		}
 		for _, call := range p.Calls {
+			if call.Meta.Name == "connect$inet_tcp" ||
+				call.Meta.Name == "accept$inet_tcp" ||
+				call.Meta.Name == "socket$accept_tcp" ||
+				strings.Contains(call.Meta.Name, "_accept") {
+				t.Fatalf("%s uses non-core private scaffold %s",
+					filepath.Base(path), call.Meta.Name)
+			}
 			if call.Meta.Attrs.NoGenerate || call.Meta.Attrs.AutomaticHelper {
 				continue
 			}
@@ -1056,6 +1131,7 @@ func TestWindowsAfdPrivateAcceptConfigUsesNonblockingAcceptOnly(t *testing.T) {
 		"ioctlsocket$fionbio_tcp_created",
 		"connect$inet_tcp_nonblock",
 		"accept$inet_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_query_recv_accept",
 		"NtDeviceIoControlFile$afd_query_handles_accept",
 		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_noop_accept",
