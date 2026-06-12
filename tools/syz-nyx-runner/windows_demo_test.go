@@ -698,6 +698,8 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-private-accept.cfg",
 		"windows-nyx-afd-private-event.cfg",
 		"windows-nyx-afd-wsaioctl.cfg",
+		"windows-nyx-afd-wsaioctl-interface.cfg",
+		"windows-nyx-afd-wsaioctl-udp-connreset.cfg",
 	} {
 		cfgPath := cfgPath
 		t.Run(cfgPath, func(t *testing.T) {
@@ -814,6 +816,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"recvfrom$udp_connected",
 		"WSARecvFrom$udp",
 		"WSARecvMsg$udp",
+		"WSAIoctl$sio_udp_connreset",
 		"select$afd_basic",
 		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept",
@@ -1279,46 +1282,76 @@ func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-wsaioctl.cfg")
-	want := []string{
-		"bind$inet_udp",
-		"WSAIoctl$sio_get_interface_list",
-		"WSAIoctl$sio_udp_connreset",
-	}
-	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
-		t.Fatalf("WSAIoctl AFD enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
-			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
-	}
-	if cfg.Experimental.SeedPrefix != "nyx_afd_wsaioctl_lowrisk" ||
-		cfg.Experimental.BorrowingSeedPrefix != "" {
-		t.Fatalf("WSAIoctl AFD seed prefixes are too broad: seed=%q borrowing=%q",
-			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
-	}
-	if cfg.VM.KeepState {
-		t.Fatal("WSAIoctl AFD config should reload between requests while isolating low-risk IOCTLs")
-	}
-
-	for _, name := range cfg.EnabledSyscalls {
-		if strings.Contains(name, "_CHANGE") {
-			t.Fatalf("WSAIoctl AFD config directly enables blocking change notification syscall %q", name)
-		}
-		for _, pattern := range []string{
-			"ConnectEx$inet_tcp*",
-			"DisconnectEx$inet_tcp*",
-			"AcceptEx$inet_tcp*",
-			"CreateIoCompletionPort$*",
-			"WSAGetOverlappedResult$*",
-			"CancelIoEx$*",
-			"CancelIo$*",
-			"NtDeviceIoControlFile$afd_event_select_accept",
-			"NtDeviceIoControlFile$afd_enum_network_events_accept",
-			"NtDeviceIoControlFile$afd_poll_accept",
-		} {
-			if mgrconfig.MatchSyscall(name, pattern) {
-				t.Fatalf("WSAIoctl AFD config directly enables risky syscall %q via %q",
-					name, pattern)
+	for _, tc := range []struct {
+		cfgPath    string
+		seedPrefix string
+		want       []string
+	}{
+		{
+			cfgPath:    "windows-nyx-afd-wsaioctl.cfg",
+			seedPrefix: "nyx_afd_wsaioctl_lowrisk",
+			want: []string{
+				"bind$inet_udp",
+				"WSAIoctl$sio_get_interface_list",
+				"WSAIoctl$sio_udp_connreset",
+			},
+		},
+		{
+			cfgPath:    "windows-nyx-afd-wsaioctl-interface.cfg",
+			seedPrefix: "nyx_afd_wsaioctl_interface",
+			want: []string{
+				"bind$inet_udp",
+				"WSAIoctl$sio_get_interface_list",
+			},
+		},
+		{
+			cfgPath:    "windows-nyx-afd-wsaioctl-udp-connreset.cfg",
+			seedPrefix: "nyx_afd_wsaioctl_udp_connreset",
+			want: []string{
+				"bind$inet_udp",
+				"WSAIoctl$sio_udp_connreset",
+			},
+		},
+	} {
+		tc := tc
+		t.Run(tc.cfgPath, func(t *testing.T) {
+			cfg := loadWindowsNyxConfig(t, tc.cfgPath)
+			if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(tc.want, "\n") {
+				t.Fatalf("WSAIoctl AFD enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+					strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(tc.want, "\n"))
 			}
-		}
+			if cfg.Experimental.SeedPrefix != tc.seedPrefix ||
+				cfg.Experimental.BorrowingSeedPrefix != "" {
+				t.Fatalf("WSAIoctl AFD seed prefixes are too broad: seed=%q borrowing=%q",
+					cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+			}
+			if cfg.VM.KeepState {
+				t.Fatal("WSAIoctl AFD config should reload between requests while isolating low-risk IOCTLs")
+			}
+
+			for _, name := range cfg.EnabledSyscalls {
+				if strings.Contains(name, "_CHANGE") {
+					t.Fatalf("WSAIoctl AFD config directly enables blocking change notification syscall %q", name)
+				}
+				for _, pattern := range []string{
+					"ConnectEx$inet_tcp*",
+					"DisconnectEx$inet_tcp*",
+					"AcceptEx$inet_tcp*",
+					"CreateIoCompletionPort$*",
+					"WSAGetOverlappedResult$*",
+					"CancelIoEx$*",
+					"CancelIo$*",
+					"NtDeviceIoControlFile$afd_event_select_accept",
+					"NtDeviceIoControlFile$afd_enum_network_events_accept",
+					"NtDeviceIoControlFile$afd_poll_accept",
+				} {
+					if mgrconfig.MatchSyscall(name, pattern) {
+						t.Fatalf("WSAIoctl AFD config directly enables risky syscall %q via %q",
+							name, pattern)
+					}
+				}
+			}
+		})
 	}
 }
 
@@ -1327,40 +1360,49 @@ func TestWindowsAfdWSAIoctlConfigCoversSeedSyscalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
 	}
-	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-wsaioctl.cfg")
-	enabled := make(map[*prog.Syscall]bool)
-	for _, name := range cfg.EnabledSyscalls {
-		call := target.SyscallMap[name]
-		if call == nil {
-			t.Fatalf("unknown enabled syscall %q", name)
-		}
-		enabled[call] = true
-	}
-	expanded, _ := target.TransitivelyEnabledCalls(enabled)
-	for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		p, err := target.Deserialize(data, prog.NonStrict)
-		if err != nil {
-			t.Fatalf("deserialize %s: %v", path, err)
-		}
-		for _, call := range p.Calls {
-			if strings.Contains(call.Meta.Name, "_CHANGE") ||
-				strings.HasPrefix(call.Meta.Name, "ConnectEx$") ||
-				strings.HasPrefix(call.Meta.Name, "AcceptEx$") {
-				t.Fatalf("%s uses risky WSAIoctl scaffold %s",
-					filepath.Base(path), call.Meta.Name)
+	for _, cfgPath := range []string{
+		"windows-nyx-afd-wsaioctl.cfg",
+		"windows-nyx-afd-wsaioctl-interface.cfg",
+		"windows-nyx-afd-wsaioctl-udp-connreset.cfg",
+	} {
+		cfgPath := cfgPath
+		t.Run(cfgPath, func(t *testing.T) {
+			cfg := loadWindowsNyxConfig(t, cfgPath)
+			enabled := make(map[*prog.Syscall]bool)
+			for _, name := range cfg.EnabledSyscalls {
+				call := target.SyscallMap[name]
+				if call == nil {
+					t.Fatalf("unknown enabled syscall %q", name)
+				}
+				enabled[call] = true
 			}
-			if call.Meta.Attrs.NoGenerate || call.Meta.Attrs.AutomaticHelper {
-				continue
+			expanded, _ := target.TransitivelyEnabledCalls(enabled)
+			for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read %s: %v", path, err)
+				}
+				p, err := target.Deserialize(data, prog.NonStrict)
+				if err != nil {
+					t.Fatalf("deserialize %s: %v", path, err)
+				}
+				for _, call := range p.Calls {
+					if strings.Contains(call.Meta.Name, "_CHANGE") ||
+						strings.HasPrefix(call.Meta.Name, "ConnectEx$") ||
+						strings.HasPrefix(call.Meta.Name, "AcceptEx$") {
+						t.Fatalf("%s uses risky WSAIoctl scaffold %s",
+							filepath.Base(path), call.Meta.Name)
+					}
+					if call.Meta.Attrs.NoGenerate || call.Meta.Attrs.AutomaticHelper {
+						continue
+					}
+					if !expanded[call.Meta] {
+						t.Fatalf("%s uses %s, which is not enabled by %s",
+							filepath.Base(path), call.Meta.Name, cfgPath)
+					}
+				}
 			}
-			if !expanded[call.Meta] {
-				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-wsaioctl.cfg",
-					filepath.Base(path), call.Meta.Name)
-			}
-		}
+		})
 	}
 }
 
