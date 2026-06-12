@@ -695,6 +695,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-async.cfg",
 		"windows-nyx-afd-vnet-proven.cfg",
 		"windows-nyx-afd-private.cfg",
+		"windows-nyx-afd-private-accept.cfg",
 		"windows-nyx-afd-private-event.cfg",
 	} {
 		cfgPath := cfgPath
@@ -1042,6 +1043,100 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 			}
 			if !expanded[call.Meta] {
 				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-private.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdPrivateAcceptConfigUsesNonblockingAcceptOnly(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-accept.cfg")
+	want := []string{
+		"ioctlsocket$fionbio_listener",
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
+		"accept$inet_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_query_handles_accept",
+		"NtDeviceIoControlFile$afd_get_qos_accept",
+		"NtDeviceIoControlFile$afd_noop_accept",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("private accept AFD enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_afd_private_accept_immediate" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("private accept AFD seed prefixes are too broad: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if cfg.Experimental.ForceGenerateEveryN != 1 {
+		t.Fatalf("private accept AFD force_generate_every_n=%d, want 1",
+			cfg.Experimental.ForceGenerateEveryN)
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("private accept AFD config should reload between requests while isolating accept IOCTLs")
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		for _, pattern := range []string{
+			"connect$inet_tcp",
+			"accept$inet_tcp",
+			"socket$accept_tcp",
+			"WSAEventSelect$accept",
+			"WSAEnumNetworkEvents$accept",
+			"NtDeviceIoControlFile$afd_event_select_accept",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept",
+			"NtDeviceIoControlFile$afd_poll_accept",
+			"CreateIoCompletionPort$accept*",
+			"AcceptEx$inet_tcp*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("private accept AFD config directly enables risky syscall %q via %q",
+					name, pattern)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdPrivateAcceptConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-accept.cfg")
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			for _, forbidden := range []string{
+				"connect$inet_tcp",
+				"accept$inet_tcp",
+				"socket$accept_tcp",
+			} {
+				if call.Meta.Name == forbidden {
+					t.Fatalf("%s uses blocking accept scaffold %s",
+						filepath.Base(path), call.Meta.Name)
+				}
+			}
+			if call.Meta.Attrs.NoGenerate || call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-private-accept.cfg",
 					filepath.Base(path), call.Meta.Name)
 			}
 		}
