@@ -169,6 +169,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	VM               struct {
 		ModuleRanges string `json:"module_ranges"`
 		KeepState    bool   `json:"keep_state"`
+		Debug        bool   `json:"debug"`
 	} `json:"vm"`
 	Experimental struct {
 		SeedPrefix           string `json:"seed_prefix"`
@@ -190,6 +191,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		VM               struct {
 			ModuleRanges string `json:"module_ranges"`
 			KeepState    bool   `json:"keep_state"`
+			Debug        bool   `json:"debug"`
 		} `json:"vm"`
 		Experimental struct {
 			SeedPrefix           string `json:"seed_prefix"`
@@ -494,6 +496,10 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("listen$inet_tcp", -1, "SOCKET_TCP_LISTENING")
 	assertResource("accept$inet_tcp", 0, "SOCKET_TCP_LISTENING")
 	assertResource("accept$inet_tcp", -1, "SOCKET_TCP_ACCEPTED")
+	assertResource("ioctlsocket$fionbio_listener", 0, "SOCKET_TCP_LISTENING")
+	assertResource("ioctlsocket$fionbio_listener", -1, "SOCKET_TCP_LISTENING_NONBLOCK")
+	assertResource("accept$inet_tcp_nonblock", 0, "SOCKET_TCP_LISTENING_NONBLOCK")
+	assertResource("accept$inet_tcp_nonblock", -1, "SOCKET_TCP_ACCEPTED_NONBLOCK")
 	assertResource("connect$inet_tcp", 0, "SOCKET_TCP_CREATED")
 	assertResource("connect$inet_tcp", -1, "SOCKET_TCP_CONNECTED")
 	assertResource("DisconnectEx$inet_tcp_reuse", 0, "SOCKET_TCP_CONNECTED")
@@ -689,6 +695,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-async.cfg",
 		"windows-nyx-afd-vnet-proven.cfg",
 		"windows-nyx-afd-private.cfg",
+		"windows-nyx-afd-private-event.cfg",
 	} {
 		cfgPath := cfgPath
 		t.Run(cfgPath, func(t *testing.T) {
@@ -734,23 +741,52 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"send$inet_udp",
 		"sendto$udp_connected",
 		"WSASendTo$udp",
-		"recv$inet_udp",
-		"recvfrom$udp_bound",
-		"WSARecvFrom$udp",
-		"WSARecvMsg$udp",
+		"ioctlsocket$fionbio_udp_bound",
+		"ioctlsocket$fionbio_udp_peer",
+		"recv$inet_udp_nonblock",
+		"recvfrom$udp_bound_nonblock",
+		"recvfrom$udp_connected_nonblock",
+		"WSARecvFrom$udp_nonblock",
+		"WSARecvMsg$udp_nonblock",
 		"NtDeviceIoControlFile$afd_address_list_query_udp",
 		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
+		"NtDeviceIoControlFile$afd_query_handles_udp",
+		"NtDeviceIoControlFile$afd_query_handles_udp_peer",
+		"NtDeviceIoControlFile$afd_get_qos_udp",
+		"NtDeviceIoControlFile$afd_noop_udp",
 		"WSAIoctl$sio_address_list_query",
 		"WSAIoctl$sio_routing_interface_query",
-		"connect$inet_tcp",
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
 		"send$inet_tcp",
+		"ioctlsocket$fionbio_tcp_connected",
+		"recv$inet_tcp_nonblock",
 		"WSASend$tcp",
+		"WSARecv$tcp_nonblock",
 		"shutdown$tcp",
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
+		"NtDeviceIoControlFile$afd_query_handles_tcp",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
+		"NtDeviceIoControlFile$afd_get_qos_tcp",
+		"NtDeviceIoControlFile$afd_noop_tcp",
 		"WSAIoctl$sio_keepalive_vals",
 		"WSAIoctl$sio_get_extension_function_pointer",
+		"ioctlsocket$fionbio_listener",
+		"accept$inet_tcp_nonblock",
+		"send$inet_accept",
+		"ioctlsocket$fionbio_accept_nonblock",
+		"recv$inet_accept_nonblock",
+		"WSASend$accept",
+		"WSARecv$accept_nonblock",
+		"shutdown$accept",
+		"getsockname$accept",
+		"getpeername$accept",
+		"NtDeviceIoControlFile$afd_query_recv_accept",
+		"ioctlsocket$fionbio_accept",
+		"setsockopt$int_accept",
+		"getsockopt$int_accept",
+		"WSARecvEx$inet_accept_nonblock",
 	}
 	for _, name := range wantEnabled {
 		if !slices.Contains(cfg.EnabledSyscalls, name) {
@@ -760,30 +796,36 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 
 	riskyPaths := []string{
 		"bind$connectex_tcp",
+		"connect$inet_tcp",
 		"recv$inet_tcp",
-		"WSARecv$tcp*",
+		"WSARecv$tcp",
+		"WSARecv$tcp_pending",
 		"WSAEventSelect$tcp",
 		"WSAEnumNetworkEvents$tcp",
 		"ConnectEx$inet_tcp*",
 		"DisconnectEx$inet_tcp*",
+		"recv$inet_udp",
+		"recvfrom$udp_bound",
+		"recvfrom$udp_connected",
+		"WSARecvFrom$udp",
+		"WSARecvMsg$udp",
 		"select$afd_basic",
 		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept",
 		"NtDeviceIoControlFile$afd_poll_accept",
 		"GetAcceptExSockaddrs$inet_tcp",
-		"accept$inet_tcp",
 		"socket$accept_tcp",
-		"recv$inet_accept*",
-		"WSARecv$accept*",
-		"recvfrom$udp_connected",
+		"accept$inet_tcp",
+		"recv$inet_accept",
+		"WSARecv$accept",
 		"WSARecvEx$inet_accept",
-		"send$inet_accept*",
-		"WSASend$accept*",
-		"shutdown$accept*",
-		"getsockname$accept",
-		"getpeername$accept",
+		"WSASend$accept_pending",
+		"WSARecv$accept_pending",
 		"WSAEventSelect$accept",
 		"WSAEnumNetworkEvents$accept",
+		"NtDeviceIoControlFile$afd_query_handles_accept",
+		"NtDeviceIoControlFile$afd_get_qos_accept",
+		"NtDeviceIoControlFile$afd_noop_accept",
 		"CreateIoCompletionPort$socket",
 		"CreateIoCompletionPort$accept*",
 		"CreateIoCompletionPort$connect_pending",
@@ -806,10 +848,10 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"closesocket$tcp_*_pending",
 		"AcceptEx$inet_tcp*",
 		"setsockopt$update_accept_context",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
 		"TransmitPackets$inet_accept",
-		"setsockopt$int_accept*",
-		"getsockopt$int_accept*",
-		"ioctlsocket$fionbio_accept",
+		"TransmitFile$inet_accept",
 	}
 	directForbidden := append([]string{
 		"socket$connected_tcp",
@@ -924,6 +966,9 @@ func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
 	if cfg.VM.KeepState {
 		t.Fatal("AFD session config must keep vm.keep_state disabled so each request reloads the Nyx root snapshot")
 	}
+	if cfg.VM.Debug {
+		t.Fatal("AFD session config must keep vm.debug disabled for formal fuzzing")
+	}
 }
 
 func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
@@ -931,8 +976,15 @@ func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
 	want := []string{
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
 		"NtDeviceIoControlFile$afd_query_recv_accept",
+		"NtDeviceIoControlFile$afd_query_handles_tcp",
+		"NtDeviceIoControlFile$afd_query_handles_udp",
+		"NtDeviceIoControlFile$afd_query_handles_udp_peer",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
+		"NtDeviceIoControlFile$afd_get_qos_tcp",
+		"NtDeviceIoControlFile$afd_get_qos_udp",
+		"NtDeviceIoControlFile$afd_noop_tcp",
+		"NtDeviceIoControlFile$afd_noop_udp",
 		"NtDeviceIoControlFile$afd_address_list_query_udp",
 		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
 	}
@@ -987,6 +1039,64 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 			}
 			if !expanded[call.Meta] {
 				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-private.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdPrivateEventConfigStaysEventPollOnly(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-event.cfg")
+	want := []string{
+		"connect$inet_tcp",
+		"NtDeviceIoControlFile$afd_event_select_accept",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept",
+		"NtDeviceIoControlFile$afd_poll_accept",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("private AFD event enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_afd_private_query_event_poll" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("private AFD event seed prefixes are too broad: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+}
+
+func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-event.cfg")
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if call.Meta.Attrs.NoGenerate && !slices.Contains(cfg.EnabledSyscalls, call.Meta.Name) {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-private-event.cfg",
 					filepath.Base(path), call.Meta.Name)
 			}
 		}
@@ -1737,6 +1847,9 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
 	scriptData, err := os.ReadFile(scriptPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("run-nyx-fullchain.sh is outside this test environment: %v", err)
+		}
 		t.Fatalf("read %s: %v", scriptPath, err)
 	}
 	scriptSrc := string(scriptData)
@@ -1748,6 +1861,27 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 	} {
 		if !strings.Contains(scriptSrc, want) {
 			t.Fatalf("run-nyx-fullchain standalone exec replay support missing %q", want)
+		}
+	}
+}
+
+func TestFullchainBincoverEnablesRawCover(t *testing.T) {
+	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
+	scriptData, err := os.ReadFile(scriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("run-nyx-fullchain.sh is outside this test environment: %v", err)
+		}
+		t.Fatalf("read %s: %v", scriptPath, err)
+	}
+	scriptSrc := string(scriptData)
+	for _, want := range []string{
+		`"$manager_workdir_from_env" != "1" && "$collect_bincover" != "1"`,
+		`jq_filter="$jq_filter | .raw_cover = true"`,
+		`--collect-bincover requires syz-manager mode`,
+	} {
+		if !strings.Contains(scriptSrc, want) {
+			t.Fatalf("run-nyx-fullchain bincover config materialization missing %q", want)
 		}
 	}
 }
@@ -1785,6 +1919,104 @@ func TestRunnerHandshakeUsesTimeoutAndSlowTraceArtifact(t *testing.T) {
 		if !strings.Contains(ensureHandshake, want) {
 			t.Fatalf("ensureHandshake missing %q", want)
 		}
+	}
+}
+
+func TestRunnerSuccessPathLogsAreDebugOnly(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	mainSrc := string(mainData)
+
+	executeHandshake := extractFunctionBody(t, mainSrc, "func (vm *nyxVM) executeHandshake")
+	for _, want := range []string{
+		`vm.debugLogf("runner handshake ack observed`,
+	} {
+		if !strings.Contains(executeHandshake, want) {
+			t.Fatalf("executeHandshake should gate success log with debugLogf: missing %q", want)
+		}
+	}
+	for _, bad := range []string{
+		`log.Logf(0, "runner handshake ack observed`,
+	} {
+		if strings.Contains(executeHandshake, bad) {
+			t.Fatalf("executeHandshake should not emit high-frequency success log by default: %q", bad)
+		}
+	}
+
+	executeRequest := extractFunctionBody(t, mainSrc, "func (vm *nyxVM) executeRequest")
+	for _, want := range []string{
+		`vm.debugLogf("runner exec result observed before step=%d"`,
+		`vm.debugLogf("runner exec observed exec_done at step=%d but result file is not present yet"`,
+	} {
+		if !strings.Contains(executeRequest, want) {
+			t.Fatalf("executeRequest should gate success log with debugLogf: missing %q", want)
+		}
+	}
+	for _, bad := range []string{
+		`log.Logf(0, "runner exec result observed before step=%d"`,
+		`log.Logf(0, "runner exec observed exec_done at step=%d but result file is not present yet"`,
+	} {
+		if strings.Contains(executeRequest, bad) {
+			t.Fatalf("executeRequest should not emit high-frequency success log by default: %q", bad)
+		}
+	}
+
+	ensureHandshake := extractFunctionBody(t, mainSrc, "func (r *runner) ensureHandshake")
+	for _, want := range []string{
+		`r.vm.debugLogf("runner sending handshake`,
+		`r.vm.debugLogf("runner handshake complete"`,
+	} {
+		if !strings.Contains(ensureHandshake, want) {
+			t.Fatalf("ensureHandshake should gate success log with debugLogf: missing %q", want)
+		}
+	}
+	for _, bad := range []string{
+		`log.Logf(0, "runner sending handshake`,
+		`log.Logf(0, "runner handshake complete"`,
+	} {
+		if strings.Contains(ensureHandshake, bad) {
+			t.Fatalf("ensureHandshake should not emit high-frequency success log by default: %q", bad)
+		}
+	}
+
+	handle := extractFunctionBody(t, mainSrc, "func (r *runner) executeRequestOnce")
+	for _, want := range []string{
+		`r.vm.debugLogf("%s request:`,
+		`r.vm.debugLogf("%s program:`,
+		"if r.vm.debug {\n\t\t\t\tlogModuleCoverage",
+		"if r.vm.debug {\n\t\t\tlogCallFeedback",
+		`r.vm.debugLogf("%s complete:`,
+		`log.Logf(0, "%s complete:`,
+	} {
+		if !strings.Contains(handle, want) {
+			t.Fatalf("executeRequestOnce log gating missing %q", want)
+		}
+	}
+	for _, bad := range []string{
+		`log.Logf(0, "%s request:`,
+		`log.Logf(0, "%s program:`,
+	} {
+		if strings.Contains(handle, bad) {
+			t.Fatalf("executeRequestOnce should not emit high-frequency success log by default: %q", bad)
+		}
+	}
+
+	loop := extractFunctionBody(t, mainSrc, "func (r *runner) loop")
+	for _, want := range []string{
+		`r.vm.debugLogf("runner received ExecRequest`,
+		`r.vm.debugLogf("runner received StateRequest"`,
+		`r.vm.debugLogf("runner received SignalUpdate"`,
+		`r.vm.debugLogf("runner received CorpusTriaged"`,
+	} {
+		if !strings.Contains(loop, want) {
+			t.Fatalf("runner loop should gate message receive log with debugLogf: missing %q", want)
+		}
+	}
+
+	if !strings.Contains(mainSrc, `log.Logf(0, "runner slow trace saved:`) {
+		t.Fatal("slow trace artifact path must remain visible in default logs")
 	}
 }
 

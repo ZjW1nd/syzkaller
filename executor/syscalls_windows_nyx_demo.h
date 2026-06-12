@@ -27,184 +27,209 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 
 // NTFS syscall IDs — from prog.GetTarget("windows","amd64").SyscallMap
 // Generated: go run ./tools/idxcheck/main.go
-#define W32_VIRTUALALLOC 2742
-#define W32_GETCURRENTPROCESS_PROCESS 1059
-#define W32_GETCURRENTTHREAD_THREAD 1064
-#define W32_NTQINFOFILE_BASIC 1861
-#define W32_NTQINFOFILE_NETOPEN 1862
-#define W32_NTQINFOFILE_STANDARD 1863
-#define W32_NTQINFO_PROC 1864
-#define W32_NTQINFO_SYS 1866
-#define W32_NTSETINFO_PROC 1871
-#define W32_NTDELAYEXEC 1839
-#define W32_NTDEVICEIOCTLFILE 1840
-#define W32_NTDEVICEIOCTLFILE_AFD_ADDR_LIST_QUERY_UDP 1841
-#define W32_NTDEVICEIOCTLFILE_AFD_ENUM_NETWORK_EVENTS_ACCEPT 1842
-#define W32_NTDEVICEIOCTLFILE_AFD_EVENT_SELECT_ACCEPT 1843
-#define W32_NTDEVICEIOCTLFILE_AFD_GET_CONTEXT_TCP 1844
-#define W32_NTDEVICEIOCTLFILE_AFD_GET_REMOTE_ADDRESS_TCP 1845
-#define W32_NTDEVICEIOCTLFILE_AFD_POLL_ACCEPT 1846
-#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_RECV_ACCEPT 1847
-#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_RECV_TCP 1848
-#define W32_NTDEVICEIOCTLFILE_AFD_ROUTING_INTERFACE_QUERY_UDP 1849
-#define W32_NTYIELDEXEC 1874
-#define W32_NTQUERYTIMERRES 1868
-#define W32_NTSETTIMERRES 1872
-#define W32_NTQUERYSYSTIME 1867
-#define W32_NTQUERYPERFCTR 1865
-#define W32_NTPOWERINFO 1858
-#define W32_NTFLUSHICACHE 1850
-#define W32_NTFLUSHWBUF 1851
-#define W32_NTQUERYDEFLOCALE 1859
-#define W32_NTQUERYDEFUILANG 1860
-#define W32_NTFSCONTROLFILE 1852
-#define W32_NTFSCONTROLFILE_NTFS_GET_COMP 1853
-#define W32_NTFSCONTROLFILE_NTFS_QUERY_ALLOC_RANGES 1854
-#define W32_NTFSCONTROLFILE_NTFS_SET_COMP 1855
-#define W32_NTFSCONTROLFILE_NTFS_SET_SPARSE 1856
-#define W32_NTFSCONTROLFILE_NTFS_SET_ZERO_DATA 1857
-#define W32_NTREADFILE 1869
-#define W32_NTSETINFOFILE_BASIC 1870
-#define W32_NTWRITEFILE 1873
-// Win32 file I/O
-#define W32_CANCELIO_SOCKET 127
-#define W32_CANCELIOEX_SOCKET 135
-#define W32_CLOSEHANDLE 310
-#define W32_CREATEFILEA 404
-#define W32_CREATEFILE2 403
-#define W32_CREATEIOCOMPLETIONPORT_SOCKET 431
-#define W32_DELETEFILEA 674
-#define W32_FLUSHFILEBUFFERS 921
-#define W32_GETQUEUEDCOMPLETIONSTATUS_SOCKET 1341
-#define W32_CANCELIO_ACCEPT_PENDING 123
-#define W32_CANCELIO_ACCEPT_RECV_PENDING 124
-#define W32_CANCELIO_ACCEPT_SEND_PENDING 125
-#define W32_CANCELIO_CONNECT_PENDING 126
-#define W32_CANCELIO_TCP_RECV_PENDING 128
-#define W32_CANCELIO_TCP_SEND_PENDING 129
-#define W32_CANCELIOEX_ACCEPT_PENDING 131
+#define W32_ACCEPTEX_INET_TCP            5
+#define W32_ACCEPTEX_INET_TCP_PENDING    6
+#define W32_ACCEPT_INET_TCP              2907
+#define W32_ACCEPT_INET_TCP_NONBLOCK     2908
+#define W32_BIND_CONNECTEX_TCP           2915
+#define W32_BIND_INET_TCP                2916
+#define W32_BIND_INET_UDP                2917
+#define W32_CANCELIOEX_ACCEPT_PENDING    131
 #define W32_CANCELIOEX_ACCEPT_RECV_PENDING 132
 #define W32_CANCELIOEX_ACCEPT_SEND_PENDING 133
-#define W32_CANCELIOEX_CONNECT_PENDING 134
-#define W32_CANCELIOEX_TCP_RECV_PENDING 136
-#define W32_CANCELIOEX_TCP_SEND_PENDING 137
+#define W32_CANCELIOEX_CONNECT_PENDING   134
+#define W32_CANCELIOEX_SOCKET            135
+#define W32_CANCELIOEX_TCP_RECV_PENDING  136
+#define W32_CANCELIOEX_TCP_SEND_PENDING  137
+#define W32_CANCELIO_ACCEPT_PENDING      123
+#define W32_CANCELIO_ACCEPT_RECV_PENDING 124
+#define W32_CANCELIO_ACCEPT_SEND_PENDING 125
+#define W32_CANCELIO_CONNECT_PENDING     126
+#define W32_CANCELIO_SOCKET              127
+#define W32_CANCELIO_TCP_RECV_PENDING    128
+#define W32_CANCELIO_TCP_SEND_PENDING    129
+#define W32_CLOSEHANDLE                  310
+#define W32_CLOSESOCKET_ACCEPT_PENDING   2919
+#define W32_CLOSESOCKET_ACCEPT_RECV_PENDING 2920
+#define W32_CLOSESOCKET_ACCEPT_SEND_PENDING 2921
+#define W32_CLOSESOCKET_ANY              2922
+#define W32_CLOSESOCKET_CONNECT_PENDING  2923
+#define W32_CLOSESOCKET_TCP_RECV_PENDING 2924
+#define W32_CLOSESOCKET_TCP_SEND_PENDING 2925
+#define W32_CLOSESOCKET_TCP_SHUTDOWN_RD  2926
+#define W32_CLOSESOCKET_TCP_SHUTDOWN_WR  2927
+#define W32_CONNECTEX_INET_TCP           340
+#define W32_CONNECTEX_INET_TCP_PENDING   341
+#define W32_CONNECTEX_INET_TCP_REUSE     342
+#define W32_CONNECT_INET_TCP             2929
+#define W32_CONNECT_INET_TCP_NONBLOCK    2930
+#define W32_CONNECT_INET_UDP             2931
+#define W32_CREATEFILE2                  403
+#define W32_CREATEFILEA                  404
 #define W32_CREATEIOCOMPLETIONPORT_ACCEPT_PENDING 425
 #define W32_CREATEIOCOMPLETIONPORT_ACCEPT_RECV_PENDING 426
 #define W32_CREATEIOCOMPLETIONPORT_ACCEPT_SEND_PENDING 427
 #define W32_CREATEIOCOMPLETIONPORT_CONNECT_PENDING 429
+#define W32_CREATEIOCOMPLETIONPORT_SOCKET 431
 #define W32_CREATEIOCOMPLETIONPORT_TCP_RECV_PENDING 432
 #define W32_CREATEIOCOMPLETIONPORT_TCP_SEND_PENDING 433
-#define W32_READFILE 2025
-#define W32_SETFILEINFOBYHANDLE 2415
-#define W32_WRITEFILE 2878
-// Winsock / afd.sys user-mode entry points
-#define W32_ACCEPTEX_INET_TCP 5
-#define W32_ACCEPTEX_INET_TCP_PENDING 6
-#define W32_CONNECTEX_INET_TCP 340
-#define W32_CONNECTEX_INET_TCP_PENDING 341
-#define W32_CONNECTEX_INET_TCP_REUSE 342
-#define W32_DISCONNECTEX_INET_TCP 723
-#define W32_DISCONNECTEX_INET_TCP_REUSE 724
+#define W32_DELETEFILEA                  674
+#define W32_DISCONNECTEX_INET_TCP        723
+#define W32_DISCONNECTEX_INET_TCP_REUSE  724
+#define W32_FLUSHFILEBUFFERS             921
 #define W32_GETACCEPTEXSOCKADDRS_INET_TCP 956
-#define W32_TRANSMITFILE_INET_ACCEPT 2673
-#define W32_TRANSMITPACKETS_INET_ACCEPT 2675
-#define W32_WSACLEANUP 2787
-#define W32_WSACLOSEEVENT 2788
-#define W32_WSACREATEEVENT 2789
-#define W32_WSAENUMNETWORKEVENTS_ACCEPT 2790
-#define W32_WSAENUMNETWORKEVENTS_TCP 2791
-#define W32_WSAEVENTSELECT_ACCEPT 2792
-#define W32_WSAEVENTSELECT_TCP 2793
-#define W32_WSAGETOVERLAPPEDRESULT_SOCKET 2799
-#define W32_WSAGETOVERLAPPEDRESULT_ACCEPT_PENDING 2795
-#define W32_WSAGETOVERLAPPEDRESULT_ACCEPT_RECV_PENDING 2796
-#define W32_WSAGETOVERLAPPEDRESULT_ACCEPT_SEND_PENDING 2797
-#define W32_WSAGETOVERLAPPEDRESULT_CONNECT_PENDING 2798
-#define W32_WSAGETOVERLAPPEDRESULT_TCP_RECV_PENDING 2800
-#define W32_WSAGETOVERLAPPEDRESULT_TCP_SEND_PENDING 2801
-#define W32_WSAIOCTL_SIO_ADDRESS_LIST_QUERY 2803
-#define W32_WSAIOCTL_SIO_GET_EXTENSION_FUNCTION_POINTER 2804
-#define W32_WSAIOCTL_SIO_KEEPALIVE_VALS 2805
-#define W32_WSAIOCTL_SIO_ROUTING_INTERFACE_QUERY 2806
-#define W32_WSARECV_ACCEPT 2809
-#define W32_WSARECV_ACCEPT_PENDING 2810
-#define W32_WSARECVMSG_UDP 2818
-#define W32_WSARECV_TCP 2811
-#define W32_WSARECV_TCP_PENDING 2812
-#define W32_WSARECVEX_INET_ACCEPT 2814
-#define W32_WSARECVFROM_UDP 2816
-#define W32_WSARESETEVENT 2819
-#define W32_WSASEND_ACCEPT 2821
-#define W32_WSASEND_ACCEPT_PENDING 2822
-#define W32_WSASEND_TCP 2823
-#define W32_WSASEND_TCP_PENDING 2824
-#define W32_WSASENDTO_UDP 2826
-#define W32_WSASTARTUP 2829
-#define W32_ACCEPT_INET_TCP 2892
-#define W32_BIND_CONNECTEX_TCP 2899
-#define W32_BIND_INET_TCP 2900
-#define W32_BIND_INET_UDP 2901
-#define W32_CLOSESOCKET_ACCEPT_PENDING 2903
-#define W32_CLOSESOCKET_ACCEPT_RECV_PENDING 2904
-#define W32_CLOSESOCKET_ACCEPT_SEND_PENDING 2905
-#define W32_CLOSESOCKET_ANY 2906
-#define W32_CLOSESOCKET_CONNECT_PENDING 2907
-#define W32_CLOSESOCKET_TCP_RECV_PENDING 2908
-#define W32_CLOSESOCKET_TCP_SEND_PENDING 2909
-#define W32_CLOSESOCKET_TCP_SHUTDOWN_RD 2910
-#define W32_CLOSESOCKET_TCP_SHUTDOWN_WR 2911
-#define W32_CONNECT_INET_TCP 2913
-#define W32_CONNECT_INET_UDP 2914
-#define W32_GETPEERNAME_ACCEPT 2919
-#define W32_GETPEERNAME_TCP 2920
-#define W32_GETPEERNAME_UDP 2921
-#define W32_GETSOCKNAME_ACCEPT 2927
-#define W32_GETSOCKNAME_TCP 2928
-#define W32_GETSOCKNAME_UDP 2929
-#define W32_GETSOCKOPT_INT_ACCEPT 2931
-#define W32_GETSOCKOPT_INT_ACCEPT_UPDATED 2932
-#define W32_GETSOCKOPT_INT_TCP 2933
-#define W32_GETSOCKOPT_INT_UDP 2934
-#define W32_IOCTLSOCKET_FIONBIO_ACCEPT 2940
-#define W32_IOCTLSOCKET_FIONBIO_TCP 2941
-#define W32_IOCTLSOCKET_FIONBIO_UDP 2942
-#define W32_LISTEN_INET_TCP 2954
-#define W32_RECV_INET_ACCEPT 3046
-#define W32_RECV_INET_ACCEPT_UPDATED 3047
-#define W32_RECV_INET_TCP 3048
-#define W32_RECV_INET_UDP 3049
-#define W32_RECVFROM_UDP_BOUND 3051
-#define W32_RECVFROM_UDP_CONNECTED 3052
-#define W32_SELECT_AFD_BASIC 3054
-#define W32_SEND_INET_ACCEPT 3056
-#define W32_SEND_INET_ACCEPT_UPDATED 3057
-#define W32_SEND_INET_TCP 3058
-#define W32_SEND_INET_UDP 3059
-#define W32_SENDTO_UDP_BOUND 3061
-#define W32_SENDTO_UDP_CONNECTED 3062
-#define W32_SETSOCKOPT_INT_ACCEPT 3064
-#define W32_SETSOCKOPT_INT_ACCEPT_UPDATED 3065
-#define W32_SETSOCKOPT_UPDATE_ACCEPT_CONTEXT 3068
-#define W32_SETSOCKOPT_INT_TCP 3066
-#define W32_SETSOCKOPT_INT_UDP 3067
-#define W32_SHUTDOWN_ACCEPT 3069
-#define W32_SHUTDOWN_ACCEPT_RD 3070
-#define W32_SHUTDOWN_ACCEPT_WR 3071
-#define W32_SHUTDOWN_TCP 3072
-#define W32_SHUTDOWN_TCP_RD 3073
-#define W32_SHUTDOWN_TCP_WR 3074
-#define W32_SOCKET_ACCEPT_TCP 3077
-#define W32_SOCKET_BOUND_UDP 3078
-#define W32_SOCKET_CONNECTED_TCP 3079
-#define W32_SOCKET_CONNECTED_UDP 3080
-#define W32_SOCKET_INET_TCP 3081
-#define W32_SOCKET_INET_UDP 3082
-#define W32_SOCKET_LISTENER_TCP 3083
-#define W32_SYZ_EMIT_ETHERNET_WINDOWS 3090
-#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS 3092
-#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK 3093
-#define W32_SYZ_KAFL_BUGCHECK_TRIGGER 3094
-
+#define W32_GETCURRENTPROCESS_PROCESS    1059
+#define W32_GETCURRENTTHREAD_THREAD      1064
+#define W32_GETPEERNAME_ACCEPT           2936
+#define W32_GETPEERNAME_TCP              2937
+#define W32_GETPEERNAME_UDP              2938
+#define W32_GETQUEUEDCOMPLETIONSTATUS_SOCKET 1341
+#define W32_GETSOCKNAME_ACCEPT           2944
+#define W32_GETSOCKNAME_TCP              2945
+#define W32_GETSOCKNAME_UDP              2946
+#define W32_GETSOCKOPT_INT_ACCEPT        2948
+#define W32_GETSOCKOPT_INT_ACCEPT_UPDATED 2949
+#define W32_GETSOCKOPT_INT_TCP           2950
+#define W32_GETSOCKOPT_INT_UDP           2951
+#define W32_IOCTLSOCKET_FIONBIO_ACCEPT   2957
+#define W32_IOCTLSOCKET_FIONBIO_ACCEPT_NONBLOCK 2958
+#define W32_IOCTLSOCKET_FIONBIO_LISTENER 2959
+#define W32_IOCTLSOCKET_FIONBIO_TCP      2960
+#define W32_IOCTLSOCKET_FIONBIO_TCP_CONNECTED 2961
+#define W32_IOCTLSOCKET_FIONBIO_TCP_CREATED 2962
+#define W32_IOCTLSOCKET_FIONBIO_UDP      2963
+#define W32_IOCTLSOCKET_FIONBIO_UDP_BOUND 2964
+#define W32_IOCTLSOCKET_FIONBIO_UDP_PEER 2965
+#define W32_LISTEN_INET_TCP              2977
+#define W32_NTDELAYEXEC                  1839
+#define W32_NTDEVICEIOCTLFILE            1840
+#define W32_NTDEVICEIOCTLFILE_AFD_ADDR_LIST_QUERY_UDP 1841
+#define W32_NTDEVICEIOCTLFILE_AFD_ENUM_NETWORK_EVENTS_ACCEPT 1842
+#define W32_NTDEVICEIOCTLFILE_AFD_EVENT_SELECT_ACCEPT 1843
+#define W32_NTDEVICEIOCTLFILE_AFD_GET_CONTEXT_TCP 1844
+#define W32_NTDEVICEIOCTLFILE_AFD_GET_QOS_ACCEPT 1845
+#define W32_NTDEVICEIOCTLFILE_AFD_GET_QOS_TCP 1846
+#define W32_NTDEVICEIOCTLFILE_AFD_GET_QOS_UDP 1847
+#define W32_NTDEVICEIOCTLFILE_AFD_GET_REMOTE_ADDRESS_TCP 1848
+#define W32_NTDEVICEIOCTLFILE_AFD_NOOP_ACCEPT 1849
+#define W32_NTDEVICEIOCTLFILE_AFD_NOOP_TCP 1850
+#define W32_NTDEVICEIOCTLFILE_AFD_NOOP_UDP 1851
+#define W32_NTDEVICEIOCTLFILE_AFD_POLL_ACCEPT 1852
+#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_ACCEPT 1853
+#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_TCP 1854
+#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_UDP 1855
+#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_UDP_PEER 1856
+#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_RECV_ACCEPT 1857
+#define W32_NTDEVICEIOCTLFILE_AFD_QUERY_RECV_TCP 1858
+#define W32_NTDEVICEIOCTLFILE_AFD_ROUTING_INTERFACE_QUERY_UDP 1859
+#define W32_NTFLUSHICACHE                1860
+#define W32_NTFLUSHWBUF                  1861
+#define W32_NTFSCONTROLFILE              1862
+#define W32_NTFSCONTROLFILE_NTFS_GET_COMP 1863
+#define W32_NTFSCONTROLFILE_NTFS_QUERY_ALLOC_RANGES 1864
+#define W32_NTFSCONTROLFILE_NTFS_SET_COMP 1865
+#define W32_NTFSCONTROLFILE_NTFS_SET_SPARSE 1866
+#define W32_NTFSCONTROLFILE_NTFS_SET_ZERO_DATA 1867
+#define W32_NTPOWERINFO                  1868
+#define W32_NTQINFOFILE_BASIC            1871
+#define W32_NTQINFOFILE_NETOPEN          1872
+#define W32_NTQINFOFILE_STANDARD         1873
+#define W32_NTQINFO_PROC                 1874
+#define W32_NTQINFO_SYS                  1876
+#define W32_NTQUERYDEFLOCALE             1869
+#define W32_NTQUERYDEFUILANG             1870
+#define W32_NTQUERYPERFCTR               1875
+#define W32_NTQUERYSYSTIME               1877
+#define W32_NTQUERYTIMERRES              1878
+#define W32_NTREADFILE                   1879
+#define W32_NTSETINFOFILE_BASIC          1880
+#define W32_NTSETINFO_PROC               1881
+#define W32_NTSETTIMERRES                1882
+#define W32_NTWRITEFILE                  1883
+#define W32_NTYIELDEXEC                  1884
+#define W32_READFILE                     2035
+#define W32_RECVFROM_UDP_BOUND           3077
+#define W32_RECVFROM_UDP_BOUND_NONBLOCK  3078
+#define W32_RECVFROM_UDP_CONNECTED       3079
+#define W32_RECVFROM_UDP_CONNECTED_NONBLOCK 3080
+#define W32_RECV_INET_ACCEPT             3069
+#define W32_RECV_INET_ACCEPT_NONBLOCK    3070
+#define W32_RECV_INET_ACCEPT_UPDATED     3071
+#define W32_RECV_INET_TCP                3072
+#define W32_RECV_INET_TCP_NONBLOCK       3073
+#define W32_RECV_INET_UDP                3074
+#define W32_RECV_INET_UDP_NONBLOCK       3075
+#define W32_SELECT_AFD_BASIC             3082
+#define W32_SENDTO_UDP_BOUND             3089
+#define W32_SENDTO_UDP_CONNECTED         3090
+#define W32_SEND_INET_ACCEPT             3084
+#define W32_SEND_INET_ACCEPT_UPDATED     3085
+#define W32_SEND_INET_TCP                3086
+#define W32_SEND_INET_UDP                3087
+#define W32_SETFILEINFOBYHANDLE          2425
+#define W32_SETSOCKOPT_INT_ACCEPT        3092
+#define W32_SETSOCKOPT_INT_ACCEPT_UPDATED 3093
+#define W32_SETSOCKOPT_INT_TCP           3094
+#define W32_SETSOCKOPT_INT_UDP           3095
+#define W32_SETSOCKOPT_UPDATE_ACCEPT_CONTEXT 3096
+#define W32_SHUTDOWN_ACCEPT              3097
+#define W32_SHUTDOWN_ACCEPT_RD           3098
+#define W32_SHUTDOWN_ACCEPT_WR           3099
+#define W32_SHUTDOWN_TCP                 3100
+#define W32_SHUTDOWN_TCP_RD              3101
+#define W32_SHUTDOWN_TCP_WR              3102
+#define W32_SOCKET_ACCEPT_TCP            3105
+#define W32_SOCKET_BOUND_UDP             3106
+#define W32_SOCKET_CONNECTED_TCP         3107
+#define W32_SOCKET_CONNECTED_UDP         3108
+#define W32_SOCKET_INET_TCP              3109
+#define W32_SOCKET_INET_UDP              3110
+#define W32_SOCKET_LISTENER_TCP          3111
+#define W32_SYZ_EMIT_ETHERNET_WINDOWS    3118
+#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS  3120
+#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK 3121
+#define W32_SYZ_KAFL_BUGCHECK_TRIGGER    3122
+#define W32_TRANSMITFILE_INET_ACCEPT     2683
+#define W32_TRANSMITPACKETS_INET_ACCEPT  2685
+#define W32_VIRTUALALLOC                 2752
+#define W32_WRITEFILE                    2893
+#define W32_WSACLEANUP                   2797
+#define W32_WSACLOSEEVENT                2798
+#define W32_WSACREATEEVENT               2799
+#define W32_WSAENUMNETWORKEVENTS_ACCEPT  2800
+#define W32_WSAENUMNETWORKEVENTS_TCP     2801
+#define W32_WSAEVENTSELECT_ACCEPT        2802
+#define W32_WSAEVENTSELECT_TCP           2803
+#define W32_WSAGETOVERLAPPEDRESULT_ACCEPT_PENDING 2805
+#define W32_WSAGETOVERLAPPEDRESULT_ACCEPT_RECV_PENDING 2806
+#define W32_WSAGETOVERLAPPEDRESULT_ACCEPT_SEND_PENDING 2807
+#define W32_WSAGETOVERLAPPEDRESULT_CONNECT_PENDING 2808
+#define W32_WSAGETOVERLAPPEDRESULT_SOCKET 2809
+#define W32_WSAGETOVERLAPPEDRESULT_TCP_RECV_PENDING 2810
+#define W32_WSAGETOVERLAPPEDRESULT_TCP_SEND_PENDING 2811
+#define W32_WSAIOCTL_SIO_ADDRESS_LIST_QUERY 2813
+#define W32_WSAIOCTL_SIO_GET_EXTENSION_FUNCTION_POINTER 2814
+#define W32_WSAIOCTL_SIO_KEEPALIVE_VALS  2815
+#define W32_WSAIOCTL_SIO_ROUTING_INTERFACE_QUERY 2816
+#define W32_WSARECVEX_INET_ACCEPT        2826
+#define W32_WSARECVEX_INET_ACCEPT_NONBLOCK 2827
+#define W32_WSARECVFROM_UDP              2829
+#define W32_WSARECVFROM_UDP_NONBLOCK     2830
+#define W32_WSARECVMSG_UDP               2832
+#define W32_WSARECVMSG_UDP_NONBLOCK      2833
+#define W32_WSARECV_ACCEPT               2819
+#define W32_WSARECV_ACCEPT_NONBLOCK      2820
+#define W32_WSARECV_ACCEPT_PENDING       2821
+#define W32_WSARECV_TCP                  2822
+#define W32_WSARECV_TCP_NONBLOCK         2823
+#define W32_WSARECV_TCP_PENDING          2824
+#define W32_WSARESETEVENT                2834
+#define W32_WSASENDTO_UDP                2841
+#define W32_WSASEND_ACCEPT               2836
+#define W32_WSASEND_ACCEPT_PENDING       2837
+#define W32_WSASEND_TCP                  2838
+#define W32_WSASEND_TCP_PENDING          2839
+#define W32_WSASTARTUP                   2844
 #include "windows_service_26200.h"
 
 static call_t syscalls[4096];
@@ -309,12 +334,17 @@ static void init_nyx_syscalls()
 	syscalls[W32_WSAIOCTL_SIO_KEEPALIVE_VALS] = call_t{"WSAIoctl$sio_keepalive_vals", 0, {}, (syscall_t)WSAIoctl};
 	syscalls[W32_WSAIOCTL_SIO_ROUTING_INTERFACE_QUERY] = call_t{"WSAIoctl$sio_routing_interface_query", 0, {}, (syscall_t)WSAIoctl};
 	syscalls[W32_WSARECV_ACCEPT] = call_t{"WSARecv$accept", 0, {}, (syscall_t)WSARecv};
+	syscalls[W32_WSARECV_ACCEPT_NONBLOCK] = call_t{"WSARecv$accept_nonblock", 0, {}, (syscall_t)WSARecv};
 	syscalls[W32_WSARECV_ACCEPT_PENDING] = call_t{"WSARecv$accept_pending", 0, {}, (syscall_t)windows_wsa_recv_state};
 	syscalls[W32_WSARECVMSG_UDP] = call_t{"WSARecvMsg$udp", 0, {}, (syscall_t)WSARecvMsg};
+	syscalls[W32_WSARECVMSG_UDP_NONBLOCK] = call_t{"WSARecvMsg$udp_nonblock", 0, {}, (syscall_t)WSARecvMsg};
 	syscalls[W32_WSARECV_TCP] = call_t{"WSARecv$tcp", 0, {}, (syscall_t)WSARecv};
+	syscalls[W32_WSARECV_TCP_NONBLOCK] = call_t{"WSARecv$tcp_nonblock", 0, {}, (syscall_t)WSARecv};
 	syscalls[W32_WSARECV_TCP_PENDING] = call_t{"WSARecv$tcp_pending", 0, {}, (syscall_t)windows_wsa_recv_state};
 	syscalls[W32_WSARECVEX_INET_ACCEPT] = call_t{"WSARecvEx$inet_accept", 0, {}, (syscall_t)WSARecvEx};
+	syscalls[W32_WSARECVEX_INET_ACCEPT_NONBLOCK] = call_t{"WSARecvEx$inet_accept_nonblock", 0, {}, (syscall_t)WSARecvEx};
 	syscalls[W32_WSARECVFROM_UDP] = call_t{"WSARecvFrom$udp", 0, {}, (syscall_t)WSARecvFrom};
+	syscalls[W32_WSARECVFROM_UDP_NONBLOCK] = call_t{"WSARecvFrom$udp_nonblock", 0, {}, (syscall_t)WSARecvFrom};
 	syscalls[W32_WSARESETEVENT] = call_t{"WSAResetEvent", 0, {}, (syscall_t)WSAResetEvent};
 	syscalls[W32_WSASEND_ACCEPT] = call_t{"WSASend$accept", 0, {}, (syscall_t)WSASend};
 	syscalls[W32_WSASEND_ACCEPT_PENDING] = call_t{"WSASend$accept_pending", 0, {}, (syscall_t)windows_wsa_send_state};
@@ -323,6 +353,7 @@ static void init_nyx_syscalls()
 	syscalls[W32_WSASENDTO_UDP] = call_t{"WSASendTo$udp", 0, {}, (syscall_t)WSASendTo};
 	syscalls[W32_WSASTARTUP] = call_t{"WSAStartup", 0, {}, (syscall_t)WSAStartup};
 	syscalls[W32_ACCEPT_INET_TCP] = call_t{"accept$inet_tcp", 0, {}, (syscall_t)accept};
+	syscalls[W32_ACCEPT_INET_TCP_NONBLOCK] = call_t{"accept$inet_tcp_nonblock", 0, {}, (syscall_t)accept};
 	syscalls[W32_BIND_CONNECTEX_TCP] = call_t{"bind$connectex_tcp", 0, {}, (syscall_t)bind};
 	syscalls[W32_BIND_INET_TCP] = call_t{"bind$inet_tcp", 0, {}, (syscall_t)windows_bind_state};
 	syscalls[W32_BIND_INET_UDP] = call_t{"bind$inet_udp", 0, {}, (syscall_t)windows_bind_state};
@@ -336,6 +367,7 @@ static void init_nyx_syscalls()
 	syscalls[W32_CLOSESOCKET_TCP_SHUTDOWN_RD] = call_t{"closesocket$tcp_shutdown_rd", 0, {}, (syscall_t)closesocket};
 	syscalls[W32_CLOSESOCKET_TCP_SHUTDOWN_WR] = call_t{"closesocket$tcp_shutdown_wr", 0, {}, (syscall_t)closesocket};
 	syscalls[W32_CONNECT_INET_TCP] = call_t{"connect$inet_tcp", 0, {}, (syscall_t)windows_connect_state};
+	syscalls[W32_CONNECT_INET_TCP_NONBLOCK] = call_t{"connect$inet_tcp_nonblock", 0, {}, (syscall_t)windows_connect_state};
 	syscalls[W32_CONNECT_INET_UDP] = call_t{"connect$inet_udp", 0, {}, (syscall_t)windows_connect_state};
 	syscalls[W32_GETPEERNAME_ACCEPT] = call_t{"getpeername$accept", 0, {}, (syscall_t)getpeername};
 	syscalls[W32_GETPEERNAME_TCP] = call_t{"getpeername$tcp", 0, {}, (syscall_t)getpeername};
@@ -348,15 +380,26 @@ static void init_nyx_syscalls()
 	syscalls[W32_GETSOCKOPT_INT_TCP] = call_t{"getsockopt$int_tcp", 0, {}, (syscall_t)getsockopt};
 	syscalls[W32_GETSOCKOPT_INT_UDP] = call_t{"getsockopt$int_udp", 0, {}, (syscall_t)getsockopt};
 	syscalls[W32_IOCTLSOCKET_FIONBIO_ACCEPT] = call_t{"ioctlsocket$fionbio_accept", 0, {}, (syscall_t)ioctlsocket};
+	syscalls[W32_IOCTLSOCKET_FIONBIO_ACCEPT_NONBLOCK] = call_t{"ioctlsocket$fionbio_accept_nonblock", 0, {}, (syscall_t)ioctlsocket};
+	syscalls[W32_IOCTLSOCKET_FIONBIO_LISTENER] = call_t{"ioctlsocket$fionbio_listener", 0, {}, (syscall_t)ioctlsocket};
 	syscalls[W32_IOCTLSOCKET_FIONBIO_TCP] = call_t{"ioctlsocket$fionbio_tcp", 0, {}, (syscall_t)ioctlsocket};
+	syscalls[W32_IOCTLSOCKET_FIONBIO_TCP_CONNECTED] = call_t{"ioctlsocket$fionbio_tcp_connected", 0, {}, (syscall_t)ioctlsocket};
+	syscalls[W32_IOCTLSOCKET_FIONBIO_TCP_CREATED] = call_t{"ioctlsocket$fionbio_tcp_created", 0, {}, (syscall_t)ioctlsocket};
 	syscalls[W32_IOCTLSOCKET_FIONBIO_UDP] = call_t{"ioctlsocket$fionbio_udp", 0, {}, (syscall_t)ioctlsocket};
+	syscalls[W32_IOCTLSOCKET_FIONBIO_UDP_BOUND] = call_t{"ioctlsocket$fionbio_udp_bound", 0, {}, (syscall_t)ioctlsocket};
+	syscalls[W32_IOCTLSOCKET_FIONBIO_UDP_PEER] = call_t{"ioctlsocket$fionbio_udp_peer", 0, {}, (syscall_t)ioctlsocket};
 	syscalls[W32_LISTEN_INET_TCP] = call_t{"listen$inet_tcp", 0, {}, (syscall_t)windows_listen_state};
 	syscalls[W32_RECV_INET_ACCEPT] = call_t{"recv$inet_accept", 0, {}, (syscall_t)recv};
+	syscalls[W32_RECV_INET_ACCEPT_NONBLOCK] = call_t{"recv$inet_accept_nonblock", 0, {}, (syscall_t)recv};
 	syscalls[W32_RECV_INET_ACCEPT_UPDATED] = call_t{"recv$inet_accept_updated", 0, {}, (syscall_t)recv};
 	syscalls[W32_RECV_INET_TCP] = call_t{"recv$inet_tcp", 0, {}, (syscall_t)recv};
+	syscalls[W32_RECV_INET_TCP_NONBLOCK] = call_t{"recv$inet_tcp_nonblock", 0, {}, (syscall_t)recv};
 	syscalls[W32_RECV_INET_UDP] = call_t{"recv$inet_udp", 0, {}, (syscall_t)recv};
+	syscalls[W32_RECV_INET_UDP_NONBLOCK] = call_t{"recv$inet_udp_nonblock", 0, {}, (syscall_t)recv};
 	syscalls[W32_RECVFROM_UDP_BOUND] = call_t{"recvfrom$udp_bound", 0, {}, (syscall_t)recvfrom};
+	syscalls[W32_RECVFROM_UDP_BOUND_NONBLOCK] = call_t{"recvfrom$udp_bound_nonblock", 0, {}, (syscall_t)recvfrom};
 	syscalls[W32_RECVFROM_UDP_CONNECTED] = call_t{"recvfrom$udp_connected", 0, {}, (syscall_t)recvfrom};
+	syscalls[W32_RECVFROM_UDP_CONNECTED_NONBLOCK] = call_t{"recvfrom$udp_connected_nonblock", 0, {}, (syscall_t)recvfrom};
 	syscalls[W32_SELECT_AFD_BASIC] = call_t{"select$afd_basic", 0, {}, (syscall_t)select};
 	syscalls[W32_SEND_INET_ACCEPT] = call_t{"send$inet_accept", 0, {}, (syscall_t)send};
 	syscalls[W32_SEND_INET_ACCEPT_UPDATED] = call_t{"send$inet_accept_updated", 0, {}, (syscall_t)send};
@@ -382,10 +425,46 @@ static void init_nyx_syscalls()
 	syscalls[W32_SOCKET_INET_TCP] = call_t{"socket$inet_tcp", 0, {}, (syscall_t)socket};
 	syscalls[W32_SOCKET_INET_UDP] = call_t{"socket$inet_udp", 0, {}, (syscall_t)socket};
 	syscalls[W32_SOCKET_LISTENER_TCP] = call_t{"socket$listener_tcp", 0, {}, (syscall_t)socket};
-	syscalls[W32_SYZ_EMIT_ETHERNET_WINDOWS] = call_t{"syz_emit_ethernet$windows", 0, {0, 0, 0, 0, 0, 1, 1, }, (syscall_t)syz_emit_ethernet};
-	syscalls[W32_SYZ_EXTRACT_TCP_RES_WINDOWS] = call_t{"syz_extract_tcp_res$windows", 0, {0, 0, 0, 0, 0, 1, 1, }, (syscall_t)syz_extract_tcp_res};
-	syscalls[W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK] = call_t{"syz_extract_tcp_res$windows_synack", 0, {0, 0, 0, 0, 0, 1, 1, }, (syscall_t)syz_extract_tcp_res};
-	syscalls[W32_SYZ_KAFL_BUGCHECK_TRIGGER] = call_t{"syz_kafl_bugcheck_trigger", 0, {0, 0, 0, 0, 0, 1, 1, }, (syscall_t)syz_kafl_bugcheck_trigger};
+	syscalls[W32_SYZ_EMIT_ETHERNET_WINDOWS] = call_t{"syz_emit_ethernet$windows", 0, {
+											     0,
+											     0,
+											     0,
+											     0,
+											     0,
+											     1,
+											     1,
+											 },
+							 (syscall_t)syz_emit_ethernet};
+	syscalls[W32_SYZ_EXTRACT_TCP_RES_WINDOWS] = call_t{"syz_extract_tcp_res$windows", 0, {
+												 0,
+												 0,
+												 0,
+												 0,
+												 0,
+												 1,
+												 1,
+											     },
+							   (syscall_t)syz_extract_tcp_res};
+	syscalls[W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK] = call_t{"syz_extract_tcp_res$windows_synack", 0, {
+													       0,
+													       0,
+													       0,
+													       0,
+													       0,
+													       1,
+													       1,
+													   },
+								  (syscall_t)syz_extract_tcp_res};
+	syscalls[W32_SYZ_KAFL_BUGCHECK_TRIGGER] = call_t{"syz_kafl_bugcheck_trigger", 0, {
+											     0,
+											     0,
+											     0,
+											     0,
+											     0,
+											     1,
+											     1,
+											 },
+							 (syscall_t)syz_kafl_bugcheck_trigger};
 	// New no-context NT syscalls
 	syscalls[W32_NTDELAYEXEC] = call_t{"NtDelayExecution", 0, {}, (syscall_t)NtDelayExecution};
 	syscalls[W32_NTYIELDEXEC] = call_t{"NtYieldExecution", 0, {}, (syscall_t)NtYieldExecution};
@@ -403,8 +482,18 @@ static void init_nyx_syscalls()
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_ENUM_NETWORK_EVENTS_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_enum_network_events_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_EVENT_SELECT_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_event_select_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_GET_CONTEXT_TCP] = call_t{"NtDeviceIoControlFile$afd_get_context_tcp", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_GET_QOS_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_get_qos_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_GET_QOS_TCP] = call_t{"NtDeviceIoControlFile$afd_get_qos_tcp", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_GET_QOS_UDP] = call_t{"NtDeviceIoControlFile$afd_get_qos_udp", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_GET_REMOTE_ADDRESS_TCP] = call_t{"NtDeviceIoControlFile$afd_get_remote_address_tcp", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_NOOP_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_noop_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_NOOP_TCP] = call_t{"NtDeviceIoControlFile$afd_noop_tcp", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_NOOP_UDP] = call_t{"NtDeviceIoControlFile$afd_noop_udp", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_POLL_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_poll_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_query_handles_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_TCP] = call_t{"NtDeviceIoControlFile$afd_query_handles_tcp", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_UDP] = call_t{"NtDeviceIoControlFile$afd_query_handles_udp", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_UDP_PEER] = call_t{"NtDeviceIoControlFile$afd_query_handles_udp_peer", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_RECV_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_query_recv_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_RECV_TCP] = call_t{"NtDeviceIoControlFile$afd_query_recv_tcp", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_ROUTING_INTERFACE_QUERY_UDP] = call_t{"NtDeviceIoControlFile$afd_routing_interface_query_udp", 0, {}, (syscall_t)NtDeviceIoControlFile};
