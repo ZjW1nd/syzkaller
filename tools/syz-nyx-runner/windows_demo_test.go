@@ -711,7 +711,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 	}
 }
 
-func TestWindowsAfdSessionAvoidsKnownBlockingConstructors(t *testing.T) {
+func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -728,45 +728,54 @@ func TestWindowsAfdSessionAvoidsKnownBlockingConstructors(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{
-		"socket$connected_tcp",
-		"connect$inet_tcp",
-		"bind$connectex_tcp",
-		"send$inet_tcp",
-		"WSASend$tcp*",
-		"shutdown$tcp*",
-		"getsockname$tcp",
-		"getpeername$tcp",
-		"WSAEventSelect$tcp",
-		"WSAEnumNetworkEvents$tcp",
-		"WSAIoctl$sio_keepalive_vals",
-		"WSAIoctl$sio_get_extension_function_pointer",
-		"ConnectEx$inet_tcp*",
-		"DisconnectEx$inet_tcp*",
-		"ioctlsocket$fionbio_tcp",
-		"setsockopt$int_tcp",
-		"getsockopt$int_tcp",
-		"socket$connected_udp",
+	wantEnabled := []string{
+		"sendto$udp_bound",
 		"connect$inet_udp",
 		"send$inet_udp",
 		"sendto$udp_connected",
 		"WSASendTo$udp",
-		"getpeername$udp",
-		"select$afd_basic",
+		"recv$inet_udp",
+		"recvfrom$udp_bound",
+		"WSARecvFrom$udp",
+		"WSARecvMsg$udp",
+		"NtDeviceIoControlFile$afd_address_list_query_udp",
+		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
 		"WSAIoctl$sio_address_list_query",
 		"WSAIoctl$sio_routing_interface_query",
+		"connect$inet_tcp",
+		"send$inet_tcp",
+		"WSASend$tcp",
+		"shutdown$tcp",
+		"NtDeviceIoControlFile$afd_query_recv_tcp",
+		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_get_context_tcp",
+		"WSAIoctl$sio_keepalive_vals",
+		"WSAIoctl$sio_get_extension_function_pointer",
+	}
+	for _, name := range wantEnabled {
+		if !slices.Contains(cfg.EnabledSyscalls, name) {
+			t.Fatalf("AFD session config should enable stable syscall %q", name)
+		}
+	}
+
+	riskyPaths := []string{
+		"bind$connectex_tcp",
+		"recv$inet_tcp",
+		"WSARecv$tcp*",
+		"WSAEventSelect$tcp",
+		"WSAEnumNetworkEvents$tcp",
+		"ConnectEx$inet_tcp*",
+		"DisconnectEx$inet_tcp*",
+		"select$afd_basic",
+		"NtDeviceIoControlFile$afd_event_select_accept",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept",
+		"NtDeviceIoControlFile$afd_poll_accept",
 		"GetAcceptExSockaddrs$inet_tcp",
 		"accept$inet_tcp",
 		"socket$accept_tcp",
-		"recv$inet_tcp",
 		"recv$inet_accept*",
-		"recv$inet_udp",
-		"WSARecv$tcp",
 		"WSARecv$accept*",
-		"recvfrom$udp_bound",
 		"recvfrom$udp_connected",
-		"WSARecvFrom$udp",
-		"WSARecvMsg$udp",
 		"WSARecvEx$inet_accept",
 		"send$inet_accept*",
 		"WSASend$accept*",
@@ -775,11 +784,26 @@ func TestWindowsAfdSessionAvoidsKnownBlockingConstructors(t *testing.T) {
 		"getpeername$accept",
 		"WSAEventSelect$accept",
 		"WSAEnumNetworkEvents$accept",
+		"CreateIoCompletionPort$socket",
 		"CreateIoCompletionPort$accept*",
+		"CreateIoCompletionPort$connect_pending",
+		"CreateIoCompletionPort$tcp_*_pending",
+		"GetQueuedCompletionStatus$socket",
+		"WSAGetOverlappedResult$socket",
 		"WSAGetOverlappedResult$accept*",
+		"WSAGetOverlappedResult$connect_pending",
+		"WSAGetOverlappedResult$tcp_*_pending",
+		"CancelIoEx$socket",
 		"CancelIoEx$accept*",
+		"CancelIoEx$connect_pending",
+		"CancelIoEx$tcp_*_pending",
+		"CancelIo$socket",
 		"CancelIo$accept*",
+		"CancelIo$connect_pending",
+		"CancelIo$tcp_*_pending",
 		"closesocket$accept*",
+		"closesocket$connect_pending",
+		"closesocket$tcp_*_pending",
 		"AcceptEx$inet_tcp*",
 		"setsockopt$update_accept_context",
 		"TransmitPackets$inet_accept",
@@ -787,10 +811,14 @@ func TestWindowsAfdSessionAvoidsKnownBlockingConstructors(t *testing.T) {
 		"getsockopt$int_accept*",
 		"ioctlsocket$fionbio_accept",
 	}
+	directForbidden := append([]string{
+		"socket$connected_tcp",
+		"socket$connected_udp",
+	}, riskyPaths...)
 	for _, name := range cfg.EnabledSyscalls {
-		for _, pattern := range forbidden {
+		for _, pattern := range directForbidden {
 			if mgrconfig.MatchSyscall(name, pattern) {
-				t.Fatalf("broad AFD session directly enables blocking syscall %q via pattern %q",
+				t.Fatalf("AFD session directly enables risky syscall %q via pattern %q",
 					name, pattern)
 			}
 		}
@@ -803,9 +831,9 @@ func TestWindowsAfdSessionAvoidsKnownBlockingConstructors(t *testing.T) {
 	}
 	for _, id := range syscalls {
 		name := target.Syscalls[id].Name
-		for _, pattern := range forbidden {
+		for _, pattern := range riskyPaths {
 			if mgrconfig.MatchSyscall(name, pattern) {
-				t.Fatalf("broad AFD session leaves blocking syscall %q enabled via pattern %q",
+				t.Fatalf("AFD session leaves risky syscall %q enabled via pattern %q",
 					name, pattern)
 			}
 		}
