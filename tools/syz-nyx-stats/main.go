@@ -2990,7 +2990,7 @@ func afdCallCategory(name string) string {
 		"getsockopt$int_accept_updated", "setsockopt$int_accept_updated",
 		"ioctlsocket$fionbio_accept",
 		"getsockname$accept", "getpeername$accept", "shutdown$accept",
-		"select$afd_basic":
+		"select$afd_basic", "select$afd_accept_nonblock":
 		return "accepted_data"
 	case "TransmitFile$inet_accept", "TransmitPackets$inet_accept":
 		return "transmit"

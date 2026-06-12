@@ -162,36 +162,37 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 #define W32_RECV_INET_TCP_NONBLOCK       3078
 #define W32_RECV_INET_UDP                3079
 #define W32_RECV_INET_UDP_NONBLOCK       3080
-#define W32_SELECT_AFD_BASIC             3087
-#define W32_SENDTO_UDP_BOUND             3094
-#define W32_SENDTO_UDP_CONNECTED         3095
-#define W32_SEND_INET_ACCEPT             3089
-#define W32_SEND_INET_ACCEPT_UPDATED     3090
-#define W32_SEND_INET_TCP                3091
-#define W32_SEND_INET_UDP                3092
+#define W32_SELECT_AFD_ACCEPT_NONBLOCK   3087
+#define W32_SELECT_AFD_BASIC             3088
+#define W32_SENDTO_UDP_BOUND             3095
+#define W32_SENDTO_UDP_CONNECTED         3096
+#define W32_SEND_INET_ACCEPT             3090
+#define W32_SEND_INET_ACCEPT_UPDATED     3091
+#define W32_SEND_INET_TCP                3092
+#define W32_SEND_INET_UDP                3093
 #define W32_SETFILEINFOBYHANDLE          2428
-#define W32_SETSOCKOPT_INT_ACCEPT        3097
-#define W32_SETSOCKOPT_INT_ACCEPT_UPDATED 3098
-#define W32_SETSOCKOPT_INT_TCP           3099
-#define W32_SETSOCKOPT_INT_UDP           3100
-#define W32_SETSOCKOPT_UPDATE_ACCEPT_CONTEXT 3101
-#define W32_SHUTDOWN_ACCEPT              3102
-#define W32_SHUTDOWN_ACCEPT_RD           3103
-#define W32_SHUTDOWN_ACCEPT_WR           3104
-#define W32_SHUTDOWN_TCP                 3105
-#define W32_SHUTDOWN_TCP_RD              3106
-#define W32_SHUTDOWN_TCP_WR              3107
-#define W32_SOCKET_ACCEPT_TCP            3110
-#define W32_SOCKET_BOUND_UDP             3111
-#define W32_SOCKET_CONNECTED_TCP         3112
-#define W32_SOCKET_CONNECTED_UDP         3113
-#define W32_SOCKET_INET_TCP              3114
-#define W32_SOCKET_INET_UDP              3115
-#define W32_SOCKET_LISTENER_TCP          3116
-#define W32_SYZ_EMIT_ETHERNET_WINDOWS    3123
-#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS  3125
-#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK 3126
-#define W32_SYZ_KAFL_BUGCHECK_TRIGGER    3127
+#define W32_SETSOCKOPT_INT_ACCEPT        3098
+#define W32_SETSOCKOPT_INT_ACCEPT_UPDATED 3099
+#define W32_SETSOCKOPT_INT_TCP           3100
+#define W32_SETSOCKOPT_INT_UDP           3101
+#define W32_SETSOCKOPT_UPDATE_ACCEPT_CONTEXT 3102
+#define W32_SHUTDOWN_ACCEPT              3103
+#define W32_SHUTDOWN_ACCEPT_RD           3104
+#define W32_SHUTDOWN_ACCEPT_WR           3105
+#define W32_SHUTDOWN_TCP                 3106
+#define W32_SHUTDOWN_TCP_RD              3107
+#define W32_SHUTDOWN_TCP_WR              3108
+#define W32_SOCKET_ACCEPT_TCP            3111
+#define W32_SOCKET_BOUND_UDP             3112
+#define W32_SOCKET_CONNECTED_TCP         3113
+#define W32_SOCKET_CONNECTED_UDP         3114
+#define W32_SOCKET_INET_TCP              3115
+#define W32_SOCKET_INET_UDP              3116
+#define W32_SOCKET_LISTENER_TCP          3117
+#define W32_SYZ_EMIT_ETHERNET_WINDOWS    3124
+#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS  3126
+#define W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK 3127
+#define W32_SYZ_KAFL_BUGCHECK_TRIGGER    3128
 #define W32_TRANSMITFILE_INET_ACCEPT     2686
 #define W32_TRANSMITPACKETS_INET_ACCEPT  2688
 #define W32_VIRTUALALLOC                 2755
@@ -407,6 +408,7 @@ static void init_nyx_syscalls()
 	syscalls[W32_RECVFROM_UDP_BOUND_NONBLOCK] = call_t{"recvfrom$udp_bound_nonblock", 0, {}, (syscall_t)recvfrom};
 	syscalls[W32_RECVFROM_UDP_CONNECTED] = call_t{"recvfrom$udp_connected", 0, {}, (syscall_t)recvfrom};
 	syscalls[W32_RECVFROM_UDP_CONNECTED_NONBLOCK] = call_t{"recvfrom$udp_connected_nonblock", 0, {}, (syscall_t)recvfrom};
+	syscalls[W32_SELECT_AFD_ACCEPT_NONBLOCK] = call_t{"select$afd_accept_nonblock", 0, {}, (syscall_t)select};
 	syscalls[W32_SELECT_AFD_BASIC] = call_t{"select$afd_basic", 0, {}, (syscall_t)select};
 	syscalls[W32_SEND_INET_ACCEPT] = call_t{"send$inet_accept", 0, {}, (syscall_t)send};
 	syscalls[W32_SEND_INET_ACCEPT_UPDATED] = call_t{"send$inet_accept_updated", 0, {}, (syscall_t)send};

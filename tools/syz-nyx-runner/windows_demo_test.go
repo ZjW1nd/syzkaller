@@ -697,6 +697,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-private.cfg",
 		"windows-nyx-afd-private-accept.cfg",
 		"windows-nyx-afd-private-event.cfg",
+		"windows-nyx-afd-select.cfg",
 		"windows-nyx-afd-wsaioctl.cfg",
 		"windows-nyx-afd-wsaioctl-interface.cfg",
 		"windows-nyx-afd-wsaioctl-udp-connreset.cfg",
@@ -1327,6 +1328,123 @@ func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
 			}
 			if !expanded[call.Meta] {
 				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-private-event.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdSelectConfigStaysNonblocking(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-select.cfg")
+	want := []string{
+		"ioctlsocket$fionbio_listener",
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
+		"accept$inet_tcp_nonblock",
+		"select$afd_accept_nonblock",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("AFD select enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_select_nonblock" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("AFD select seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if strings.HasPrefix(cfg.Experimental.SeedPrefix, "nyx_afd_") {
+		t.Fatalf("AFD select focused seed %q would be visible to the formal AFD session",
+			cfg.Experimental.SeedPrefix)
+	}
+	if cfg.Experimental.ForceGenerateEveryN != 1 {
+		t.Fatalf("AFD select force_generate_every_n=%d, want 1",
+			cfg.Experimental.ForceGenerateEveryN)
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AFD select config must reload between requests")
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		for _, pattern := range []string{
+			"connect$inet_tcp",
+			"accept$inet_tcp",
+			"socket$accept_tcp",
+			"select$afd_basic",
+			"ioctlsocket$fionbio_accept_nonblock",
+			"CreateIoCompletionPort$accept*",
+			"AcceptEx$inet_tcp*",
+			"TransmitPackets$inet_accept",
+			"TransmitFile$inet_accept",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AFD select leaves risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdSelectConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-select.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{"nyx_exp_afd_select_nonblock.txt"}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AFD select seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			for _, forbidden := range []string{
+				"connect$inet_tcp",
+				"accept$inet_tcp",
+				"socket$accept_tcp",
+				"select$afd_basic",
+			} {
+				if call.Meta.Name == forbidden {
+					t.Fatalf("%s uses risky scaffold %s",
+						filepath.Base(path), call.Meta.Name)
+				}
+			}
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-select.cfg",
 					filepath.Base(path), call.Meta.Name)
 			}
 		}
