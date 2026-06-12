@@ -3309,7 +3309,7 @@ func connectWithRetry(r *runner, retryFor time.Duration) error {
 }
 
 func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, programPath, targetProfile string, threaded, keepState bool,
-	collectCover bool, syscallTimeoutMs, programTimeoutMs, rounds int) error {
+	collectCover, fixedRepeat bool, syscallTimeoutMs, programTimeoutMs, rounds int) error {
 	target, err := standaloneTarget(targetProfile)
 	if err != nil {
 		return err
@@ -3347,7 +3347,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 		rounds = 1
 	}
 	var ct *prog.ChoiceTable
-	if rounds > 1 {
+	if rounds > 1 && !fixedRepeat {
 		enabled := standaloneEnabledCallsForProgram(target, p)
 		ct = target.BuildChoiceTable(nil, enabled)
 	}
@@ -3365,6 +3365,10 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 			} else {
 				log.Logf(0, "standalone seed program for %s (seed=%d):\n%s", label, seed, string(cur.Serialize()))
 			}
+		} else if fixedRepeat {
+			cur = p.Clone()
+			log.Logf(0, "standalone fixed-repeat program round=%d:\n%s",
+				round+1, string(cur.Serialize()))
 		} else {
 			base := corpus[mrand.New(mrand.NewSource(roundSeed)).Intn(len(corpus))].Clone()
 			base.Mutate(mrand.NewSource(roundSeed), 1, ct, nil, corpus)
@@ -4242,6 +4246,7 @@ func main() {
 		standaloneThreaded          = flag.Bool("standalone-threaded", true, "set ExecFlagThreaded in standalone mode")
 		standaloneKeepState         = flag.Bool("standalone-keep-state", true, "preserve guest state between standalone exec requests")
 		standaloneNoCover           = flag.Bool("standalone-no-cover", false, "disable standalone coverage collection while keeping signal collection")
+		standaloneFixedRepeat       = flag.Bool("standalone-fixed-repeat", false, "repeat the initial standalone syzkaller program for all rounds instead of mutating")
 		moduleRangesRaw             = flag.String("module-ranges", defaultModuleRangeList(), "comma-separated kernel module PT range targets; suffix :required for mandatory matches")
 		coverageDebugStream         = flag.String("coverage-debug-stream", "", "optional JSONL path for per-exec raw module coverage diagnostics")
 		slowTraceDir                = flag.String("slow-trace-dir", "", "slow/hang artifact directory (default: workdir/slow-traces; '-' disables)")
@@ -4338,7 +4343,7 @@ func main() {
 			return
 		}
 		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneProgramPath, *standaloneTargetProfile, *standaloneThreaded,
-			*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
+			*standaloneKeepState, standaloneCollectCover, *standaloneFixedRepeat, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
 			log.Fatalf("standalone Nyx request failed: %v", err)
 		}
 		return

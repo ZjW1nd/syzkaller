@@ -2387,8 +2387,10 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 		"standalone-exec-program",
 		"standalone-staged-exec-program",
 		"standalone-no-cover",
+		"standalone-fixed-repeat",
 		"runStandaloneExec(",
 		"runStandaloneExecStaged(",
+		"standalone fixed-repeat program",
 	} {
 		if !strings.Contains(mainSrc, want) {
 			t.Fatalf("runner standalone exec replay support missing %q", want)
@@ -2421,6 +2423,7 @@ func TestStandaloneExecProgramReplayFlagsAreWired(t *testing.T) {
 		"standalone_exec_program",
 		"standalone_staged_exec_program",
 		"standalone_no_cover",
+		"standalone_fixed_repeat",
 	} {
 		if !strings.Contains(scriptSrc, want) {
 			t.Fatalf("run-nyx-fullchain standalone exec replay support missing %q", want)
