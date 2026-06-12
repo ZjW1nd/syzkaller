@@ -143,6 +143,10 @@ func TestAFDCallCategoryClassifiesAcceptRecvSendPending(t *testing.T) {
 		"WSAEnumNetworkEvents$tcp",
 		"WSAEventSelect$accept",
 		"WSAEnumNetworkEvents$accept",
+		"WSAEventSelect$tcp_nonblock",
+		"WSAEnumNetworkEvents$tcp_nonblock",
+		"WSAEventSelect$accept_nonblock",
+		"WSAEnumNetworkEvents$accept_nonblock",
 	} {
 		if got := afdCallCategory(name); got != "async_completion" {
 			t.Fatalf("%s category=%q, want async_completion", name, got)

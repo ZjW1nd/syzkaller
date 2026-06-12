@@ -206,6 +206,10 @@ WSAEventSelect$tcp(s SOCKET_TCP_CONNECTED, hEventObject WSAEVENT_HANDLE, lNetwor
 WSAEventSelect$accept(s SOCKET_TCP_ACCEPTED, hEventObject WSAEVENT_HANDLE, lNetworkEvents flags[wsa_network_events]) (no_generate, no_minimize)
 WSAEnumNetworkEvents$tcp(s SOCKET_TCP_CONNECTED, hEventObject WSAEVENT_HANDLE, lpNetworkEvents ptr[out, WSANETWORKEVENTS]) (no_generate, no_minimize)
 WSAEnumNetworkEvents$accept(s SOCKET_TCP_ACCEPTED, hEventObject WSAEVENT_HANDLE, lpNetworkEvents ptr[out, WSANETWORKEVENTS]) (no_generate, no_minimize)
+WSAEventSelect$tcp_nonblock(s SOCKET_TCP_CONNECTED_NONBLOCK, hEventObject WSAEVENT_HANDLE, lNetworkEvents flags[wsa_network_events])
+WSAEventSelect$accept_nonblock(s SOCKET_TCP_ACCEPTED_NONBLOCK, hEventObject WSAEVENT_HANDLE, lNetworkEvents flags[wsa_network_events])
+WSAEnumNetworkEvents$tcp_nonblock(s SOCKET_TCP_CONNECTED_NONBLOCK, hEventObject WSAEVENT_HANDLE, lpNetworkEvents ptr[out, WSANETWORKEVENTS])
+WSAEnumNetworkEvents$accept_nonblock(s SOCKET_TCP_ACCEPTED_NONBLOCK, hEventObject WSAEVENT_HANDLE, lpNetworkEvents ptr[out, WSANETWORKEVENTS])
 CreateIoCompletionPort$socket(FileHandle SOCKET_TCP_ACCEPTED, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET
 CreateIoCompletionPort$accept_pending(FileHandle SOCKET_TCP_ACCEPT_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)
 CreateIoCompletionPort$accept_recv_pending(FileHandle SOCKET_TCP_ACCEPT_RECV_PENDING, ExistingCompletionPort const[0], CompletionKey intptr, NumberOfConcurrentThreads int32[0:4]) IOCP_SOCKET (no_generate, no_minimize)

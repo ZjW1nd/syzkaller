@@ -699,6 +699,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-private.cfg",
 		"windows-nyx-afd-private-accept.cfg",
 		"windows-nyx-afd-private-event.cfg",
+		"windows-nyx-afd-public-event.cfg",
 		"windows-nyx-afd-select.cfg",
 		"windows-nyx-afd-wsaioctl.cfg",
 		"windows-nyx-afd-wsaioctl-interface.cfg",
@@ -1337,6 +1338,145 @@ func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
 			}
 			if !expanded[call.Meta] {
 				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-private-event.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdPublicEventConfigUsesNonblockingEvents(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-public-event.cfg")
+	want := []string{
+		"ioctlsocket$fionbio_listener",
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
+		"ioctlsocket$fionbio_tcp_connected",
+		"accept$inet_tcp_nonblock",
+		"send$inet_tcp",
+		"send$inet_accept",
+		"WSAEventSelect$tcp_nonblock",
+		"WSAEnumNetworkEvents$tcp_nonblock",
+		"WSAEventSelect$accept_nonblock",
+		"WSAEnumNetworkEvents$accept_nonblock",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("public AFD event enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_public_event_nonblock" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("public AFD event seed prefixes are too broad: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("public AFD event focused config should disable collide while async collide stability is unresolved")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("public AFD event config must reload between requests while isolating event state")
+	}
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range []string{
+		"WSAEventSelect$tcp_nonblock",
+		"WSAEnumNetworkEvents$tcp_nonblock",
+		"WSAEventSelect$accept_nonblock",
+		"WSAEnumNetworkEvents$accept_nonblock",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing public event syscall %q", name)
+		}
+		if call.Attrs.NoGenerate {
+			t.Fatalf("%s should be generatable in the focused nonblocking event profile", name)
+		}
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		for _, pattern := range []string{
+			"socket$connected_tcp",
+			"connect$inet_tcp",
+			"accept$inet_tcp",
+			"socket$accept_tcp",
+			"WSAEventSelect$tcp",
+			"WSAEnumNetworkEvents$tcp",
+			"WSAEventSelect$accept",
+			"WSAEnumNetworkEvents$accept",
+			"ioctlsocket$fionbio_accept_nonblock",
+			"CreateIoCompletionPort$accept*",
+			"AcceptEx$inet_tcp*",
+			"TransmitPackets$inet_accept",
+			"TransmitFile$inet_accept",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("public AFD event config directly enables risky syscall %q via %q",
+					name, pattern)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdPublicEventConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-public-event.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{
+		"nyx_exp_afd_public_event_nonblock_accept.txt",
+		"nyx_exp_afd_public_event_nonblock_tcp.txt",
+	}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("public AFD event seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			for _, forbidden := range []string{
+				"connect$inet_tcp",
+				"accept$inet_tcp",
+				"socket$accept_tcp",
+				"socket$connected_tcp",
+				"WSAEventSelect$tcp",
+				"WSAEnumNetworkEvents$tcp",
+				"WSAEventSelect$accept",
+				"WSAEnumNetworkEvents$accept",
+			} {
+				if call.Meta.Name == forbidden {
+					t.Fatalf("%s uses blocked public event scaffold %s",
+						filepath.Base(path), call.Meta.Name)
+				}
+			}
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if call.Meta.Attrs.NoGenerate && !slices.Contains(cfg.EnabledSyscalls, call.Meta.Name) {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-public-event.cfg",
 					filepath.Base(path), call.Meta.Name)
 			}
 		}

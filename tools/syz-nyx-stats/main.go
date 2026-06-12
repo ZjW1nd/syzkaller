@@ -2981,7 +2981,9 @@ func afdCallCategory(name string) string {
 		"WSAGetOverlappedResult$connect_pending", "CancelIoEx$connect_pending", "CancelIo$connect_pending",
 		"CreateIoCompletionPort$connect_pending", "closesocket$connect_pending",
 		"WSAEventSelect$tcp", "WSAEventSelect$accept",
-		"WSAEnumNetworkEvents$tcp", "WSAEnumNetworkEvents$accept":
+		"WSAEnumNetworkEvents$tcp", "WSAEnumNetworkEvents$accept",
+		"WSAEventSelect$tcp_nonblock", "WSAEventSelect$accept_nonblock",
+		"WSAEnumNetworkEvents$tcp_nonblock", "WSAEnumNetworkEvents$accept_nonblock":
 		return "async_completion"
 	case "recv$inet_accept", "WSARecv$accept", "WSARecvEx$inet_accept",
 		"send$inet_accept", "WSASend$accept",
