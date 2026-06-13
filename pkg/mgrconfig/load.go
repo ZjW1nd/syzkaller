@@ -34,9 +34,10 @@ type Derived struct {
 	ExecprogBin string
 	ExecutorBin string
 
-	Syscalls      []int
-	NoMutateCalls map[int]bool // Set of IDs of syscalls which should not be mutated.
-	Timeouts      targets.Timeouts
+	Syscalls        []int
+	NoMutateCalls   map[int]bool // Set of IDs of syscalls which should not be mutated.
+	NoGenerateCalls map[int]bool // Set of IDs of syscalls excluded from ordinary top-level generation.
+	Timeouts        targets.Timeouts
 
 	// Special debugging/development mode specified by VM type "none".
 	// In this mode syz-manager does not start any VMs, but instead a user is supposed
@@ -197,6 +198,10 @@ func Complete(cfg *Config) error {
 		return err
 	}
 	cfg.NoMutateCalls, err = ParseNoMutateSyscalls(cfg.Target, cfg.NoMutateSyscalls)
+	if err != nil {
+		return err
+	}
+	cfg.NoGenerateCalls, err = ParseNoGenerateSyscalls(cfg.Target, cfg.Experimental.NoGenerateSyscalls)
 	if err != nil {
 		return err
 	}
@@ -574,6 +579,14 @@ func checkMode(syscall *prog.Syscall, descriptionsMode DescriptionsMode,
 }
 
 func ParseNoMutateSyscalls(target *prog.Target, syscalls []string) (map[int]bool, error) {
+	return parseSyscallPatternIDs(target, syscalls, "no_mutate")
+}
+
+func ParseNoGenerateSyscalls(target *prog.Target, syscalls []string) (map[int]bool, error) {
+	return parseSyscallPatternIDs(target, syscalls, "no_generate")
+}
+
+func parseSyscallPatternIDs(target *prog.Target, syscalls []string, label string) (map[int]bool, error) {
 	var result = make(map[int]bool)
 
 	for _, c := range syscalls {
@@ -585,7 +598,7 @@ func ParseNoMutateSyscalls(target *prog.Target, syscalls []string) (map[int]bool
 			}
 		}
 		if n == 0 {
-			return nil, fmt.Errorf("unknown no_mutate syscall: %v", c)
+			return nil, fmt.Errorf("unknown %s syscall: %v", label, c)
 		}
 	}
 

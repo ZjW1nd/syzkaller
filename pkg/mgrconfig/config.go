@@ -277,6 +277,11 @@ type Experimental struct {
 	// N-1 high-priority queue picks in the main fuzzing source. 0 disables it.
 	ForceGenerateEveryN int `json:"force_generate_every_n,omitempty"`
 
+	// NoGenerateSyscalls excludes matching calls from ordinary fresh/insertion
+	// generation in this config. The calls remain enabled for seeds, candidate
+	// replay, triage, corpus retention, and resource construction.
+	NoGenerateSyscalls []string `json:"no_generate_syscalls,omitempty"`
+
 	// BorrowingSeedPrefix preloads matching sys/<os>/test seeds into a
 	// generation-time borrowing-only corpus. This does not mark them as triaged
 	// corpus entries; it only makes them available to resourceCentric borrowing.

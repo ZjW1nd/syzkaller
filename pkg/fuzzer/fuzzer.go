@@ -297,6 +297,7 @@ type Config struct {
 	Collide             bool
 	EnabledCalls        map[*prog.Syscall]bool
 	NoMutateCalls       map[int]bool
+	NoGenerateCalls     map[int]bool
 	BorrowingCorpus     []*prog.Prog
 	CorpusProgramWeight corpus.ProgramWeightFunc
 	FetchRawCover       bool
@@ -678,7 +679,8 @@ func (fuzzer *Fuzzer) rand() *rand.Rand {
 }
 
 func (fuzzer *Fuzzer) updateChoiceTable(programs []*prog.Prog) {
-	newCt := fuzzer.target.BuildChoiceTable(programs, fuzzer.Config.EnabledCalls)
+	newCt := fuzzer.target.BuildChoiceTableWithNoDirectCalls(programs,
+		fuzzer.Config.EnabledCalls, fuzzer.Config.NoGenerateCalls)
 
 	fuzzer.ctMu.Lock()
 	defer fuzzer.ctMu.Unlock()

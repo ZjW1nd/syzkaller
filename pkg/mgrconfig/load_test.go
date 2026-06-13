@@ -222,6 +222,31 @@ func TestExperimentalForceGenerateEveryNIsPreserved(t *testing.T) {
 	assert.Equal(t, 3, cfg.Experimental.ForceGenerateEveryN)
 }
 
+func TestExperimentalNoGenerateSyscallsAreValidated(t *testing.T) {
+	cfg := DefaultValues()
+	cfg.RawTarget = "windows/amd64"
+	cfg.Workdir = t.TempDir()
+	cfg.Syzkaller = "."
+	cfg.Type = "none"
+	cfg.Experimental.NoGenerateSyscalls = []string{"WSARecvMsg$udp_nonblock", "accept$inet_tcp_nonblock"}
+
+	require.NoError(t, SetTargets(cfg))
+	noGenerate, err := ParseNoGenerateSyscalls(cfg.Target, cfg.Experimental.NoGenerateSyscalls)
+	require.NoError(t, err)
+	assert.True(t, noGenerate[cfg.Target.SyscallMap["WSARecvMsg$udp_nonblock"].ID])
+	assert.True(t, noGenerate[cfg.Target.SyscallMap["accept$inet_tcp_nonblock"].ID])
+
+	cfg = DefaultValues()
+	cfg.RawTarget = "windows/amd64"
+	cfg.Workdir = t.TempDir()
+	cfg.Syzkaller = "."
+	cfg.Type = "none"
+	cfg.Experimental.NoGenerateSyscalls = []string{"DefinitelyMissingSyscall"}
+	require.NoError(t, SetTargets(cfg))
+	_, err = ParseNoGenerateSyscalls(cfg.Target, cfg.Experimental.NoGenerateSyscalls)
+	require.ErrorContains(t, err, "unknown no_generate syscall")
+}
+
 func TestExperimentalCorpusFuzzWeightRulesAreValidated(t *testing.T) {
 	makeConfig := func() *Config {
 		cfg := DefaultValues()

@@ -293,6 +293,13 @@ type ChoiceTable struct {
 }
 
 func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool) *ChoiceTable {
+	return target.BuildChoiceTableWithNoDirectCalls(corpus, enabled, nil)
+}
+
+// BuildChoiceTableWithNoDirectCalls excludes selected calls from fresh top-level
+// generation while keeping them enabled as resource constructors and corpus calls.
+func (target *Target) BuildChoiceTableWithNoDirectCalls(corpus []*Prog, enabled map[*Syscall]bool,
+	noDirect map[int]bool) *ChoiceTable {
 	prios, enabledCalls := target.CalculatePriorities(corpus, enabled)
 	var generatableCalls []*Syscall
 	for c := range enabledCalls {
@@ -302,12 +309,16 @@ func (target *Target) BuildChoiceTable(corpus []*Prog, enabled map[*Syscall]bool
 		return cmp.Compare(a.ID, b.ID)
 	})
 	directCalls := generatableCalls
-	if target.Helpers.NoGenerateAutomaticHelpers {
+	if target.Helpers.NoGenerateAutomaticHelpers || len(noDirect) != 0 {
 		directCalls = make([]*Syscall, 0, len(generatableCalls))
 		for _, c := range generatableCalls {
-			if !target.CallIsAutomaticHelper(c) {
-				directCalls = append(directCalls, c)
+			if target.Helpers.NoGenerateAutomaticHelpers && target.CallIsAutomaticHelper(c) {
+				continue
 			}
+			if noDirect[c.ID] {
+				continue
+			}
+			directCalls = append(directCalls, c)
 		}
 		if len(directCalls) == 0 {
 			panic("no syscalls enabled for direct generation")

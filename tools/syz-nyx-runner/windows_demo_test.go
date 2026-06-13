@@ -172,13 +172,14 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		Debug        bool   `json:"debug"`
 	} `json:"vm"`
 	Experimental struct {
-		SeedPrefix            string `json:"seed_prefix"`
-		SeedExcludePrefixes   string `json:"seed_exclude_prefixes"`
-		BorrowingSeedPrefix   string `json:"borrowing_seed_prefix"`
-		WindowsTargetProfile  string `json:"windows_target_profile"`
-		MaxCallsPerProg       int    `json:"max_calls_per_prog"`
-		ForceGenerateEveryN   int    `json:"force_generate_every_n"`
-		DisableCollide        bool   `json:"disable_collide"`
+		SeedPrefix            string   `json:"seed_prefix"`
+		SeedExcludePrefixes   string   `json:"seed_exclude_prefixes"`
+		BorrowingSeedPrefix   string   `json:"borrowing_seed_prefix"`
+		WindowsTargetProfile  string   `json:"windows_target_profile"`
+		MaxCallsPerProg       int      `json:"max_calls_per_prog"`
+		ForceGenerateEveryN   int      `json:"force_generate_every_n"`
+		NoGenerateSyscalls    []string `json:"no_generate_syscalls"`
+		DisableCollide        bool     `json:"disable_collide"`
 		CorpusFuzzWeightRules []struct {
 			Calls  []string `json:"calls"`
 			Weight float64  `json:"weight"`
@@ -201,13 +202,14 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 			Debug        bool   `json:"debug"`
 		} `json:"vm"`
 		Experimental struct {
-			SeedPrefix            string `json:"seed_prefix"`
-			SeedExcludePrefixes   string `json:"seed_exclude_prefixes"`
-			BorrowingSeedPrefix   string `json:"borrowing_seed_prefix"`
-			WindowsTargetProfile  string `json:"windows_target_profile"`
-			MaxCallsPerProg       int    `json:"max_calls_per_prog"`
-			ForceGenerateEveryN   int    `json:"force_generate_every_n"`
-			DisableCollide        bool   `json:"disable_collide"`
+			SeedPrefix            string   `json:"seed_prefix"`
+			SeedExcludePrefixes   string   `json:"seed_exclude_prefixes"`
+			BorrowingSeedPrefix   string   `json:"borrowing_seed_prefix"`
+			WindowsTargetProfile  string   `json:"windows_target_profile"`
+			MaxCallsPerProg       int      `json:"max_calls_per_prog"`
+			ForceGenerateEveryN   int      `json:"force_generate_every_n"`
+			NoGenerateSyscalls    []string `json:"no_generate_syscalls"`
+			DisableCollide        bool     `json:"disable_collide"`
 			CorpusFuzzWeightRules []struct {
 				Calls  []string `json:"calls"`
 				Weight float64  `json:"weight"`
@@ -863,7 +865,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSAIoctl$sio_address_list_query",
 		"WSAIoctl$sio_routing_interface_query",
 		"WSAIoctl$sio_get_interface_list",
-		"WSAIoctl$sio_udp_connreset",
 		"ioctlsocket$fionbio_tcp_created",
 		"connect$inet_tcp_nonblock",
 		"send$inet_tcp",
@@ -928,6 +929,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"recvfrom$udp_connected",
 		"WSARecvFrom$udp",
 		"WSARecvMsg$udp",
+		"WSAIoctl$sio_udp_connreset",
 		"select$afd_basic",
 		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept",
@@ -985,6 +987,13 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 			}
 		}
 	}
+	for _, name := range []string{
+		"WSAIoctl$sio_udp_connreset",
+	} {
+		if !slices.Contains(cfg.DisabledSyscalls, name) {
+			t.Fatalf("AFD session should keep slow candidate-only syscall %q in focused configs", name)
+		}
+	}
 
 	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
 		mgrconfig.ManualDescriptions)
@@ -1001,6 +1010,29 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 				t.Fatalf("AFD session leaves risky syscall %q enabled via pattern %q",
 					name, pattern)
 			}
+		}
+	}
+	noDirect, err := mgrconfig.ParseNoGenerateSyscalls(target, cfg.Experimental.NoGenerateSyscalls)
+	if err != nil {
+		t.Fatalf("ParseNoGenerateSyscalls: %v", err)
+	}
+	ct := target.BuildChoiceTableWithNoDirectCalls(nil, expanded, noDirect)
+	for _, name := range []string{
+		"WSARecvMsg$udp_nonblock",
+		"accept$inet_tcp_nonblock",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing formal no-generate syscall %q", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("%s should stay enabled in formal AFD session", name)
+		}
+		if !ct.Generatable(call.ID) {
+			t.Fatalf("%s should stay available for seeds/resource construction", name)
+		}
+		if ct.DirectlyGeneratable(call.ID) {
+			t.Fatalf("%s should not be a formal fresh/insertion generation root", name)
 		}
 	}
 	for _, name := range []string{
