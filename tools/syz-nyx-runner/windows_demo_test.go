@@ -619,6 +619,8 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("getsockopt$int_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
 	assertResource("TransmitFile$inet_accept", 0, "SOCKET_TCP_ACCEPTED")
 	assertResource("TransmitPackets$inet_accept", 0, "SOCKET_ACCEPT")
+	assertResource("TransmitFile$inet_accept_nonblock", 0, "SOCKET_TCP_ACCEPTED_NONBLOCK")
+	assertResource("TransmitPackets$inet_accept_nonblock", 0, "SOCKET_TCP_ACCEPTED_NONBLOCK")
 	assertResource("WSARecvMsg$udp", 0, "SOCKET_UDP_BOUND")
 	assertResource("WSAIoctl$sio_routing_interface_query", 0, "SOCKET_UDP_PEERED")
 	assertResource("CreateIoCompletionPort$socket", 0, "SOCKET_TCP_ACCEPTED")
@@ -710,6 +712,7 @@ func TestWindowsFileHandleResourceHierarchy(t *testing.T) {
 	assertResource("NtQueryInformationFile$network_open", 0, "FILE_HANDLE")
 	assertResource("NtSetInformationFile$basic", 0, "FILE_HANDLE")
 	assertResource("TransmitFile$inet_accept", 1, "FILE_HANDLE")
+	assertResource("TransmitFile$inet_accept_nonblock", 1, "FILE_HANDLE")
 }
 
 func TestWindowsNyxFuzzConfigSyscallsPresentInSparseTable(t *testing.T) {
@@ -1946,6 +1949,144 @@ func TestWindowsAfdPublicEventConfigCoversSeedSyscalls(t *testing.T) {
 			}
 			if !expanded[call.Meta] {
 				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-public-event.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-transmit.cfg")
+	want := []string{
+		"WriteFile",
+		"ioctlsocket$fionbio_listener",
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
+		"accept$inet_tcp_nonblock",
+		"TransmitFile$inet_accept_nonblock",
+		"TransmitPackets$inet_accept_nonblock",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("AFD transmit enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_transmit_nonblock" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("AFD transmit seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if strings.HasPrefix(cfg.Experimental.SeedPrefix, "nyx_afd_") {
+		t.Fatalf("AFD transmit focused seed %q would be visible to the formal AFD session",
+			cfg.Experimental.SeedPrefix)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("AFD transmit focused config should keep collide disabled while validating mswsock send paths")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AFD transmit config must reload between requests")
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expandedNames := make(map[string]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expandedNames[name] = true
+		for _, pattern := range []string{
+			"connect$inet_tcp",
+			"accept$inet_tcp",
+			"socket$accept_tcp",
+			"socket$connected_tcp",
+			"AcceptEx$inet_tcp*",
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"CreateIoCompletionPort$*",
+			"GetQueuedCompletionStatus$socket",
+			"WSAGetOverlappedResult$*",
+			"CancelIoEx$*",
+			"CancelIo$*",
+			"closesocket$*",
+			"TransmitPackets$inet_accept",
+			"TransmitFile$inet_accept",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AFD transmit leaves risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range []string{
+		"TransmitFile$inet_accept_nonblock",
+		"TransmitPackets$inet_accept_nonblock",
+	} {
+		if !expandedNames[name] {
+			t.Fatalf("AFD transmit config must keep %s enabled", name)
+		}
+	}
+}
+
+func TestWindowsAfdTransmitConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-transmit.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{"nyx_exp_afd_transmit_nonblock.txt"}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AFD transmit seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, name := range []string{
+			"connect$inet_tcp(",
+			"accept$inet_tcp(",
+			"socket$accept_tcp(",
+			"socket$connected_tcp(",
+			"TransmitFile$inet_accept(",
+			"TransmitPackets$inet_accept(",
+			"closesocket$",
+		} {
+			if strings.Contains(serialized, name) {
+				t.Fatalf("AFD transmit seed %s contains risky call %q:\n%s",
+					filepath.Base(path), name, serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.NoGenerate || target.CallIsAutomaticHelper(call.Meta) {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-transmit.cfg",
 					filepath.Base(path), call.Meta.Name)
 			}
 		}

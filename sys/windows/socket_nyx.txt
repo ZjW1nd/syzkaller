@@ -283,11 +283,13 @@ DisconnectEx$inet_tcp_reuse(s SOCKET_TCP_CONNECTED, lpOverlapped ptr[inout, OVER
 ConnectEx$inet_tcp_reuse(s SOCKET_TCP_DISCONNECTED_REUSABLE, name ptr[in, sockaddr_in], namelen len[name], lpSendBuffer ptr[in, array[int8]], dwSendDataLength bytesize[lpSendBuffer], lpdwBytesSent ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt]) SOCKET_TCP_CONNECTED
 GetAcceptExSockaddrs$inet_tcp(lpOutputBuffer ptr[inout, acceptex_sockaddrs_buffer], dwReceiveDataLength const[0], dwLocalAddressLength const[32], dwRemoteAddressLength const[32], LocalSockaddr ptr[out, ptr[out, sockaddr_in]], LocalSockaddrLength ptr[out, int32], RemoteSockaddr ptr[out, ptr[out, sockaddr_in]], RemoteSockaddrLength ptr[out, int32]) (no_generate, no_minimize)
 TransmitPackets$inet_accept(hSocket SOCKET_ACCEPT, lpPacketArray ptr[in, array[transmit_packet_memory, 1]], nElementCount const[1], nSendSize int32[0:4096], lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags flags[transmit_packets_flags])
+TransmitPackets$inet_accept_nonblock(hSocket SOCKET_TCP_ACCEPTED_NONBLOCK, lpPacketArray ptr[in, array[transmit_packet_memory, 1]], nElementCount const[1], nSendSize int32[0:4096], lpOverlapped ptr[inout, OVERLAPPED, opt], dwFlags flags[transmit_packets_flags])
 WSARecvMsg$udp(s SOCKET_UDP_BOUND, lpMsg ptr[inout, WSAMSG_OUT], lpdwNumberOfBytesRecvd ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSARecvMsg$udp_nonblock(s SOCKET_UDP_BOUND_NONBLOCK, lpMsg ptr[inout, WSAMSG_OUT], lpdwNumberOfBytesRecvd ptr[out, int32], lpOverlapped ptr[inout, OVERLAPPED, opt], lpCompletionRoutine ptr[in, intptr, opt])
 WSARecvEx$inet_accept(s SOCKET_TCP_ACCEPTED, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
 WSARecvEx$inet_accept_nonblock(s SOCKET_TCP_ACCEPTED_NONBLOCK, buf ptr[inout, int8], len int32, flags ptr[inout, int32])
 TransmitFile$inet_accept(hSocket SOCKET_TCP_ACCEPTED, hFile FILE_HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, OVERLAPPED, opt], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)
+TransmitFile$inet_accept_nonblock(hSocket SOCKET_TCP_ACCEPTED_NONBLOCK, hFile FILE_HANDLE, nNumberOfBytesToWrite int32, nNumberOfBytesPerSend int32, lpOverlapped ptr[inout, OVERLAPPED, opt], lpTransmitBuffers ptr[inout, intptr], dwReserved int32)
 
 shutdown_how = 0, 1, 2
 sol_socket_int_set_opts = 0x1, 0x4, 0x8, 0x10, 0x20, 0x80, 0x100, 0x1001, 0x1002, 0x1005, 0x1006, 0xfffffffe
