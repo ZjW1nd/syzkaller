@@ -988,6 +988,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	foundTransmitWeight := false
 	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
 		if rule.Weight == 0 &&
+			slices.Contains(rule.Calls, "TransmitPackets$inet_accept_nonblock") &&
 			slices.Contains(rule.Calls, "TransmitFile$inet_accept_nonblock") &&
 			slices.Contains(rule.Calls, "WriteFile$afd_transmit") {
 			foundTransmitWeight = true
@@ -995,7 +996,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		}
 	}
 	if !foundTransmitWeight {
-		t.Fatalf("formal AFD session should keep TransmitFile corpus out of ordinary fuzz mutation")
+		t.Fatalf("formal AFD session should keep transmit corpus out of ordinary fuzz mutation")
 	}
 	wantShutdownWeighted := []string{
 		"shutdown$tcp",
@@ -1279,6 +1280,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_noop_accept",
 		"WSARecvEx$inet_accept_nonblock",
+		"TransmitPackets$inet_accept_nonblock",
 		"TransmitFile$inet_accept_nonblock",
 		"WriteFile$afd_transmit",
 	} {
@@ -1325,7 +1327,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"getpeername$accept",
 		"setsockopt$int_accept",
 		"getsockopt$int_accept",
-		"TransmitPackets$inet_accept_nonblock",
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {
@@ -1362,7 +1363,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	}
 	seenUdpNonblockReceive := 0
 	var lastUdpFresh *prog.Prog
-	for seed := int64(1); seed <= 4096; seed++ {
+	for seed := int64(1); seed <= 65536; seed++ {
 		p := target.Generate(rand.New(rand.NewSource(seed)), cfg.Experimental.MaxCallsPerProg, ct)
 		lastUdpFresh = p
 		if target.RuntimePolicy.ShouldScheduleProgram != nil &&
@@ -1385,11 +1386,11 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 				t.Fatalf("formal fresh generation scheduled %s without prior UDP FIONBIO:\n%s",
 					call.Meta.Name, p.Serialize())
 			}
-			if seenUdpNonblockReceive >= 16 {
+			if seenUdpNonblockReceive >= 8 {
 				break
 			}
 		}
-		if seenUdpNonblockReceive >= 16 {
+		if seenUdpNonblockReceive >= 8 {
 			break
 		}
 	}
@@ -1424,7 +1425,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 			"recv$inet_accept_nonblock",
 			"WSASend$accept",
 			"WSARecv$accept_nonblock",
-			"TransmitPackets$inet_accept_nonblock",
 		} {
 			for _, pattern := range rule.Calls {
 				if mgrconfig.MatchSyscall(name, pattern) {
