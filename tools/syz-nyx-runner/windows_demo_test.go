@@ -899,6 +899,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"recv$inet_accept_updated",
 		"setsockopt$int_accept_updated",
 		"getsockopt$int_accept_updated",
+		"WriteFile",
+		"TransmitFile$inet_accept_nonblock",
+		"TransmitPackets$inet_accept_nonblock",
 		"WSAEventSelect$tcp_nonblock",
 		"WSAEnumNetworkEvents$tcp_nonblock",
 		"select$afd_accept_nonblock",
@@ -1259,6 +1262,89 @@ func TestWindowsAfdSessionKeepsPrivateEventPollSeedOnly(t *testing.T) {
 		}
 		if !strings.Contains(serialized, name+"(") {
 			t.Fatalf("private event/poll seed lost %s after config filtering:\n%s", name, serialized)
+		}
+	}
+}
+
+func TestWindowsAfdSessionIncludesTransmitNonblockSeed(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	var seedPath string
+	for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes) {
+		if filepath.Base(path) == "nyx_afd_transmit_nonblock.txt" {
+			seedPath = path
+			break
+		}
+	}
+	if seedPath == "" {
+		t.Fatal("formal AFD session should include the nonblocking transmit seed")
+	}
+	data, err := os.ReadFile(seedPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", seedPath, err)
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("deserialize %s: %v", seedPath, err)
+	}
+	serialized := string(p.Serialize())
+	for _, forbidden := range []string{
+		"TransmitFile$inet_accept(",
+		"TransmitPackets$inet_accept(",
+		"connect$inet_tcp(",
+		"accept$inet_tcp(",
+	} {
+		if strings.Contains(serialized, forbidden) {
+			t.Fatalf("formal transmit seed %s uses risky call %q:\n%s",
+				filepath.Base(seedPath), forbidden, serialized)
+		}
+	}
+	syscallIDs, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls,
+		cfg.DisabledSyscalls, mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	enabled := make(map[*prog.Syscall]bool, len(syscallIDs))
+	for _, id := range syscallIDs {
+		enabled[target.Syscalls[id]] = true
+	}
+	filterCfg := &mgrconfig.Config{
+		DisabledSyscalls: cfg.DisabledSyscalls,
+		Derived: mgrconfig.Derived{
+			Target: target,
+		},
+	}
+	filtered := manager.FilterCandidatesForConfig([]fuzzer.Candidate{{
+		Prog:  p,
+		Flags: fuzzer.ProgMinimized,
+	}}, enabled, filterCfg, true)
+	if len(filtered.Candidates) != 1 {
+		t.Fatalf("got %d filtered transmit seed candidates, want 1", len(filtered.Candidates))
+	}
+	filteredText := string(filtered.Candidates[0].Prog.Serialize())
+	for _, name := range []string{
+		"WriteFile",
+		"TransmitFile$inet_accept_nonblock",
+		"TransmitPackets$inet_accept_nonblock",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing formal transmit syscall %q", name)
+		}
+		if !enabled[call] {
+			t.Fatalf("%s should be enabled in formal AFD session", name)
+		}
+		if !strings.Contains(filteredText, name+"(") {
+			t.Fatalf("formal transmit seed lost %s after config filtering:\n%s",
+				name, filteredText)
 		}
 	}
 }
