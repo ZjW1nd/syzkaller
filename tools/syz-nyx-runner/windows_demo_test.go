@@ -756,6 +756,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 		"windows-nyx-afd-accept-updated.cfg",
 		"windows-nyx-afd-public-event.cfg",
 		"windows-nyx-afd-select.cfg",
+		"windows-nyx-afd-recvmsg.cfg",
 		"windows-nyx-afd-wsaioctl.cfg",
 		"windows-nyx-afd-wsaioctl-interface.cfg",
 		"windows-nyx-afd-wsaioctl-interface-udp-no-getpeername.cfg",
@@ -840,6 +841,16 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	}
 	if !foundAcceptExWeight {
 		t.Fatalf("formal AFD session should exclude AcceptEx/update-context corpus from ordinary fuzz mutation")
+	}
+	foundRecvMsgWeight := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight == 0 && slices.Contains(rule.Calls, "WSARecvMsg$udp_nonblock") {
+			foundRecvMsgWeight = true
+			break
+		}
+	}
+	if !foundRecvMsgWeight {
+		t.Fatalf("formal AFD session should keep WSARecvMsg$udp_nonblock corpus out of ordinary fuzz mutation")
 	}
 	for _, name := range cfg.EnabledSyscalls {
 		call := target.SyscallMap[name]
@@ -1346,6 +1357,92 @@ func TestWindowsAfdSessionIncludesTransmitNonblockSeed(t *testing.T) {
 			t.Fatalf("formal transmit seed lost %s after config filtering:\n%s",
 				name, filteredText)
 		}
+	}
+}
+
+func TestWindowsAfdSessionIncludesRecvMsgNonblockSeed(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	var seedPath string
+	for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes) {
+		if filepath.Base(path) == "nyx_afd_recvmsg_nonblock.txt" {
+			seedPath = path
+			break
+		}
+	}
+	if seedPath == "" {
+		t.Fatal("formal AFD session should include the nonblocking recvmsg seed")
+	}
+	data, err := os.ReadFile(seedPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", seedPath, err)
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("deserialize %s: %v", seedPath, err)
+	}
+	serialized := string(p.Serialize())
+	for _, forbidden := range []string{
+		"WSARecvMsg$udp(",
+		"recv$inet_udp(",
+		"recvfrom$udp_bound(",
+		"socket$connected_udp(",
+		"WSAIoctl$sio_udp_connreset(",
+	} {
+		if strings.Contains(serialized, forbidden) {
+			t.Fatalf("formal recvmsg seed %s uses risky call %q:\n%s",
+				filepath.Base(seedPath), forbidden, serialized)
+		}
+	}
+	syscallIDs, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls,
+		cfg.DisabledSyscalls, mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	noDirect, err := mgrconfig.ParseNoGenerateSyscalls(target, cfg.Experimental.NoGenerateSyscalls)
+	if err != nil {
+		t.Fatalf("ParseNoGenerateSyscalls: %v", err)
+	}
+	enabled := make(map[*prog.Syscall]bool, len(syscallIDs))
+	for _, id := range syscallIDs {
+		enabled[target.Syscalls[id]] = true
+	}
+	filterCfg := &mgrconfig.Config{
+		DisabledSyscalls: cfg.DisabledSyscalls,
+		Derived: mgrconfig.Derived{
+			Target:          target,
+			NoGenerateCalls: noDirect,
+		},
+	}
+	filtered := manager.FilterCandidatesForConfig([]fuzzer.Candidate{{
+		Prog:  p,
+		Flags: fuzzer.ProgMinimized,
+	}}, enabled, filterCfg, true)
+	if len(filtered.Candidates) != 1 {
+		t.Fatalf("got %d filtered recvmsg seed candidates, want 1", len(filtered.Candidates))
+	}
+	filteredText := string(filtered.Candidates[0].Prog.Serialize())
+	recvmsg := target.SyscallMap["WSARecvMsg$udp_nonblock"]
+	if recvmsg == nil {
+		t.Fatal("missing WSARecvMsg$udp_nonblock")
+	}
+	if !enabled[recvmsg] {
+		t.Fatal("WSARecvMsg$udp_nonblock should stay enabled in formal AFD session")
+	}
+	if !noDirect[recvmsg.ID] {
+		t.Fatal("WSARecvMsg$udp_nonblock should stay out of formal fresh generation")
+	}
+	if !strings.Contains(filteredText, "WSARecvMsg$udp_nonblock(") {
+		t.Fatalf("formal recvmsg seed lost WSARecvMsg$udp_nonblock after config filtering:\n%s",
+			filteredText)
 	}
 }
 
@@ -2290,6 +2387,155 @@ func TestWindowsAfdSelectConfigCoversSeedSyscalls(t *testing.T) {
 			}
 			if !expanded[call.Meta] {
 				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-select.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdRecvMsgConfigStaysNonblocking(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-recvmsg.cfg")
+	want := []string{
+		"connect$inet_udp",
+		"send$inet_udp",
+		"ioctlsocket$fionbio_udp_bound",
+		"WSARecvMsg$udp_nonblock",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("AFD recvmsg enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_recvmsg_nonblock" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("AFD recvmsg seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if strings.HasPrefix(cfg.Experimental.SeedPrefix, "nyx_afd_") {
+		t.Fatalf("AFD recvmsg focused seed %q would be visible to the formal AFD session",
+			cfg.Experimental.SeedPrefix)
+	}
+	if cfg.Experimental.ForceGenerateEveryN != 1 {
+		t.Fatalf("AFD recvmsg force_generate_every_n=%d, want 1",
+			cfg.Experimental.ForceGenerateEveryN)
+	}
+	for _, name := range []string{"send$inet_udp", "WSARecvMsg$udp_nonblock"} {
+		if !slices.Contains(cfg.Experimental.NoGenerateSyscalls, name) {
+			t.Fatalf("AFD recvmsg should keep %s seed-only, got no_generate=%v",
+				name, cfg.Experimental.NoGenerateSyscalls)
+		}
+	}
+	foundSeedWeightZero := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight == 0 &&
+			slices.Contains(rule.Calls, "send$inet_udp") &&
+			slices.Contains(rule.Calls, "WSARecvMsg$udp_nonblock") {
+			foundSeedWeightZero = true
+			break
+		}
+	}
+	if !foundSeedWeightZero {
+		t.Fatal("AFD recvmsg should keep the send/recvmsg seed out of ordinary corpus mutation")
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("AFD recvmsg config must disable collide while the seed-only shape is evaluated")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AFD recvmsg config must reload between requests")
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		for _, pattern := range []string{
+			"socket$connected_udp",
+			"recv$inet_udp",
+			"recvfrom$udp_bound",
+			"recvfrom$udp_connected",
+			"WSARecvFrom$udp",
+			"WSARecvMsg$udp",
+			"WSAIoctl$sio_udp_connreset",
+			"connect$inet_tcp",
+			"accept$inet_tcp",
+			"socket$accept_tcp",
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"AcceptEx$inet_tcp*",
+			"CreateIoCompletionPort$*",
+			"WSAGetOverlappedResult$*",
+			"CancelIoEx$*",
+			"CancelIo$*",
+			"closesocket$*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AFD recvmsg leaves risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdRecvMsgConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-recvmsg.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{"nyx_exp_afd_recvmsg_nonblock.txt"}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AFD recvmsg seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, forbidden := range []string{
+			"WSARecvMsg$udp(",
+			"WSARecvFrom$udp(",
+			"recvfrom$udp_bound(",
+			"recv$inet_udp(",
+			"socket$connected_udp(",
+			"WSAIoctl$sio_udp_connreset(",
+		} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("AFD recvmsg seed %s contains risky call %q:\n%s",
+					filepath.Base(path), forbidden, serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-recvmsg.cfg",
 					filepath.Base(path), call.Meta.Name)
 			}
 		}

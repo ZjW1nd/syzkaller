@@ -624,14 +624,27 @@ func TestLoadBorrowingSeedsSkipsNoGenerateCalls(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_seed_only.txt"), seedOnly, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	runtimeNoGenerate := []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+		"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n" +
+		"bind$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e24, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+		"r1 = ioctlsocket$fionbio_udp_bound(r0, 0x8004667e, &(0x7f0000000140)=0x1)\n" +
+		"WSARecvMsg$udp_nonblock(r1, &(0x7f0000000200)={&(0x7f0000000280), 0x10, 0x0, &(0x7f0000000300)=[{0x40, &(0x7f0000000380)='\\x00'/64}], 0x1, 0x0, {0x20, &(0x7f0000000400)='\\x00'/32}, 0x0, 0x0}, &(0x7f0000000480), 0x0, 0x0)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_runtime_no_generate.txt"), runtimeNoGenerate, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recvmsg := target.SyscallMap["WSARecvMsg$udp_nonblock"]
+	if recvmsg == nil {
+		t.Fatal("missing WSARecvMsg$udp_nonblock")
+	}
 	cfg := &mgrconfig.Config{
 		Syzkaller: dir,
 		Experimental: mgrconfig.Experimental{
 			BorrowingSeedPrefix: "nyx_afd_",
 		},
 		Derived: mgrconfig.Derived{
-			TargetOS: "windows",
-			Target:   target,
+			TargetOS:        "windows",
+			Target:          target,
+			NoGenerateCalls: map[int]bool{recvmsg.ID: true},
 		},
 	}
 	progs := manager.LoadBorrowingSeeds(cfg)
@@ -644,6 +657,9 @@ func TestLoadBorrowingSeedsSkipsNoGenerateCalls(t *testing.T) {
 	}
 	if strings.Contains(got, "WSAEventSelect$accept") || strings.Contains(got, "WSAEnumNetworkEvents$accept") {
 		t.Fatalf("seed-only async calls leaked into borrowing corpus:\n%s", got)
+	}
+	if strings.Contains(got, "WSARecvMsg$udp_nonblock") {
+		t.Fatalf("runtime no_generate call leaked into borrowing corpus:\n%s", got)
 	}
 }
 
