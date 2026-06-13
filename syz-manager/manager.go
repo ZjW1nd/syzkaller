@@ -1304,24 +1304,30 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 	switch mgr.mode {
 	case ModeFuzzing, ModeCorpusTriage:
 		corpusUpdates := make(chan corpus.NewItemEvent, 128)
+		var corpusOpts []corpus.Option
+		programWeight := corpusFuzzWeightForConfig(mgr.cfg)
+		if programWeight != nil {
+			corpusOpts = append(corpusOpts, corpus.WithProgramWeight(programWeight))
+		}
 		mgr.corpus = corpus.NewFocusedCorpus(context.Background(),
-			corpusUpdates, mgr.coverFilters.Areas)
+			corpusUpdates, mgr.coverFilters.Areas, corpusOpts...)
 		mgr.http.Corpus.Store(mgr.corpus)
 		borrowingSeeds := manager.LoadBorrowingSeeds(mgr.cfg)
 
 		rnd := rand.New(rand.NewSource(time.Now().UnixNano()))
 		collide := collideEnabledForConfig(mgr.cfg)
 		fuzzerObj := fuzzer.NewFuzzer(context.Background(), &fuzzer.Config{
-			Corpus:          mgr.corpus,
-			Snapshot:        mgr.cfg.Snapshot,
-			Coverage:        mgr.cfg.Cover,
-			FaultInjection:  features&flatrpc.FeatureFault != 0,
-			Comparisons:     features&flatrpc.FeatureComparisons != 0,
-			Collide:         collide,
-			EnabledCalls:    enabledSyscalls,
-			NoMutateCalls:   mgr.cfg.NoMutateCalls,
-			BorrowingCorpus: borrowingSeeds,
-			FetchRawCover:   mgr.cfg.RawCover,
+			Corpus:              mgr.corpus,
+			Snapshot:            mgr.cfg.Snapshot,
+			Coverage:            mgr.cfg.Cover,
+			FaultInjection:      features&flatrpc.FeatureFault != 0,
+			Comparisons:         features&flatrpc.FeatureComparisons != 0,
+			Collide:             collide,
+			EnabledCalls:        enabledSyscalls,
+			NoMutateCalls:       mgr.cfg.NoMutateCalls,
+			BorrowingCorpus:     borrowingSeeds,
+			CorpusProgramWeight: programWeight,
+			FetchRawCover:       mgr.cfg.RawCover,
 			Logf: func(level int, msg string, args ...any) {
 				if level != 0 {
 					return
@@ -1433,6 +1439,39 @@ func collideEnabledForConfig(cfg *mgrconfig.Config) bool {
 		return false
 	}
 	return true
+}
+
+func corpusFuzzWeightForConfig(cfg *mgrconfig.Config) corpus.ProgramWeightFunc {
+	if cfg == nil || len(cfg.Experimental.CorpusFuzzWeightRules) == 0 {
+		return nil
+	}
+	rules := cfg.Experimental.CorpusFuzzWeightRules
+	return func(p *prog.Prog, _ signal.Signal) float64 {
+		weight := 1.0
+		for _, rule := range rules {
+			if corpusProgramMatchesCallPatterns(p, rule.Calls) {
+				weight *= rule.Weight
+			}
+		}
+		return weight
+	}
+}
+
+func corpusProgramMatchesCallPatterns(p *prog.Prog, patterns []string) bool {
+	if p == nil {
+		return false
+	}
+	for _, call := range p.Calls {
+		if call == nil || call.Meta == nil {
+			continue
+		}
+		for _, pattern := range patterns {
+			if mgrconfig.MatchSyscall(call.Meta.Name, pattern) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func limitFocusedCandidates(candidates []fuzzer.Candidate, limit int) []fuzzer.Candidate {

@@ -290,6 +290,12 @@ type Experimental struct {
 	// SeedPrefix or BorrowingSeedPrefix. Multiple prefixes can be comma-separated.
 	SeedExcludePrefixes string `json:"seed_exclude_prefixes,omitempty"`
 
+	// CorpusFuzzWeightRules adjusts how likely matching corpus programs are
+	// selected as mutation bases. A zero weight keeps the program in corpus and
+	// the choice table, but excludes it from ordinary mutation and smash jobs.
+	// It does not affect candidate replay, triage, or corpus persistence.
+	CorpusFuzzWeightRules []CorpusFuzzWeightRule `json:"corpus_fuzz_weight_rules,omitempty"`
+
 	// WindowsVMLessCollide is kept for compatibility with existing configs.
 	// Windows VMLess/Nyx collide now follows the normal target-neutral default.
 	WindowsVMLessCollide bool `json:"windows_vmless_collide,omitempty"`
@@ -317,6 +323,11 @@ type FocusArea struct {
 
 	// Weight is a positive number that determines how much focus should be put on this area.
 	Weight float64 `json:"weight"`
+}
+
+type CorpusFuzzWeightRule struct {
+	Calls  []string `json:"calls"`
+	Weight float64  `json:"weight"`
 }
 
 type Subsystem struct {

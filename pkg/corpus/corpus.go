@@ -28,11 +28,23 @@ type Corpus struct {
 	updates  chan<- NewItemEvent
 
 	*ProgramsList
+	allProgs   []*prog.Prog
 	StatProgs  *stat.Val
 	StatSignal *stat.Val
 	StatCover  *stat.Val
 
-	focusAreas []*focusAreaState
+	focusAreas    []*focusAreaState
+	programWeight ProgramWeightFunc
+}
+
+type ProgramWeightFunc func(*prog.Prog, signal.Signal) float64
+
+type Option func(*Corpus)
+
+func WithProgramWeight(fn ProgramWeightFunc) Option {
+	return func(corpus *Corpus) {
+		corpus.programWeight = fn
+	}
 }
 
 type focusAreaState struct {
@@ -54,12 +66,15 @@ func NewMonitoredCorpus(ctx context.Context, updates chan<- NewItemEvent) *Corpu
 	return NewFocusedCorpus(ctx, updates, nil)
 }
 
-func NewFocusedCorpus(ctx context.Context, updates chan<- NewItemEvent, areas []FocusArea) *Corpus {
+func NewFocusedCorpus(ctx context.Context, updates chan<- NewItemEvent, areas []FocusArea, opts ...Option) *Corpus {
 	corpus := &Corpus{
 		ctx:          ctx,
 		progsMap:     make(map[string]*Item),
 		updates:      updates,
 		ProgramsList: &ProgramsList{},
+	}
+	for _, opt := range opts {
+		opt(corpus)
 	}
 	corpus.StatProgs = stat.New("corpus", "Number of test programs in the corpus", stat.Console,
 		stat.Link("/corpus"), stat.Graph("corpus"), stat.LenOf(&corpus.progsMap, &corpus.mu))
@@ -171,8 +186,9 @@ func (corpus *Corpus) Save(inp NewInput) {
 			Updates: []ItemUpdate{update},
 		}
 		corpus.progsMap[sig] = item
+		corpus.allProgs = append(corpus.allProgs, inp.Prog)
 		corpus.applyFocusAreas(item, inp.Cover)
-		corpus.saveProgram(inp.Prog, inp.Signal)
+		corpus.saveProgramWithWeight(inp.Prog, inp.Signal, corpus.weightFor(inp.Prog, inp.Signal))
 	}
 	corpus.signal.Merge(inp.Signal)
 	newCover := corpus.cover.MergeDiff(inp.Cover)
@@ -189,7 +205,19 @@ func (corpus *Corpus) Save(inp NewInput) {
 	}
 }
 
+func (corpus *Corpus) weightFor(p *prog.Prog, sig signal.Signal) float64 {
+	if corpus == nil || corpus.programWeight == nil {
+		return 1
+	}
+	weight := corpus.programWeight(p, sig)
+	if weight < 0 {
+		return 1
+	}
+	return weight
+}
+
 func (corpus *Corpus) applyFocusAreas(item *Item, coverDelta []uint64) {
+	weight := corpus.weightFor(item.Prog, item.Signal)
 	for _, area := range corpus.focusAreas {
 		matches := false
 		for _, pc := range coverDelta {
@@ -201,7 +229,7 @@ func (corpus *Corpus) applyFocusAreas(item *Item, coverDelta []uint64) {
 		if !matches {
 			continue
 		}
-		area.saveProgram(item.Prog, item.Signal)
+		area.saveProgramWithWeight(item.Prog, item.Signal, weight)
 		if item.areas == nil {
 			item.areas = make(map[*focusAreaState]struct{})
 			item.areas[area] = struct{}{}

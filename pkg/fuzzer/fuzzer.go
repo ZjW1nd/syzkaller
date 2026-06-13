@@ -298,6 +298,7 @@ type Config struct {
 	EnabledCalls        map[*prog.Syscall]bool
 	NoMutateCalls       map[int]bool
 	BorrowingCorpus     []*prog.Prog
+	CorpusProgramWeight corpus.ProgramWeightFunc
 	FetchRawCover       bool
 	NewInputFilter      func(call string) bool
 	PatchTest           bool
@@ -694,12 +695,12 @@ func (fuzzer *Fuzzer) choiceTableUpdater() {
 			return
 		case <-fuzzer.ctRegenerate:
 		}
-		fuzzer.updateChoiceTable(fuzzer.Config.Corpus.Programs())
+		fuzzer.updateChoiceTable(fuzzer.Config.Corpus.AllPrograms())
 	}
 }
 
 func (fuzzer *Fuzzer) ChoiceTable() *prog.ChoiceTable {
-	progs := fuzzer.Config.Corpus.Programs()
+	progs := fuzzer.Config.Corpus.AllPrograms()
 
 	fuzzer.ctMu.Lock()
 	defer fuzzer.ctMu.Unlock()

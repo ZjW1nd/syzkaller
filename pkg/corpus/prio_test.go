@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"testing"
 
+	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
 	"github.com/google/syzkaller/sys/targets"
 	"github.com/stretchr/testify/assert"
@@ -46,6 +47,42 @@ func TestChooseProgram(t *testing.T) {
 		if diff > eps*maxIters {
 			t.Fatalf("the difference (%f) is higher than %f%%", diff, eps*100)
 		}
+	}
+}
+
+func TestProgramWeightAffectsPriority(t *testing.T) {
+	target := getTarget(t, targets.TestOS, targets.TestArch64)
+	rs := rand.NewSource(0)
+	weights := map[*prog.Prog]float64{}
+	corpus := NewFocusedCorpus(context.Background(), nil, nil, WithProgramWeight(
+		func(p *prog.Prog, _ signal.Signal) float64 {
+			if weight, ok := weights[p]; ok {
+				return weight
+			}
+			return 1
+		}))
+
+	first := generateInput(target, rs, 100)
+	second := generateInput(target, rs, 100)
+	third := generateInput(target, rs, 100)
+	weights[second.Prog] = 0.25
+	weights[third.Prog] = 0
+
+	corpus.Save(first)
+	corpus.Save(second)
+	corpus.Save(third)
+
+	if got, want := corpus.accPrios[0], int64(100); got != want {
+		t.Fatalf("first accumulated priority=%d, want %d", got, want)
+	}
+	if got, want := corpus.sumPrios, int64(125); got != want {
+		t.Fatalf("weighted priority sum=%d, want %d", got, want)
+	}
+	if got, want := len(corpus.Programs()), 2; got != want {
+		t.Fatalf("mutation program count=%d, want %d", got, want)
+	}
+	if got, want := len(corpus.AllPrograms()), 3; got != want {
+		t.Fatalf("all program count=%d, want %d", got, want)
 	}
 }
 

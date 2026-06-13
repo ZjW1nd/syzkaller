@@ -29,7 +29,18 @@ func (pl *ProgramsList) chooseProgram(r *rand.Rand) *prog.Prog {
 }
 
 func (pl *ProgramsList) saveProgram(p *prog.Prog, signal signal.Signal) {
+	pl.saveProgramWithWeight(p, signal, 1)
+}
+
+func (pl *ProgramsList) saveProgramWithWeight(p *prog.Prog, signal signal.Signal, weight float64) {
+	if weight <= 0 {
+		return
+	}
 	prio := int64(len(signal))
+	if prio == 0 {
+		prio = 1
+	}
+	prio = int64(float64(prio) * weight)
 	if prio == 0 {
 		prio = 1
 	}
@@ -76,4 +87,10 @@ func (corpus *Corpus) Programs() []*prog.Prog {
 	corpus.mu.RLock()
 	defer corpus.mu.RUnlock()
 	return corpus.progs
+}
+
+func (corpus *Corpus) AllPrograms() []*prog.Prog {
+	corpus.mu.RLock()
+	defer corpus.mu.RUnlock()
+	return corpus.allProgs
 }

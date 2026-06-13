@@ -222,6 +222,47 @@ func TestExperimentalForceGenerateEveryNIsPreserved(t *testing.T) {
 	assert.Equal(t, 3, cfg.Experimental.ForceGenerateEveryN)
 }
 
+func TestExperimentalCorpusFuzzWeightRulesAreValidated(t *testing.T) {
+	makeConfig := func() *Config {
+		cfg := DefaultValues()
+		cfg.RawTarget = "windows/amd64"
+		cfg.Workdir = t.TempDir()
+		cfg.Syzkaller = "."
+		cfg.Type = "none"
+		return cfg
+	}
+
+	cfg := makeConfig()
+	cfg.Experimental.CorpusFuzzWeightRules = []CorpusFuzzWeightRule{
+		{
+			Calls:  []string{"WSAStartup", "AcceptEx*"},
+			Weight: 0.25,
+		},
+	}
+	require.NoError(t, SetTargets(cfg))
+	require.NoError(t, cfg.completeCorpusFuzzWeightRules())
+
+	cfg = makeConfig()
+	cfg.Experimental.CorpusFuzzWeightRules = []CorpusFuzzWeightRule{{Calls: []string{"WSAStartup"}, Weight: -0.1}}
+	require.NoError(t, SetTargets(cfg))
+	require.ErrorContains(t, cfg.completeCorpusFuzzWeightRules(), "weight must be non-negative")
+
+	cfg = makeConfig()
+	cfg.Experimental.CorpusFuzzWeightRules = []CorpusFuzzWeightRule{{Weight: 0.25}}
+	require.NoError(t, SetTargets(cfg))
+	require.ErrorContains(t, cfg.completeCorpusFuzzWeightRules(), "calls must not be empty")
+
+	cfg = makeConfig()
+	cfg.Experimental.CorpusFuzzWeightRules = []CorpusFuzzWeightRule{
+		{
+			Calls:  []string{"DefinitelyMissingSyscall"},
+			Weight: 0.25,
+		},
+	}
+	require.NoError(t, SetTargets(cfg))
+	require.ErrorContains(t, cfg.completeCorpusFuzzWeightRules(), "unknown syscall pattern")
+}
+
 func TestLoadDataAppliesWindowsAFDTargetProfile(t *testing.T) {
 	data := []byte(`{
 		"name": "windows-afd-profile",

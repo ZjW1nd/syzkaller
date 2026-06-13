@@ -45,6 +45,44 @@ func TestCollideEnabledForConfig(t *testing.T) {
 	}
 }
 
+func TestCorpusFuzzWeightForConfigMatchesCallPatterns(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &mgrconfig.Config{
+		Experimental: mgrconfig.Experimental{
+			CorpusFuzzWeightRules: []mgrconfig.CorpusFuzzWeightRule{
+				{
+					Calls:  []string{"WSAStartup"},
+					Weight: 0.25,
+				},
+				{
+					Calls:  []string{"WSACleanup"},
+					Weight: 0.5,
+				},
+			},
+		},
+	}
+	weight := corpusFuzzWeightForConfig(cfg)
+	if weight == nil {
+		t.Fatal("missing corpus fuzz weight function")
+	}
+	startup := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"))
+	cleanup := parseSeedProgram(t, target, []byte("WSACleanup()\n"))
+	plain := parseSeedProgram(t, target, []byte("VirtualAlloc(&(0x7f0000000000/0x1000)=nil, 0x1000, 0x3000, 0x40)\n"))
+
+	if got := weight(startup, nil); got != 0.25 {
+		t.Fatalf("WSAStartup weight=%v, want 0.25", got)
+	}
+	if got := weight(cleanup, nil); got != 0.5 {
+		t.Fatalf("WSACleanup weight=%v, want 0.5", got)
+	}
+	if got := weight(plain, nil); got != 1 {
+		t.Fatalf("plain weight=%v, want 1", got)
+	}
+}
+
 func TestModeCandidateRunIsRegistered(t *testing.T) {
 	for _, mode := range modes {
 		if mode == ModeCandidateRun {

@@ -240,7 +240,7 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 		job.logTriageSkip(call, callName, info, "new_input_filter")
 		return
 	}
-	if job.flags&ProgSmashed == 0 {
+	if job.shouldStartMutationJobs(p, info) {
 		job.fuzzer.startJob(job.fuzzer.statJobsSmash, &smashJob{
 			exec: job.fuzzer.smashQueue,
 			p:    p.Clone(),
@@ -283,6 +283,20 @@ func (job *triageJob) handleCall(call int, info *triageCall) {
 	}
 	job.fuzzer.Config.Corpus.Save(input)
 	job.maybeScheduleImmediateCollide(p, call)
+}
+
+func (job *triageJob) shouldStartMutationJobs(p *prog.Prog, info *triageCall) bool {
+	if job.flags&ProgSmashed != 0 {
+		return false
+	}
+	if job.fuzzer == nil || job.fuzzer.Config == nil || job.fuzzer.Config.CorpusProgramWeight == nil {
+		return true
+	}
+	var sig signal.Signal
+	if info != nil {
+		sig = info.stableSignal
+	}
+	return job.fuzzer.Config.CorpusProgramWeight(p, sig) > 0
 }
 
 func (job *triageJob) notifyCorpusSave(call int, callName string, info *triageCall, coverData []uint64) {

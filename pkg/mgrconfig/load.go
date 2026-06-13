@@ -212,6 +212,9 @@ func Complete(cfg *Config) error {
 	if cfg.Experimental.MaxCallsPerProg < 0 || cfg.Experimental.MaxCallsPerProg > prog.MaxCalls {
 		return fmt.Errorf("experimental.max_calls_per_prog must be in [0, %d]", prog.MaxCalls)
 	}
+	if err := cfg.completeCorpusFuzzWeightRules(); err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -424,6 +427,30 @@ func (cfg *Config) completeFocusAreas() error {
 			},
 		}
 		cfg.CovFilter = CovFilterCfg{}
+	}
+	return nil
+}
+
+func (cfg *Config) completeCorpusFuzzWeightRules() error {
+	for i, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight < 0 {
+			return fmt.Errorf("corpus fuzz weight rule #%d: weight must be non-negative", i)
+		}
+		if len(rule.Calls) == 0 {
+			return fmt.Errorf("corpus fuzz weight rule #%d: calls must not be empty", i)
+		}
+		for _, pattern := range rule.Calls {
+			matched := false
+			for _, call := range cfg.Target.Syscalls {
+				if MatchSyscall(call.Name, pattern) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return fmt.Errorf("corpus fuzz weight rule #%d: unknown syscall pattern %q", i, pattern)
+			}
+		}
 	}
 	return nil
 }

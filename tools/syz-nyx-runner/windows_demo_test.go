@@ -172,13 +172,17 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		Debug        bool   `json:"debug"`
 	} `json:"vm"`
 	Experimental struct {
-		SeedPrefix           string `json:"seed_prefix"`
-		SeedExcludePrefixes  string `json:"seed_exclude_prefixes"`
-		BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
-		WindowsTargetProfile string `json:"windows_target_profile"`
-		MaxCallsPerProg      int    `json:"max_calls_per_prog"`
-		ForceGenerateEveryN  int    `json:"force_generate_every_n"`
-		DisableCollide       bool   `json:"disable_collide"`
+		SeedPrefix            string `json:"seed_prefix"`
+		SeedExcludePrefixes   string `json:"seed_exclude_prefixes"`
+		BorrowingSeedPrefix   string `json:"borrowing_seed_prefix"`
+		WindowsTargetProfile  string `json:"windows_target_profile"`
+		MaxCallsPerProg       int    `json:"max_calls_per_prog"`
+		ForceGenerateEveryN   int    `json:"force_generate_every_n"`
+		DisableCollide        bool   `json:"disable_collide"`
+		CorpusFuzzWeightRules []struct {
+			Calls  []string `json:"calls"`
+			Weight float64  `json:"weight"`
+		} `json:"corpus_fuzz_weight_rules"`
 	} `json:"experimental"`
 } {
 	t.Helper()
@@ -197,13 +201,17 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 			Debug        bool   `json:"debug"`
 		} `json:"vm"`
 		Experimental struct {
-			SeedPrefix           string `json:"seed_prefix"`
-			SeedExcludePrefixes  string `json:"seed_exclude_prefixes"`
-			BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
-			WindowsTargetProfile string `json:"windows_target_profile"`
-			MaxCallsPerProg      int    `json:"max_calls_per_prog"`
-			ForceGenerateEveryN  int    `json:"force_generate_every_n"`
-			DisableCollide       bool   `json:"disable_collide"`
+			SeedPrefix            string `json:"seed_prefix"`
+			SeedExcludePrefixes   string `json:"seed_exclude_prefixes"`
+			BorrowingSeedPrefix   string `json:"borrowing_seed_prefix"`
+			WindowsTargetProfile  string `json:"windows_target_profile"`
+			MaxCallsPerProg       int    `json:"max_calls_per_prog"`
+			ForceGenerateEveryN   int    `json:"force_generate_every_n"`
+			DisableCollide        bool   `json:"disable_collide"`
+			CorpusFuzzWeightRules []struct {
+				Calls  []string `json:"calls"`
+				Weight float64  `json:"weight"`
+			} `json:"corpus_fuzz_weight_rules"`
 		} `json:"experimental"`
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
@@ -797,6 +805,34 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 				t.Fatalf("formal AFD session still selects excluded seed %s", filepath.Base(path))
 			}
 		}
+	}
+	wantWeighted := []string{
+		"AcceptEx$inet_tcp_pending",
+		"setsockopt$update_accept_context",
+		"send$inet_accept_updated",
+		"recv$inet_accept_updated",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
+	}
+	foundAcceptExWeight := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight != 0 {
+			continue
+		}
+		hasAll := true
+		for _, name := range wantWeighted {
+			if !slices.Contains(rule.Calls, name) {
+				hasAll = false
+				break
+			}
+		}
+		if hasAll {
+			foundAcceptExWeight = true
+			break
+		}
+	}
+	if !foundAcceptExWeight {
+		t.Fatalf("formal AFD session should exclude AcceptEx/update-context corpus from ordinary fuzz mutation")
 	}
 	for _, name := range cfg.EnabledSyscalls {
 		call := target.SyscallMap[name]
