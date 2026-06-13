@@ -286,6 +286,10 @@ type Experimental struct {
 	// specified prefix. Empty means load all matching test seeds as usual.
 	SeedPrefix string `json:"seed_prefix,omitempty"`
 
+	// SeedExcludePrefixes excludes matching sys/<os>/test seeds after applying
+	// SeedPrefix or BorrowingSeedPrefix. Multiple prefixes can be comma-separated.
+	SeedExcludePrefixes string `json:"seed_exclude_prefixes,omitempty"`
+
 	// WindowsVMLessCollide is kept for compatibility with existing configs.
 	// Windows VMLess/Nyx collide now follows the normal target-neutral default.
 	WindowsVMLessCollide bool `json:"windows_vmless_collide,omitempty"`

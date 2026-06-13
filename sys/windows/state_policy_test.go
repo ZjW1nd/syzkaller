@@ -160,6 +160,43 @@ func TestWindowsAFDTargetProfileKeepsDefaultTargetClean(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDTargetProfileKeepsAcceptExUpdatedSeedOnly(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	for _, name := range []string{
+		"AcceptEx$inet_tcp_pending",
+		"setsockopt$update_accept_context",
+	} {
+		call := profiled.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s should stay seed-only under the AFD profile", name)
+		}
+	}
+	for _, name := range []string{
+		"send$inet_accept_updated",
+		"recv$inet_accept_updated",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
+	} {
+		call := profiled.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		if call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s should stay triageable but no_minimize under the AFD profile", name)
+		}
+	}
+}
+
 func TestWindowsAFDTargetProfilePrefersDeepCollideCalls(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {

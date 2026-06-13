@@ -118,7 +118,8 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 		return nil
 	}
 	seedPath := filepath.Join("sys", cfg.TargetOS, "test")
-	seeds, err := readSeedInputs(cfg, seedPath, cfg.Experimental.BorrowingSeedPrefix)
+	seeds, err := readSeedInputs(cfg, seedPath, cfg.Experimental.BorrowingSeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes)
 	if err != nil {
 		log.Logf(0, "failed to read borrowing seeds: %v", err)
 		return nil
@@ -253,7 +254,8 @@ func readInputs(cfg *mgrconfig.Config, db *db.DB, output chan *input) error {
 		}
 	}
 	seedPath := filepath.Join("sys", cfg.TargetOS, "test")
-	seeds, err := readSeedInputs(cfg, seedPath, cfg.Experimental.SeedPrefix)
+	seeds, err := readSeedInputs(cfg, seedPath, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes)
 	if err != nil {
 		return err
 	}
@@ -263,7 +265,7 @@ func readInputs(cfg *mgrconfig.Config, db *db.DB, output chan *input) error {
 	return nil
 }
 
-func readSeedInputs(cfg *mgrconfig.Config, seedPath, prefix string) ([]*input, error) {
+func readSeedInputs(cfg *mgrconfig.Config, seedPath, prefix, excludePrefix string) ([]*input, error) {
 	seedDir := filepath.Join(cfg.Syzkaller, seedPath)
 	if !osutil.IsExist(seedDir) {
 		return nil, nil
@@ -274,8 +276,11 @@ func readSeedInputs(cfg *mgrconfig.Config, seedPath, prefix string) ([]*input, e
 	}
 	var inputs []*input
 	prefixes := splitSeedPrefixes(prefix)
+	excludePrefixes := splitSeedPrefixes(excludePrefix)
 	for _, seed := range seeds {
-		if seed.IsDir() || len(prefixes) != 0 && !seedMatchesAnyPrefix(seed.Name(), prefixes) {
+		if seed.IsDir() ||
+			len(prefixes) != 0 && !seedMatchesAnyPrefix(seed.Name(), prefixes) ||
+			len(excludePrefixes) != 0 && seedMatchesAnyPrefix(seed.Name(), excludePrefixes) {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(seedDir, seed.Name()))

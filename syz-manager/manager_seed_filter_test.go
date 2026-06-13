@@ -653,6 +653,64 @@ func TestLoadSeedsFiltersRegularSeedsByPrefix(t *testing.T) {
 	}
 }
 
+func TestLoadSeedsFiltersRegularSeedsByExcludePrefix(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	seedDir := filepath.Join(dir, "sys", "windows", "test")
+	if err := os.MkdirAll(seedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	strict := []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+		"r1 = bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e33, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+		"listen$inet_tcp(r1, 0x1)\n" +
+		"r2 = socket$accept_tcp(0x2, 0x1, 0x6)\n" +
+		"r3 = AcceptEx$inet_tcp_pending(r1, r2, &(0x7f0000000200)='\\x00'/96, 0x0, 0x20, 0x20, &(0x7f0000000280), &(0x7f0000000300))\n" +
+		"setsockopt$update_accept_context(r3, 0xffff, 0x700b, &(0x7f0000000380)=r1, 0x8)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_accept_updated.txt"), strict, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	vnet := []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+		"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+		"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+		"listen$inet_tcp(r0, 0x1)\n" +
+		"r1 = socket$accept_tcp(0x2, 0x1, 0x6)\n" +
+		"r2 = AcceptEx$inet_tcp_pending(r0, r1, &(0x7f0000000200)='\\x00'/96, 0x0, 0x20, 0x20, &(0x7f0000000280), &(0x7f0000000300))\n" +
+		"setsockopt$update_accept_context(r2, 0xffff, 0x700b, &(0x7f0000000380)=r0, 0x8)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_afd_acceptex_vnet_iocp.txt"), vnet, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := []byte("r0 = CreateFileA(&(0x7f0000000000)='./nyx-fsctl\\x00', 0xffffffff, 0x7, 0x0, 0x4, 0x80, 0xffffffffffffffff)\n")
+	if err := os.WriteFile(filepath.Join(seedDir, "nyx_ntfs_sample.txt"), other, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := mgrconfig.DefaultValues()
+	cfg.Syzkaller = dir
+	cfg.Workdir = t.TempDir()
+	cfg.Experimental.SeedPrefix = "nyx_afd_"
+	cfg.Experimental.SeedExcludePrefixes = "nyx_afd_acceptex_vnet_"
+	cfg.Derived.TargetOS = "windows"
+	cfg.Derived.Target = target
+
+	info, err := manager.LoadSeeds(cfg, true)
+	if err != nil {
+		t.Fatalf("LoadSeeds: %v", err)
+	}
+	if len(info.Candidates) != 1 {
+		t.Fatalf("got %d regular seeds, want only the non-excluded AFD seed", len(info.Candidates))
+	}
+	got := string(info.Candidates[0].Prog.Serialize())
+	if !strings.Contains(got, "setsockopt$update_accept_context") {
+		t.Fatalf("strict accept-updated seed was not loaded:\n%s", got)
+	}
+	if strings.Contains(got, "socket$listener_tcp") {
+		t.Fatalf("excluded vnet seed was loaded:\n%s", got)
+	}
+}
+
 func TestFilterCandidatesKeepsNoGenerateSeedCalls(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {

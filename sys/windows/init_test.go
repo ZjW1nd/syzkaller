@@ -234,6 +234,8 @@ func TestWindowsSlowPublicWinsockSurfaceIsBorrowingOnly(t *testing.T) {
 		"WSAIoctl$sio_address_list_query",
 		"WSAIoctl$sio_get_interface_list",
 		"GetAcceptExSockaddrs$inet_tcp",
+		"AcceptEx$inet_tcp_pending",
+		"setsockopt$update_accept_context",
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {

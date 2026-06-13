@@ -173,6 +173,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 	} `json:"vm"`
 	Experimental struct {
 		SeedPrefix           string `json:"seed_prefix"`
+		SeedExcludePrefixes  string `json:"seed_exclude_prefixes"`
 		BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
 		WindowsTargetProfile string `json:"windows_target_profile"`
 		MaxCallsPerProg      int    `json:"max_calls_per_prog"`
@@ -197,6 +198,7 @@ func loadWindowsNyxConfig(t *testing.T, path string) struct {
 		} `json:"vm"`
 		Experimental struct {
 			SeedPrefix           string `json:"seed_prefix"`
+			SeedExcludePrefixes  string `json:"seed_exclude_prefixes"`
 			BorrowingSeedPrefix  string `json:"borrowing_seed_prefix"`
 			WindowsTargetProfile string `json:"windows_target_profile"`
 			MaxCallsPerProg      int    `json:"max_calls_per_prog"`
@@ -244,6 +246,41 @@ func windowsSeedPrefixMatches(t *testing.T, prefixes string) []string {
 	}
 	slices.Sort(matches)
 	return slices.Compact(matches)
+}
+
+func windowsSeedPrefixMatchesExcept(t *testing.T, prefixes, excludePrefixes string) []string {
+	t.Helper()
+	matches := windowsSeedPrefixMatches(t, prefixes)
+	excludes := splitWindowsSeedPrefixes(excludePrefixes)
+	if len(excludes) == 0 {
+		return matches
+	}
+	var filtered []string
+	for _, match := range matches {
+		name := filepath.Base(match)
+		excluded := false
+		for _, prefix := range excludes {
+			if strings.HasPrefix(name, prefix) {
+				excluded = true
+				break
+			}
+		}
+		if !excluded {
+			filtered = append(filtered, match)
+		}
+	}
+	return filtered
+}
+
+func splitWindowsSeedPrefixes(prefixes string) []string {
+	var split []string
+	for _, prefix := range strings.Split(prefixes, ",") {
+		prefix = strings.TrimSpace(prefix)
+		if prefix != "" {
+			split = append(split, prefix)
+		}
+	}
+	return split
 }
 
 func requireWindowsHelpersEnabled(t *testing.T, cfgPath string, want []string) {
@@ -720,7 +757,8 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 			if cfg.Experimental.SeedPrefix == "" {
 				t.Fatalf("%s missing experimental.seed_prefix", cfgPath)
 			}
-			if matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix); len(matches) == 0 {
+			if matches := windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+				cfg.Experimental.SeedExcludePrefixes); len(matches) == 0 {
 				t.Fatalf("%s seed_prefix=%q does not match any AFD seed", cfgPath, cfg.Experimental.SeedPrefix)
 			}
 			if cfg.Experimental.WindowsTargetProfile != "afd" {
@@ -744,6 +782,21 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	}
 	if !cfg.Experimental.DisableCollide {
 		t.Fatal("formal AFD session should disable generic collide while async collide stability is unresolved")
+	}
+	formalSeedExcludes := splitWindowsSeedPrefixes(cfg.Experimental.SeedExcludePrefixes)
+	for _, prefix := range []string{
+		"nyx_afd_acceptex_vnet_",
+		"nyx_afd_async_accept_",
+	} {
+		if !slices.Contains(formalSeedExcludes, prefix) {
+			t.Fatalf("formal AFD session should exclude stale AcceptEx seed prefix %q", prefix)
+		}
+		for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+			cfg.Experimental.SeedExcludePrefixes) {
+			if strings.HasPrefix(filepath.Base(path), prefix) {
+				t.Fatalf("formal AFD session still selects excluded seed %s", filepath.Base(path))
+			}
+		}
 	}
 	for _, name := range cfg.EnabledSyscalls {
 		call := target.SyscallMap[name]
@@ -798,6 +851,12 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSASend$accept",
 		"WSARecv$accept_nonblock",
 		"shutdown$accept",
+		"AcceptEx$inet_tcp_pending",
+		"setsockopt$update_accept_context",
+		"send$inet_accept_updated",
+		"recv$inet_accept_updated",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
 		"WSAEventSelect$tcp_nonblock",
 		"WSAEnumNetworkEvents$tcp_nonblock",
 		"select$afd_accept_nonblock",
@@ -841,7 +900,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
 		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
 		"GetAcceptExSockaddrs$inet_tcp",
-		"socket$accept_tcp",
 		"accept$inet_tcp",
 		"ioctlsocket$fionbio_accept_nonblock",
 		"recv$inet_accept",
@@ -875,10 +933,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"closesocket$accept*",
 		"closesocket$connect_pending",
 		"closesocket$tcp_*_pending",
-		"AcceptEx$inet_tcp*",
-		"setsockopt$update_accept_context",
-		"setsockopt$int_accept_updated",
-		"getsockopt$int_accept_updated",
+		"AcceptEx$inet_tcp",
 		"TransmitPackets$inet_accept",
 		"TransmitFile$inet_accept",
 	}
@@ -900,12 +955,71 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	if err != nil {
 		t.Fatalf("ParseEnabledSyscalls: %v", err)
 	}
+	expanded := make(map[*prog.Syscall]bool, len(syscalls))
 	for _, id := range syscalls {
-		name := target.Syscalls[id].Name
+		meta := target.Syscalls[id]
+		expanded[meta] = true
+		name := meta.Name
 		for _, pattern := range riskyPaths {
 			if mgrconfig.MatchSyscall(name, pattern) {
 				t.Fatalf("AFD session leaves risky syscall %q enabled via pattern %q",
 					name, pattern)
+			}
+		}
+	}
+	for _, name := range []string{
+		"AcceptEx$inet_tcp_pending",
+		"setsockopt$update_accept_context",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing formal accept-updated seed-only syscall %q", name)
+		}
+		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s should stay seed-only in formal AFD session", name)
+		}
+	}
+	for _, name := range []string{
+		"send$inet_accept_updated",
+		"recv$inet_accept_updated",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing formal accept-updated consumer syscall %q", name)
+		}
+		if call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s should remain triageable but no_minimize in formal AFD session", name)
+		}
+	}
+	for _, path := range windowsSeedPrefixMatches(t, "nyx_afd_accept_updated") {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.Strict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		serialized := string(p.Serialize())
+		for _, pattern := range []string{
+			"socket$listener_tcp(",
+			"ioctlsocket$fionbio_listener(",
+			"closesocket$",
+		} {
+			if strings.Contains(serialized, pattern) {
+				t.Fatalf("%s must use the stable formal accept-updated seed shape, got %s in:\n%s",
+					filepath.Base(path), pattern, serialized)
+			}
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.NoGenerate || target.CallIsAutomaticHelper(call.Meta) {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-session.cfg",
+					filepath.Base(path), call.Meta.Name)
 			}
 		}
 	}
@@ -1273,8 +1387,8 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
 	}
 	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_accept_updated" ||
-		cfg.Experimental.BorrowingSeedPrefix != cfg.Experimental.SeedPrefix {
-		t.Fatalf("accept-updated AFD seed and borrowing prefixes must stay focused: seed=%q borrowing=%q",
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("accept-updated AFD seed should stay regular-seed-only: seed=%q borrowing=%q",
 			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
 	}
 	if cfg.Experimental.MaxCallsPerProg < 15 {
@@ -1290,6 +1404,16 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 	for _, name := range []string{
 		"AcceptEx$inet_tcp_pending",
 		"setsockopt$update_accept_context",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing accept-updated syscall %q", name)
+		}
+		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s must stay seed-only until direct update-context generation no longer causes reload/handshake slow", name)
+		}
+	}
+	for _, name := range []string{
 		"send$inet_accept_updated",
 		"recv$inet_accept_updated",
 		"setsockopt$int_accept_updated",
@@ -1297,10 +1421,10 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {
-			t.Fatalf("missing accept-updated syscall %q", name)
+			t.Fatalf("missing accept-updated consumer syscall %q", name)
 		}
-		if call.Attrs.NoGenerate {
-			t.Fatalf("%s must be generatable in the accept-updated focused profile", name)
+		if call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s must stay triageable but no_minimize in the accept-updated focused profile", name)
 		}
 	}
 	for _, name := range cfg.EnabledSyscalls {
