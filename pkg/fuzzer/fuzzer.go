@@ -450,6 +450,15 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 		}
 		req = nil
 	}
+	if req == nil && len(fuzzer.Config.BorrowingCorpus) != 0 {
+		for range 16 {
+			req = genFreshProgRequest(fuzzer, rnd)
+			if fuzzer.shouldScheduleProgram(req) {
+				break
+			}
+			req = nil
+		}
+	}
 	if req == nil {
 		return nil
 	}

@@ -31,8 +31,9 @@ const (
 	RecommendedCallsKFuzzTest = 5
 
 	// Limits for recursion pruning during program generation.
-	arrayRecursionLimit   = 2
-	pointerRecursionLimit = 3
+	arrayRecursionLimit             = 2
+	pointerRecursionLimit           = 3
+	resourceCentricMissDisableLimit = 64
 )
 
 type randGen struct {
@@ -47,6 +48,7 @@ type randGen struct {
 	genKFuzzTest          bool
 	recDepth              map[Type]int
 	genDefaultResource    bool
+	resourceCentricMisses int
 }
 
 func newRand(target *Target, rs rand.Source) *randGen {
@@ -1091,6 +1093,9 @@ func (target *Target) resourceReuseScore(current *Syscall, candidate *ResultArg,
 
 // Finds a compatible resource with the type `t` and the calls that initialize that resource.
 func (r *randGen) resourceCentric(s *state, t *ResourceType, dir Dir) (arg Arg, calls []*Call) {
+	if r.resourceCentricMisses >= resourceCentricMissDisableLimit {
+		return nil, nil
+	}
 	currentName := "unknown"
 	if r.currentMeta != nil {
 		currentName = r.currentMeta.Name
@@ -1151,11 +1156,13 @@ func (r *randGen) resourceCentric(s *state, t *ResourceType, dir Dir) (arg Arg, 
 
 	// No compatible resource was found.
 	if resource == nil {
+		r.resourceCentricMisses++
 		if !seenCandidates && r.target != nil && r.target.ObserveTemplateHook != nil {
 			r.target.ObserveTemplateHook("rc_no_candidates:" + currentName)
 		}
 		return nil, nil
 	}
+	r.resourceCentricMisses = 0
 	if r.target != nil && r.target.ObserveTemplateHook != nil {
 		r.target.ObserveTemplateHook("rc_hit:" + currentName)
 	}

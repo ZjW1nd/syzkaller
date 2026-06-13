@@ -238,6 +238,40 @@ func TestForceGenerateEveryNDoesNotPreemptTriageCandidateQueue(t *testing.T) {
 	}
 }
 
+func TestGenFuzzFallsBackToFreshGenerationAfterBorrowingRejections(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target = target.Clone()
+	var checks int
+	target.RuntimePolicy.ShouldScheduleProgram = func(string, *prog.Prog) bool {
+		checks++
+		return checks > 16
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	borrowingProg, err := target.Deserialize([]byte("test$manual(0x1)"), prog.Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:          corpus.NewCorpus(ctx),
+		BorrowingCorpus: []*prog.Prog{borrowingProg},
+	}, rand.New(rand.NewSource(0)), target)
+
+	req := fuzzer.genFuzz()
+	if req == nil || req.Prog == nil {
+		t.Fatal("genFuzz did not fall back to fresh generation after borrowing generation was rejected")
+	}
+	if req.Stat != fuzzer.statExecGenerate {
+		t.Fatalf("fallback request stat=%v, want generate stat", req.Stat)
+	}
+	if checks <= 16 {
+		t.Fatalf("runtime policy checks=%d, want fallback after initial borrowing attempts", checks)
+	}
+}
+
 func TestForceGenerateEveryNInterleavesCorpusTriageQueue(t *testing.T) {
 	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
 	if err != nil {

@@ -341,3 +341,49 @@ func TestResourceCentricUsesCorpusResourceScoreHook(t *testing.T) {
 			string((&Prog{Target: clone, Calls: calls}).Serialize()))
 	}
 }
+
+func TestResourceCentricDisablesAfterMissLimit(t *testing.T) {
+	t.Parallel()
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := target.Clone()
+	var noCandidates int
+	clone.ObserveTemplateHook = func(name string) {
+		if strings.HasPrefix(name, "rc_no_candidates:") {
+			noCandidates++
+		}
+	}
+	corpusProg, err := clone.Deserialize([]byte(
+		"r0 = test$produce_common()\n"+
+			"test$consume_common(r0)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resDesc := clone.resourceMap["required_res1"]
+	if resDesc == nil {
+		t.Fatal("required_res1 is missing")
+	}
+	resType := &ResourceType{
+		TypeCommon: TypeCommon{
+			TypeName:  resDesc.Name,
+			TypeSize:  4,
+			TypeAlign: 4,
+		},
+		Desc: resDesc,
+	}
+	r := newRand(clone, rand.NewSource(0))
+	s := newState(clone, clone.DefaultChoiceTable(), []*Prog{corpusProg})
+	for range resourceCentricMissDisableLimit + 10 {
+		arg, calls := r.resourceCentric(s, resType, DirIn)
+		if arg != nil || len(calls) != 0 {
+			t.Fatalf("resourceCentric unexpectedly borrowed incompatible resource: arg=%v calls=%d",
+				arg, len(calls))
+		}
+	}
+	if noCandidates != resourceCentricMissDisableLimit {
+		t.Fatalf("rc_no_candidates observations=%d, want miss limit %d",
+			noCandidates, resourceCentricMissDisableLimit)
+	}
+}

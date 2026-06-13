@@ -48,10 +48,22 @@ func genProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
 		p = fuzzer.target.GenerateWithCorpus(rnd, fuzzer.RecommendedCalls(),
 			fuzzer.ChoiceTable(), fuzzer.Config.BorrowingCorpus)
 	} else {
-		p = fuzzer.target.Generate(rnd,
-			fuzzer.RecommendedCalls(),
-			fuzzer.ChoiceTable())
+		p = freshProg(fuzzer, rnd)
 	}
+	return genRequest(fuzzer, p)
+}
+
+func genFreshProgRequest(fuzzer *Fuzzer, rnd *rand.Rand) *queue.Request {
+	return genRequest(fuzzer, freshProg(fuzzer, rnd))
+}
+
+func freshProg(fuzzer *Fuzzer, rnd *rand.Rand) *prog.Prog {
+	return fuzzer.target.Generate(rnd,
+		fuzzer.RecommendedCalls(),
+		fuzzer.ChoiceTable())
+}
+
+func genRequest(fuzzer *Fuzzer, p *prog.Prog) *queue.Request {
 	return &queue.Request{
 		Prog:     p,
 		ExecOpts: setFlags(flatrpc.ExecFlagCollectSignal),
