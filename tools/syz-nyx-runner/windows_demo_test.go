@@ -771,6 +771,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSAIoctl$sio_address_list_query",
 		"WSAIoctl$sio_routing_interface_query",
 		"WSAIoctl$sio_get_interface_list",
+		"WSAIoctl$sio_udp_connreset",
 		"ioctlsocket$fionbio_tcp_created",
 		"connect$inet_tcp_nonblock",
 		"send$inet_tcp",
@@ -829,7 +830,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"recvfrom$udp_connected",
 		"WSARecvFrom$udp",
 		"WSARecvMsg$udp",
-		"WSAIoctl$sio_udp_connreset",
 		"select$afd_basic",
 		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept",
@@ -1689,8 +1689,9 @@ func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 			},
 		},
 		{
-			cfgPath:    "windows-nyx-afd-wsaioctl-udp-connreset.cfg",
-			seedPrefix: "nyx_afd_wsaioctl_udp_connreset",
+			cfgPath:        "windows-nyx-afd-wsaioctl-udp-connreset.cfg",
+			seedPrefix:     "nyx_afd_wsaioctl_udp_connreset",
+			disableCollide: true,
 			want: []string{
 				"bind$inet_udp",
 				"WSAIoctl$sio_udp_connreset",

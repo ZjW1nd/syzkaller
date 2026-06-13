@@ -514,6 +514,25 @@ func TestWindowsExpandEnabledCallsAddsFileAndObjectConstructors(t *testing.T) {
 	}
 }
 
+func TestWindowsWSAEventHandleDoesNotSatisfyGenericHandleConsumers(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	root := target.SyscallMap["CreateRestrictedToken"]
+	if root == nil {
+		t.Fatal("missing CreateRestrictedToken")
+	}
+	wsaEvent := target.SyscallMap["WSACreateEvent"]
+	if wsaEvent == nil {
+		t.Fatal("missing WSACreateEvent")
+	}
+	expanded := target.ExpandEnabledCalls(target, map[*prog.Syscall]bool{root: true})
+	if expanded[wsaEvent] {
+		t.Fatal("generic HANDLE consumer expansion should not use WSACreateEvent as a constructor")
+	}
+}
+
 func assertExpandedCalls(t *testing.T, target *prog.Target, expanded map[*prog.Syscall]bool, root string, names []string) {
 	t.Helper()
 	for _, name := range names {
