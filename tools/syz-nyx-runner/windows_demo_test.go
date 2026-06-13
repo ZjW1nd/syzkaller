@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/syzkaller/pkg/fuzzer"
+	"github.com/google/syzkaller/pkg/manager"
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
 )
@@ -1179,6 +1181,82 @@ func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
 	}
 	if cfg.VM.Debug {
 		t.Fatal("AFD session config must keep vm.debug disabled for formal fuzzing")
+	}
+}
+
+func TestWindowsAfdSessionKeepsPrivateEventPollSeedOnly(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	var seedPath string
+	for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes) {
+		if filepath.Base(path) == "nyx_afd_private_event_nonblock.txt" {
+			seedPath = path
+			break
+		}
+	}
+	if seedPath == "" {
+		t.Fatal("formal AFD session should keep the ordered private event/poll seed selected")
+	}
+	data, err := os.ReadFile(seedPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", seedPath, err)
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("deserialize %s: %v", seedPath, err)
+	}
+	syscallIDs, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls,
+		cfg.DisabledSyscalls, mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	enabled := make(map[*prog.Syscall]bool, len(syscallIDs))
+	for _, id := range syscallIDs {
+		enabled[target.Syscalls[id]] = true
+	}
+	filterCfg := &mgrconfig.Config{
+		DisabledSyscalls: cfg.DisabledSyscalls,
+		Derived: mgrconfig.Derived{
+			Target: target,
+		},
+	}
+	filtered := manager.FilterCandidatesForConfig([]fuzzer.Candidate{{
+		Prog:  p,
+		Flags: fuzzer.ProgMinimized,
+	}}, enabled, filterCfg, true)
+	if len(filtered.Candidates) != 1 {
+		t.Fatalf("got %d filtered private event/poll seed candidates, want 1", len(filtered.Candidates))
+	}
+	serialized := string(filtered.Candidates[0].Prog.Serialize())
+	if strings.Contains(serialized, "closesocket$any") {
+		t.Fatalf("formal private event/poll seed should be stripped of disabled cleanup helpers:\n%s", serialized)
+	}
+	for _, name := range []string{
+		"NtDeviceIoControlFile$afd_event_select_accept_nonblock",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock",
+		"NtDeviceIoControlFile$afd_poll_accept_nonblock",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing private event/poll syscall %q", name)
+		}
+		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s should remain seed-only in formal AFD session", name)
+		}
+		if slices.Contains(cfg.EnabledSyscalls, name) {
+			t.Fatalf("%s should not be directly enabled in formal AFD session", name)
+		}
+		if !strings.Contains(serialized, name+"(") {
+			t.Fatalf("private event/poll seed lost %s after config filtering:\n%s", name, serialized)
+		}
 	}
 }
 
