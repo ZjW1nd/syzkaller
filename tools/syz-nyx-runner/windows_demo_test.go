@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand"
 	"net"
 	"os"
@@ -18,6 +19,13 @@ import (
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
 )
+
+func skipLegacyAfdWinsockArchived(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join("..", "..", "sys", "windows", "archive", "afd-winsock", "socket_nyx.txt")); err == nil {
+		t.Skip("legacy AFD Winsock surface is archived")
+	}
+}
 
 func extractFunctionBody(t *testing.T, src, signature string) string {
 	t.Helper()
@@ -394,6 +402,7 @@ func requireWindowsNyxExpandedSyscallsInSparseTable(t *testing.T, cfgPath string
 }
 
 func TestWindowsDemoSyscallTableMatchesTargetIDs(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	table := loadDemoSyscallTable(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -419,6 +428,7 @@ func TestWindowsNyxConfigExpandedSyscallsPresentInSparseTable(t *testing.T) {
 }
 
 func TestWindowsVNetPseudoSyscallsPresentInSparseTable(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	table := loadDemoSyscallTable(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -443,7 +453,229 @@ func TestWindowsVNetPseudoSyscallsPresentInSparseTable(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDSocketStateTransitionsUseStateWrappers(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	path := filepath.Join("..", "..", "executor", "syscalls_windows_nyx_demo.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read demo syscall table: %v", err)
+	}
+	src := string(data)
+	for _, needle := range []string{
+		`call_t{"bind$inet_tcp", 0, {}, (syscall_t)windows_bind_state}`,
+		`call_t{"bind$inet_udp", 0, {}, (syscall_t)windows_bind_state}`,
+		`call_t{"bind$connectex_tcp", 0, {}, (syscall_t)windows_bind_state}`,
+		`call_t{"listen$inet_tcp", 0, {}, (syscall_t)windows_listen_state}`,
+		`call_t{"ConnectEx$inet_tcp_pending", 0, {}, (syscall_t)windows_connect_ex_state}`,
+		`call_t{"setsockopt$update_connect_context", 0, {}, (syscall_t)windows_update_connect_context_state}`,
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("sparse executor table is missing state-wrapper mapping %q", needle)
+		}
+	}
+}
+
+func TestWindowsAFDDirectStateIoctlsUseStateWrapper(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "syscalls_windows_nyx_demo.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read demo syscall table: %v", err)
+	}
+	src := string(data)
+	for _, name := range []string{
+		"NtDeviceIoControlFile$afd_bind_tcp",
+		"NtDeviceIoControlFile$afd_bind_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_bind_udp",
+		"NtDeviceIoControlFile$afd_bind_udp_nonblock",
+		"NtDeviceIoControlFile$afd_connect_tcp",
+		"NtDeviceIoControlFile$afd_connect_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_connect_udp",
+		"NtDeviceIoControlFile$afd_connect_udp_nonblock",
+		"NtDeviceIoControlFile$afd_connectex_tcp",
+		"NtDeviceIoControlFile$afd_connectex_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_connectex_udp",
+		"NtDeviceIoControlFile$afd_connectex_udp_nonblock",
+		"NtDeviceIoControlFile$afd_super_connect_tcp",
+		"NtDeviceIoControlFile$afd_super_connect_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_super_connect_tli",
+		"NtDeviceIoControlFile$afd_super_disconnect_tcp",
+		"NtDeviceIoControlFile$afd_super_disconnect_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_super_disconnect_accept",
+		"NtDeviceIoControlFile$afd_super_disconnect_accept_nonblock",
+		"NtDeviceIoControlFile$afd_start_listen_tcp",
+		"NtDeviceIoControlFile$afd_start_listen_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_start_listen_tcp_delayed",
+		"NtDeviceIoControlFile$afd_start_listen_tcp_delayed_nonblock",
+		"NtDeviceIoControlFile$afd_defer_accept_requeue_tcp",
+		"NtDeviceIoControlFile$afd_defer_accept_requeue_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_bound",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_listening",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_connected",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_udp_created",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_udp_peered",
+		"NtDeviceIoControlFile$afd_set_context_tcp",
+		"NtDeviceIoControlFile$afd_set_context_udp",
+		"NtDeviceIoControlFile$afd_set_send_connect_data_tcp",
+		"NtDeviceIoControlFile$afd_set_send_connect_options_tcp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_data_tcp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_options_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_options_length_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_tcp",
+		"NtDeviceIoControlFile$afd_set_send_connect_data_udp",
+		"NtDeviceIoControlFile$afd_set_send_connect_options_udp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_data_udp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_options_udp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_data_length_udp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_options_length_udp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_udp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_udp",
+		"NtDeviceIoControlFile$afd_partial_disconnect_tcp",
+		"NtDeviceIoControlFile$afd_receive_message_udp_bound_nonblock",
+		"NtDeviceIoControlFile$afd_receive_message_udp_peer_nonblock",
+		"NtDeviceIoControlFile$afd_send_message_tcp",
+		"NtDeviceIoControlFile$afd_send_message_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_send_message_accept",
+		"NtDeviceIoControlFile$afd_send_message_accept_nonblock",
+		"NtDeviceIoControlFile$afd_send_message_udp_bound",
+		"NtDeviceIoControlFile$afd_send_message_udp_bound_nonblock",
+		"NtDeviceIoControlFile$afd_send_message_udp_peer",
+		"NtDeviceIoControlFile$afd_send_message_udp_peer_nonblock",
+		"NtDeviceIoControlFile$afd_unconnect_udp",
+		"NtDeviceIoControlFile$afd_unbind_tcp",
+		"NtDeviceIoControlFile$afd_unbind_udp",
+		"NtDeviceIoControlFile$afd_tli_type1_nobuf",
+		"NtDeviceIoControlFile$afd_tli_type2_nobuf",
+		"NtDeviceIoControlFile$afd_tli_type3_nobuf",
+		"NtDeviceIoControlFile$afd_tli_type1_inbuf",
+		"NtDeviceIoControlFile$afd_tli_type2_inbuf",
+		"NtDeviceIoControlFile$afd_tli_type3_inbuf",
+		"NtDeviceIoControlFile$afd_tli_type1_outbuf",
+		"NtDeviceIoControlFile$afd_tli_type2_outbuf",
+		"NtDeviceIoControlFile$afd_tli_type3_outbuf",
+		"NtDeviceIoControlFile$afd_tli_set_qos",
+		"NtDeviceIoControlFile$afd_tli_associate_qos",
+		"NtDeviceIoControlFile$afd_tli_isb_query",
+		"NtDeviceIoControlFile$afd_tli_isb_set",
+		"NtDeviceIoControlFile$afd_tli_type3_nobuf_pending",
+		"NtDeviceIoControlFile$afd_set_qos_tcp",
+		"NtDeviceIoControlFile$afd_set_qos_udp",
+		"NtDeviceIoControlFile$afd_set_qos_tli",
+		"NtDeviceIoControlFile$afd_get_qos_tcp_set",
+		"NtDeviceIoControlFile$afd_get_qos_udp_set",
+		"NtDeviceIoControlFile$afd_get_qos_tli",
+		"NtDeviceIoControlFile$afd_validate_group_tcp",
+		"NtDeviceIoControlFile$afd_validate_group_udp",
+		"NtDeviceIoControlFile$afd_validate_group_recheck_tcp",
+		"NtDeviceIoControlFile$afd_validate_group_recheck_udp",
+		"NtDeviceIoControlFile$afd_san_fast_cement_endpoint",
+		"NtDeviceIoControlFile$afd_san_fast_set_events",
+		"NtDeviceIoControlFile$afd_san_fast_reset_events",
+		"NtDeviceIoControlFile$afd_san_connect_handler",
+		"NtDeviceIoControlFile$afd_san_fast_complete_accept",
+		"NtDeviceIoControlFile$afd_san_fast_complete_request",
+		"NtDeviceIoControlFile$afd_san_fast_complete_io",
+		"NtDeviceIoControlFile$afd_san_fast_refresh_endpoint",
+		"NtDeviceIoControlFile$afd_san_fast_transfer_ctx",
+		"NtDeviceIoControlFile$afd_san_acquire_context",
+		"NtDeviceIoControlFile$afd_san_fast_get_service_pid",
+		"NtDeviceIoControlFile$afd_san_fast_set_service_process",
+		"NtDeviceIoControlFile$afd_san_fast_provider_change",
+		"NtDeviceIoControlFile$afd_san_fast_unknown_1210b",
+		"NtDeviceIoControlFile$afd_san_addr_list_change",
+		"NtDeviceIoControlFile$afd_sqm",
+		"NtDeviceIoControlFile$afd_socket_transfer_begin",
+		"NtDeviceIoControlFile$afd_socket_transfer_end",
+		"NtDeviceIoControlFile$afd_notify_sock_register",
+		"NtDeviceIoControlFile$afd_notify_sock_drain",
+	} {
+		needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)windows_nt_device_io_control_file_state}`, name)
+		if !strings.Contains(src, needle) {
+			t.Fatalf("sparse executor table is missing direct AFD state-wrapper mapping %q", needle)
+		}
+	}
+	for _, name := range []string{
+		"NtDeviceIoControlFile$afd_accept_tcp",
+		"NtDeviceIoControlFile$afd_accept_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_super_accept_tcp",
+		"NtDeviceIoControlFile$afd_super_accept_tcp_nonblock",
+	} {
+		needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)windows_nt_device_io_control_file_input_handle8_state}`, name)
+		if !strings.Contains(src, needle) {
+			t.Fatalf("sparse executor table is missing direct AFD input-handle state-wrapper mapping %q", needle)
+		}
+	}
+	for _, name := range []string{
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock",
+	} {
+		needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)windows_nt_device_io_control_file_input_handle16_state}`, name)
+		if !strings.Contains(src, needle) {
+			t.Fatalf("sparse executor table is missing direct AFD input-handle16 state-wrapper mapping %q", needle)
+		}
+	}
+	for _, name := range []string{
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock",
+	} {
+		needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)windows_nt_device_io_control_file_output_int32_state}`, name)
+		if !strings.Contains(src, needle) {
+			t.Fatalf("sparse executor table is missing direct AFD output-int32 state-wrapper mapping %q", needle)
+		}
+	}
+}
+
+func TestWindowsAFDNonIoctlEntriesUseNativeWrappers(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "syscalls_windows_nyx_demo.h")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read demo syscall table: %v", err)
+	}
+	src := string(data)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	prefixToNative := map[string]string{
+		"NtCreateFile$afd_":            "NtCreateFile",
+		"NtReadFile$afd_":              "NtReadFile",
+		"NtWriteFile$afd_":             "NtWriteFile",
+		"GetKernelObjectSecurity$afd_": "GetKernelObjectSecurity",
+		"SetKernelObjectSecurity$afd_": "SetKernelObjectSecurity",
+		"CloseHandle$afd_":             "CloseHandle",
+	}
+	for _, call := range target.Syscalls {
+		if call == nil {
+			continue
+		}
+		for prefix, native := range prefixToNative {
+			if !strings.HasPrefix(call.Name, prefix) {
+				continue
+			}
+			needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)%s}`, call.Name, native)
+			if !strings.Contains(src, needle) {
+				t.Fatalf("sparse executor table is missing AFD native mapping %q", needle)
+			}
+		}
+	}
+}
+
 func TestWindowsNyxServiceTableMatchesTargetIDs(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	table := loadDemoSyscallTable(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -512,6 +744,7 @@ func TestWindowsAutomaticHelpersPresentInEnabledSet(t *testing.T) {
 }
 
 func TestWindowsSocketResourceHierarchy(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -556,9 +789,12 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("connect$inet_tcp", 0, "SOCKET_TCP_CREATED")
 	assertResource("connect$inet_tcp", -1, "SOCKET_TCP_CONNECTED")
 	assertResource("DisconnectEx$inet_tcp_reuse", 0, "SOCKET_TCP_CONNECTED")
-	assertResource("DisconnectEx$inet_tcp_reuse", -1, "SOCKET_TCP_DISCONNECTED_REUSABLE")
+	assertResource("DisconnectEx$inet_tcp_reuse", -1, "SOCKET_TCP_DISCONNECT_REUSE_PENDING")
+	assertResource("CreateIoCompletionPort$disconnect_reuse_pending", 0, "SOCKET_TCP_DISCONNECT_REUSE_PENDING")
+	assertResource("WSAGetOverlappedResult$disconnect_reuse_pending", 0, "SOCKET_TCP_DISCONNECT_REUSE_PENDING")
+	assertResource("WSAGetOverlappedResult$disconnect_reuse_pending", -1, "SOCKET_TCP_DISCONNECTED_REUSABLE")
 	assertResource("ConnectEx$inet_tcp_reuse", 0, "SOCKET_TCP_DISCONNECTED_REUSABLE")
-	assertResource("ConnectEx$inet_tcp_reuse", -1, "SOCKET_TCP_CONNECTED")
+	assertResource("ConnectEx$inet_tcp_reuse", -1, "SOCKET_TCP_CONNECTING")
 	assertResource("bind$inet_udp", 0, "SOCKET_UDP_CREATED")
 	assertResource("bind$inet_udp", -1, "SOCKET_UDP_BOUND")
 	assertResource("connect$inet_udp", 0, "SOCKET_UDP_CREATED")
@@ -582,6 +818,7 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("recvfrom$udp_bound", 0, "SOCKET_UDP_BOUND")
 	assertResource("recvfrom$udp_connected", 0, "SOCKET_UDP_PEERED")
 	assertResource("WSASendTo$udp", 0, "SOCKET_UDP_PEERED")
+	assertResource("WSASendTo$udp_bound", 0, "SOCKET_UDP_BOUND")
 	assertResource("WSARecvFrom$udp", 0, "SOCKET_UDP_BOUND")
 	assertResource("shutdown$tcp", 0, "SOCKET_TCP_CONNECTED")
 	assertResource("shutdown$accept", 0, "SOCKET_TCP_ACCEPTED")
@@ -611,6 +848,8 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 	assertResource("ConnectEx$inet_tcp", 0, "SOCKET_TCP_CONNECTEX_BOUND")
 	assertResource("ConnectEx$inet_tcp_pending", 0, "SOCKET_TCP_CONNECTEX_BOUND")
 	assertResource("ConnectEx$inet_tcp_pending", -1, "SOCKET_TCP_CONNECTING")
+	assertResource("setsockopt$update_connect_context", 0, "SOCKET_TCP_CONNECTING")
+	assertResource("setsockopt$update_connect_context", -1, "SOCKET_TCP_CONNECTED")
 	assertResource("DisconnectEx$inet_tcp", 0, "SOCKET_TCP_CONNECTED")
 	assertResource("WSARecvEx$inet_accept", 0, "SOCKET_TCP_ACCEPTED")
 	assertResource("send$inet_accept_updated", 0, "SOCKET_TCP_ACCEPTED_UPDATED")
@@ -668,6 +907,7 @@ func TestWindowsSocketResourceHierarchy(t *testing.T) {
 }
 
 func TestWindowsFileHandleResourceHierarchy(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -746,26 +986,27 @@ func TestWindowsNyxFuzzConfigSyscallsPresentInSparseTable(t *testing.T) {
 }
 
 func TestWindowsAfdFocusedConfigs(t *testing.T) {
-	for _, cfgPath := range []string{
+	cfgPaths := []string{
 		"windows-nyx-afd-session.cfg",
-		"windows-nyx-afd-accept-race.cfg",
-		"windows-nyx-afd-transmit.cfg",
-		"windows-nyx-afd-async.cfg",
-		"windows-nyx-afd-vnet-proven.cfg",
+		"windows-nyx-afd-rio.cfg",
+		"windows-nyx-afd-tli.cfg",
 		"windows-nyx-afd-private.cfg",
-		"windows-nyx-afd-private-accept.cfg",
-		"windows-nyx-afd-private-event.cfg",
-		"windows-nyx-afd-accept-updated.cfg",
-		"windows-nyx-afd-public-event.cfg",
-		"windows-nyx-afd-select.cfg",
-		"windows-nyx-afd-recvmsg.cfg",
-		"windows-nyx-afd-wsaioctl.cfg",
-		"windows-nyx-afd-wsaioctl-interface.cfg",
-		"windows-nyx-afd-wsaioctl-interface-udp-no-getpeername.cfg",
-		"windows-nyx-afd-wsaioctl-interface-udp-no-keepalive.cfg",
-		"windows-nyx-afd-wsaioctl-interface-udp-mix.cfg",
-		"windows-nyx-afd-wsaioctl-udp-connreset.cfg",
-	} {
+	}
+	indexed := make(map[string]bool, len(cfgPaths))
+	for _, cfgPath := range cfgPaths {
+		indexed[cfgPath] = true
+	}
+	matches, err := filepath.Glob("windows-nyx-afd*.cfg")
+	if err != nil {
+		t.Fatalf("glob AFD configs: %v", err)
+	}
+	for _, path := range matches {
+		base := filepath.Base(path)
+		if !indexed[base] {
+			t.Fatalf("AFD config %s is missing from TestWindowsAfdFocusedConfigs", base)
+		}
+	}
+	for _, cfgPath := range cfgPaths {
 		cfgPath := cfgPath
 		t.Run(cfgPath, func(t *testing.T) {
 			cfg := loadWindowsNyxConfig(t, cfgPath)
@@ -793,8 +1034,8 @@ func TestWindowsAfdTransmitSeedHelpersPresentInSparseTable(t *testing.T) {
 	for _, name := range []string{
 		"CreateFileA$afd_transmit",
 		"WriteFile$afd_transmit",
-		"TransmitFile$inet_accept_nonblock",
-		"TransmitPackets$inet_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock",
 	} {
 		if _, ok := table[name]; !ok {
 			t.Fatalf("AFD transmit seed helper %q missing from sparse Nyx table", name)
@@ -803,6 +1044,7 @@ func TestWindowsAfdTransmitSeedHelpersPresentInSparseTable(t *testing.T) {
 }
 
 func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -831,7 +1073,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"nyx_afd_select_nonblock",
 		"nyx_afd_accept_data",
 		"nyx_afd_public_event_nonblock_tcp",
-		"nyx_afd_accept_updated",
 		"nyx_afd_udp_peer_nonblock_receive",
 		"nyx_afd_transmit_nonblock",
 	} {
@@ -881,7 +1122,15 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	}
 	wantWeighted := []string{
 		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetQueuedCompletionStatus$socket",
+		"GetAcceptExSockaddrs$inet_tcp",
 		"setsockopt$update_accept_context",
+		"send$inet_accept_updated",
+		"recv$inet_accept_updated",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
 	}
 	foundAcceptExWeight := false
 	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
@@ -902,6 +1151,34 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	}
 	if !foundAcceptExWeight {
 		t.Fatalf("formal AFD session should exclude AcceptEx/update-context corpus from ordinary fuzz mutation")
+	}
+	wantConnectExWeighted := []string{
+		"bind$connectex_tcp",
+		"ConnectEx$inet_tcp_pending",
+		"CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending",
+		"GetQueuedCompletionStatus$socket",
+		"setsockopt$update_connect_context",
+	}
+	foundConnectExWeight := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight != 0 {
+			continue
+		}
+		hasAll := true
+		for _, name := range wantConnectExWeighted {
+			if !slices.Contains(rule.Calls, name) {
+				hasAll = false
+				break
+			}
+		}
+		if hasAll {
+			foundConnectExWeight = true
+			break
+		}
+	}
+	if !foundConnectExWeight {
+		t.Fatalf("formal AFD session should keep ConnectEx M4 corpus out of ordinary fuzz mutation")
 	}
 	wantUDPBoundWeighted := []string{
 		"NtDeviceIoControlFile$afd_address_list_query_udp",
@@ -933,6 +1210,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"send$inet_udp",
 		"ioctlsocket$fionbio_udp_peer",
 		"recvfrom$udp_connected_nonblock",
+		"setsockopt$int_udp",
 		"WSAIoctl$sio_routing_interface_query",
 		"NtDeviceIoControlFile$afd_query_handles_udp_peer",
 		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
@@ -961,6 +1239,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
 		"NtDeviceIoControlFile$afd_query_handles_tcp",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_set_context_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_tcp",
 		"NtDeviceIoControlFile$afd_noop_tcp",
@@ -989,13 +1268,14 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
 		if rule.Weight == 0 &&
 			slices.Contains(rule.Calls, "TransmitFile$inet_accept_nonblock") &&
+			slices.Contains(rule.Calls, "TransmitPackets$inet_accept_nonblock") &&
 			slices.Contains(rule.Calls, "WriteFile$afd_transmit") {
 			foundTransmitWeight = true
 			break
 		}
 	}
 	if !foundTransmitWeight {
-		t.Fatalf("formal AFD session should keep TransmitFile corpus out of ordinary fuzz mutation")
+		t.Fatalf("formal AFD session should keep transmit corpus out of ordinary fuzz mutation")
 	}
 	wantShutdownWeighted := []string{
 		"shutdown$tcp",
@@ -1069,6 +1349,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"send$inet_udp",
 		"sendto$udp_connected",
 		"WSASendTo$udp",
+		"WSASendTo$udp_bound",
 		"ioctlsocket$fionbio_udp_bound",
 		"recv$inet_udp_nonblock",
 		"recvfrom$udp_bound_nonblock",
@@ -1099,11 +1380,18 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
 		"NtDeviceIoControlFile$afd_query_handles_tcp",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_set_context_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_tcp",
 		"NtDeviceIoControlFile$afd_noop_tcp",
 		"WSAIoctl$sio_keepalive_vals",
 		"WSAIoctl$sio_get_extension_function_pointer",
+		"bind$connectex_tcp",
+		"ConnectEx$inet_tcp_pending",
+		"CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending",
+		"GetQueuedCompletionStatus$socket",
+		"setsockopt$update_connect_context",
 		"ioctlsocket$fionbio_listener",
 		"accept$inet_tcp_nonblock",
 		"send$inet_accept",
@@ -1114,7 +1402,14 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"shutdown$accept_rd",
 		"shutdown$accept_wr",
 		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetAcceptExSockaddrs$inet_tcp",
 		"setsockopt$update_accept_context",
+		"send$inet_accept_updated",
+		"recv$inet_accept_updated",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
 		"WriteFile$afd_transmit",
 		"TransmitFile$inet_accept_nonblock",
 		"TransmitPackets$inet_accept_nonblock",
@@ -1140,15 +1435,16 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	}
 
 	riskyPaths := []string{
-		"bind$connectex_tcp",
 		"connect$inet_tcp",
 		"recv$inet_tcp",
 		"WSARecv$tcp",
 		"WSARecv$tcp_pending",
+		"WSASend$tcp_pending",
 		"WSAEventSelect$tcp",
 		"WSAEnumNetworkEvents$tcp",
 		"WNet*",
-		"ConnectEx$inet_tcp*",
+		"ConnectEx$inet_tcp",
+		"ConnectEx$inet_tcp_reuse",
 		"DisconnectEx$inet_tcp*",
 		"recv$inet_udp",
 		"recvfrom$udp_bound",
@@ -1160,7 +1456,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept",
 		"NtDeviceIoControlFile$afd_poll_accept",
-		"GetAcceptExSockaddrs$inet_tcp",
 		"accept$inet_tcp",
 		"ioctlsocket$fionbio_accept",
 		"ioctlsocket$fionbio_accept_nonblock",
@@ -1175,13 +1470,12 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSAEnumNetworkEvents$accept_nonblock",
 		"NtDeviceIoControlFile$afd_query_recv_accept",
 		"CreateIoCompletionPort$socket",
-		"CreateIoCompletionPort$accept*",
-		"CreateIoCompletionPort$connect_pending",
+		"CreateIoCompletionPort$accept_recv_pending",
+		"CreateIoCompletionPort$accept_send_pending",
 		"CreateIoCompletionPort$tcp_*_pending",
-		"GetQueuedCompletionStatus$socket",
 		"WSAGetOverlappedResult$socket",
-		"WSAGetOverlappedResult$accept*",
-		"WSAGetOverlappedResult$connect_pending",
+		"WSAGetOverlappedResult$accept_recv_pending",
+		"WSAGetOverlappedResult$accept_send_pending",
 		"WSAGetOverlappedResult$tcp_*_pending",
 		"CancelIoEx$socket",
 		"CancelIoEx$accept*",
@@ -1196,8 +1490,8 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"closesocket$connect_pending",
 		"closesocket$tcp_*_pending",
 		"AcceptEx$inet_tcp",
-		"socket$accept_tcp",
 		"CreatePipe$anon",
+		"CreateRemoteThreadEx",
 		"AddFontMemResourceEx",
 		"TransmitPackets$inet_accept",
 		"TransmitFile$inet_accept",
@@ -1206,6 +1500,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"socket$connected_tcp",
 		"socket$connected_udp",
 		"ioctlsocket$fionbio_tcp",
+		"socket$accept_tcp",
 	}, riskyPaths...)
 	for _, name := range cfg.EnabledSyscalls {
 		for _, pattern := range directForbidden {
@@ -1219,6 +1514,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSAIoctl$sio_udp_connreset",
 		"ioctlsocket$fionbio_tcp",
 		"ioctlsocket$fionbio_udp_peer",
+		"ConnectEx$inet_tcp",
+		"ConnectEx$inet_tcp_reuse",
+		"CreateRemoteThreadEx",
 	} {
 		if !slices.Contains(cfg.DisabledSyscalls, name) {
 			t.Fatalf("AFD session should keep %q disabled in formal configs", name)
@@ -1253,11 +1551,17 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	for _, name := range []string{
 		"send$inet_udp",
 		"WSARecvMsg$udp_nonblock",
+		"recv$inet_udp_nonblock",
+		"recvfrom$udp_bound_nonblock",
+		"WSARecvFrom$udp_nonblock",
 		"NtDeviceIoControlFile$afd_address_list_query_udp",
 		"NtDeviceIoControlFile$afd_query_handles_udp",
 		"NtDeviceIoControlFile$afd_get_qos_udp",
 		"NtDeviceIoControlFile$afd_noop_udp",
 		"recvfrom$udp_connected_nonblock",
+		"setsockopt$int_udp",
+		"getsockname$udp",
+		"getpeername$udp",
 		"WSAIoctl$sio_routing_interface_query",
 		"NtDeviceIoControlFile$afd_query_handles_udp_peer",
 		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
@@ -1265,6 +1569,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
 		"NtDeviceIoControlFile$afd_query_handles_tcp",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_set_context_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_tcp",
 		"NtDeviceIoControlFile$afd_noop_tcp",
@@ -1278,9 +1583,17 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_query_handles_accept",
 		"NtDeviceIoControlFile$afd_get_qos_accept",
 		"NtDeviceIoControlFile$afd_noop_accept",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetAcceptExSockaddrs$inet_tcp",
 		"WSARecvEx$inet_accept_nonblock",
 		"TransmitFile$inet_accept_nonblock",
+		"TransmitPackets$inet_accept_nonblock",
 		"WriteFile$afd_transmit",
+		"send$inet_accept_updated",
+		"recv$inet_accept_updated",
+		"setsockopt$int_accept_updated",
+		"getsockopt$int_accept_updated",
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {
@@ -1299,12 +1612,9 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	for _, name := range []string{
 		"sendto$udp_bound",
 		"ioctlsocket$fionbio_udp_bound",
-		"recv$inet_udp_nonblock",
-		"recvfrom$udp_bound_nonblock",
-		"WSARecvFrom$udp_nonblock",
 		"sendto$udp_connected",
 		"WSASendTo$udp",
-		"getpeername$udp",
+		"WSASendTo$udp_bound",
 		"getsockname$tcp",
 		"getpeername$tcp",
 		"setsockopt$int_tcp",
@@ -1315,6 +1625,12 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"WSARecv$tcp_nonblock",
 		"WSAIoctl$sio_keepalive_vals",
 		"WSAIoctl$sio_get_extension_function_pointer",
+		"bind$connectex_tcp",
+		"ConnectEx$inet_tcp_pending",
+		"CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending",
+		"GetQueuedCompletionStatus$socket",
+		"setsockopt$update_connect_context",
 		"connect$inet_tcp_nonblock",
 		"accept$inet_tcp_nonblock",
 		"send$inet_accept",
@@ -1325,7 +1641,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"getpeername$accept",
 		"setsockopt$int_accept",
 		"getsockopt$int_accept",
-		"TransmitPackets$inet_accept_nonblock",
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {
@@ -1340,7 +1655,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	}
 	scheduledFresh := 0
 	var lastFresh *prog.Prog
-	for seed := int64(1); seed <= 512; seed++ {
+	for seed := int64(1); seed <= 4096; seed++ {
 		p := target.Generate(rand.New(rand.NewSource(seed)), cfg.Experimental.MaxCallsPerProg, ct)
 		lastFresh = p
 		if target.RuntimePolicy.ShouldScheduleProgram == nil ||
@@ -1355,47 +1670,22 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		t.Fatalf("formal AFD fresh generation never produced a schedulable program; last program:\n%s",
 			lastFresh.Serialize())
 	}
-	udpNonblockReceive := map[string]bool{
-		"recv$inet_udp_nonblock":      true,
-		"recvfrom$udp_bound_nonblock": true,
-		"WSARecvFrom$udp_nonblock":    true,
-	}
-	seenUdpNonblockReceive := 0
-	var lastUdpFresh *prog.Prog
-	for seed := int64(1); seed <= 4096; seed++ {
-		p := target.Generate(rand.New(rand.NewSource(seed)), cfg.Experimental.MaxCallsPerProg, ct)
-		lastUdpFresh = p
+	for _, name := range []string{
+		"recv$inet_udp_nonblock",
+		"recvfrom$udp_bound_nonblock",
+		"WSARecvFrom$udp_nonblock",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing formal UDP nonblock receive syscall %q", name)
+		}
+		p := target.GenSampleProg(call, rand.NewSource(1), ct)
+		serialized := string(p.Serialize())
 		if target.RuntimePolicy.ShouldScheduleProgram != nil &&
-			!target.RuntimePolicy.ShouldScheduleProgram("gen", p) {
-			continue
+			target.RuntimePolicy.ShouldScheduleProgram("gen", p) &&
+			!strings.Contains(serialized, "ioctlsocket$fionbio_udp_bound(") {
+			t.Fatalf("%s formal sample scheduled without UDP FIONBIO constructor:\n%s", name, serialized)
 		}
-		for i, call := range p.Calls {
-			if !udpNonblockReceive[call.Meta.Name] {
-				continue
-			}
-			seenUdpNonblockReceive++
-			hasFionbio := false
-			for _, prev := range p.Calls[:i] {
-				if prev.Meta.Name == "ioctlsocket$fionbio_udp_bound" {
-					hasFionbio = true
-					break
-				}
-			}
-			if !hasFionbio {
-				t.Fatalf("formal fresh generation scheduled %s without prior UDP FIONBIO:\n%s",
-					call.Meta.Name, p.Serialize())
-			}
-			if seenUdpNonblockReceive >= 16 {
-				break
-			}
-		}
-		if seenUdpNonblockReceive >= 16 {
-			break
-		}
-	}
-	if seenUdpNonblockReceive == 0 {
-		t.Fatalf("formal AFD fresh generation never produced a schedulable UDP nonblock receive; last program:\n%s",
-			lastUdpFresh.Serialize())
 	}
 	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
 		if rule.Weight != 0 {
@@ -1404,19 +1694,14 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		for _, name := range []string{
 			"sendto$udp_bound",
 			"ioctlsocket$fionbio_udp_bound",
-			"recv$inet_udp_nonblock",
-			"recvfrom$udp_bound_nonblock",
-			"WSARecvFrom$udp_nonblock",
 			"sendto$udp_connected",
 			"WSASendTo$udp",
-			"getpeername$udp",
+			"WSASendTo$udp_bound",
 			"ioctlsocket$fionbio_tcp_connected",
 			"send$inet_tcp",
 			"recv$inet_tcp_nonblock",
 			"WSASend$tcp",
 			"WSARecv$tcp_nonblock",
-			"WSAIoctl$sio_keepalive_vals",
-			"WSAIoctl$sio_get_extension_function_pointer",
 			"ioctlsocket$fionbio_listener",
 			"connect$inet_tcp_nonblock",
 			"accept$inet_tcp_nonblock",
@@ -1424,7 +1709,6 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 			"recv$inet_accept_nonblock",
 			"WSASend$accept",
 			"WSARecv$accept_nonblock",
-			"TransmitPackets$inet_accept_nonblock",
 		} {
 			for _, pattern := range rule.Calls {
 				if mgrconfig.MatchSyscall(name, pattern) {
@@ -1444,16 +1728,63 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 	if !foundAcceptedRecvExWeight {
 		t.Fatalf("formal AFD session should keep accepted WSARecvEx out of ordinary fuzz mutation")
 	}
+	foundKeepaliveWeight := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight == 0 &&
+			slices.Contains(rule.Calls, "WSAIoctl$sio_keepalive_vals") &&
+			slices.Contains(rule.Calls, "WSAIoctl$sio_get_extension_function_pointer") {
+			foundKeepaliveWeight = true
+			break
+		}
+	}
+	if !foundKeepaliveWeight {
+		t.Fatalf("formal AFD session should keep keepalive/extension WSAIoctl corpus out of ordinary fuzz mutation")
+	}
+	foundUDPGetNameWeight := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight == 0 &&
+			slices.Contains(rule.Calls, "getsockname$udp") &&
+			slices.Contains(rule.Calls, "getpeername$udp") {
+			foundUDPGetNameWeight = true
+			break
+		}
+	}
+	if !foundUDPGetNameWeight {
+		t.Fatalf("formal AFD session should keep UDP getsockname/getpeername corpus out of ordinary fuzz mutation")
+	}
+	foundUDPNonblockReceiveWeight := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight == 0 &&
+			slices.Contains(rule.Calls, "recv$inet_udp_nonblock") &&
+			slices.Contains(rule.Calls, "recvfrom$udp_bound_nonblock") &&
+			slices.Contains(rule.Calls, "WSARecvFrom$udp_nonblock") &&
+			slices.Contains(rule.Calls, "WSARecvMsg$udp_nonblock") {
+			foundUDPNonblockReceiveWeight = true
+			break
+		}
+	}
+	if !foundUDPNonblockReceiveWeight {
+		t.Fatalf("formal AFD session should keep UDP nonblock receive paths out of ordinary fuzz mutation")
+	}
 	for _, name := range []string{
 		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetAcceptExSockaddrs$inet_tcp",
 		"setsockopt$update_accept_context",
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {
 			t.Fatalf("missing formal accept-updated seed-only syscall %q", name)
 		}
-		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
-			t.Fatalf("%s should stay seed-only in formal AFD session", name)
+		if !call.Attrs.NoMinimize {
+			t.Fatalf("%s should stay no_minimize in formal AFD session", name)
+		}
+		if !call.Attrs.NoGenerate && !noDirect[call.ID] {
+			t.Fatalf("%s should be blocked from formal fresh/insertion generation by syscall attrs or config", name)
+		}
+		if ct.DirectlyGeneratable(call.ID) {
+			t.Fatalf("%s should not be a formal fresh/insertion generation root", name)
 		}
 	}
 	for _, name := range []string{
@@ -1491,6 +1822,13 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 			t.Fatalf("%s formal sample uses raw accept helper instead of accept$inet_tcp_nonblock chain:\n%s",
 				name, serialized)
 		}
+		if target.RuntimePolicy.ShouldScheduleProgram != nil &&
+			target.RuntimePolicy.ShouldScheduleProgram("gen", p) &&
+			!strings.Contains(serialized, "connect$inet_tcp_nonblock(") &&
+			!strings.Contains(serialized, "connect$inet_tcp(") {
+			t.Fatalf("%s formal sample scheduled accepted socket without peer connect:\n%s",
+				name, serialized)
+		}
 	}
 	for _, name := range []string{
 		"send$inet_tcp",
@@ -1504,6 +1842,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
 		"NtDeviceIoControlFile$afd_query_handles_tcp",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_set_context_tcp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_tcp",
 		"NtDeviceIoControlFile$afd_noop_tcp",
@@ -1620,15 +1959,70 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 		if call == nil {
 			t.Fatalf("missing accept-updated consumer syscall %q", name)
 		}
-		if expanded[call] {
-			t.Fatalf("%s should stay out of formal AFD session; focused accept-updated configs cover it", name)
+		if !expanded[call] {
+			t.Fatalf("%s should be available only for the formal accept-updated seed", name)
+		}
+		if ct.DirectlyGeneratable(call.ID) {
+			t.Fatalf("%s should stay out of formal fresh/insertion generation", name)
 		}
 	}
+	foundAcceptUpdatedSeed := false
 	for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
 		cfg.Experimental.SeedExcludePrefixes) {
 		if strings.HasPrefix(filepath.Base(path), "nyx_afd_accept_updated") {
-			t.Fatalf("formal AFD session should exclude accept-updated seed %s; it can be generated through invalid socket resources",
-				filepath.Base(path))
+			foundAcceptUpdatedSeed = true
+		}
+	}
+	if !foundAcceptUpdatedSeed {
+		t.Fatalf("formal AFD session should include the validated accept-updated seed")
+	}
+	acceptExIOCPSeed := filepath.Join("..", "..", "sys", "windows", "test",
+		"nyx_afd_acceptex_iocp_local_update.txt")
+	data, err := os.ReadFile(acceptExIOCPSeed)
+	if err != nil {
+		t.Fatalf("read AcceptEx IOCP formal seed: %v", err)
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("deserialize AcceptEx IOCP formal seed: %v", err)
+	}
+	filterCfg := &mgrconfig.Config{
+		DisabledSyscalls: cfg.DisabledSyscalls,
+		Derived: mgrconfig.Derived{
+			Target:          target,
+			NoGenerateCalls: noDirect,
+		},
+	}
+	filtered := manager.FilterCandidatesForConfig([]fuzzer.Candidate{{
+		Prog:  p,
+		Flags: fuzzer.ProgMinimized,
+	}}, expanded, filterCfg, true)
+	if len(filtered.Candidates) != 1 {
+		t.Fatalf("got %d filtered AcceptEx IOCP candidates, want 1", len(filtered.Candidates))
+	}
+	filteredText := string(filtered.Candidates[0].Prog.Serialize())
+	for _, want := range []string{
+		"AcceptEx$inet_tcp_pending(",
+		"CreateIoCompletionPort$accept_pending(",
+		"WSAGetOverlappedResult$accept_pending(",
+		"GetQueuedCompletionStatus$socket(",
+		"GetAcceptExSockaddrs$inet_tcp(",
+		"setsockopt$update_accept_context(",
+		"recv$inet_accept_updated(",
+	} {
+		if !strings.Contains(filteredText, want) {
+			t.Fatalf("formal AcceptEx IOCP seed lost %q after filtering:\n%s", want, filteredText)
+		}
+	}
+	for _, forbidden := range []string{
+		"CancelIoEx$accept_pending(",
+		"CancelIo$accept_pending(",
+		"closesocket$accept_pending(",
+		"syz_emit_ethernet$windows(",
+		"syz_extract_tcp_res$windows",
+	} {
+		if strings.Contains(filteredText, forbidden) {
+			t.Fatalf("formal AcceptEx IOCP seed contains forbidden call %q:\n%s", forbidden, filteredText)
 		}
 	}
 	for _, name := range []string{
@@ -1662,6 +2056,7 @@ func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testin
 }
 
 func TestWindowsAfdVNetProvenConfigSeedsStayNarrow(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-vnet-proven.cfg")
 	if cfg.Experimental.SeedPrefix != cfg.Experimental.BorrowingSeedPrefix {
 		t.Fatalf("vnet proven seed_prefix=%q borrowing_seed_prefix=%q",
@@ -1697,6 +2092,7 @@ func TestWindowsAfdVNetProvenConfigSeedsStayNarrow(t *testing.T) {
 }
 
 func TestWindowsAfdVNetProvenConfigForcesGenerationInterleave(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-vnet-proven.cfg")
 	if cfg.Experimental.ForceGenerateEveryN != 2 {
 		t.Fatalf("vnet proven force_generate_every_n=%d, want 2",
@@ -1705,6 +2101,7 @@ func TestWindowsAfdVNetProvenConfigForcesGenerationInterleave(t *testing.T) {
 }
 
 func TestWindowsAfdVNetProvenConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -1740,6 +2137,561 @@ func TestWindowsAfdVNetProvenConfigCoversSeedSyscalls(t *testing.T) {
 	}
 }
 
+func TestWindowsAfdAcceptExIOCPConfigKeepsProofSeedsIsolated(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-acceptex-iocp.cfg")
+	if cfg.Experimental.SeedPrefix != "nyx_afd_acceptex_vnet_" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("AcceptEx IOCP seed_prefix=%q borrowing_seed_prefix=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if cfg.Experimental.MaxCallsPerProg < 16 {
+		t.Fatalf("AcceptEx IOCP max_calls_per_prog=%d, want at least 16 for sockaddrs/update seed",
+			cfg.Experimental.MaxCallsPerProg)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("AcceptEx IOCP config should disable collide while vnet/helper mutation is unsafe")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AcceptEx IOCP config should reload between requests")
+	}
+
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	var gotSeeds []string
+	for _, match := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(match))
+	}
+	wantSeeds := []string{
+		"nyx_afd_acceptex_vnet_cancel.txt",
+		"nyx_afd_acceptex_vnet_iocp.txt",
+		"nyx_afd_acceptex_vnet_sockaddrs.txt",
+	}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AcceptEx IOCP seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+
+	proofOnly := []string{
+		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetQueuedCompletionStatus$socket",
+		"GetAcceptExSockaddrs$inet_tcp",
+		"setsockopt$update_accept_context",
+		"recv$inet_accept_updated",
+		"CancelIoEx$accept_pending",
+		"CancelIo$accept_pending",
+		"closesocket$accept_pending",
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows_synack",
+	}
+	noGenerate := make(map[string]bool)
+	for _, name := range cfg.Experimental.NoGenerateSyscalls {
+		noGenerate[name] = true
+	}
+	for _, name := range proofOnly {
+		if !noGenerate[name] {
+			t.Fatalf("AcceptEx IOCP proof call %s should be listed in no_generate_syscalls", name)
+		}
+	}
+	zeroWeight := make(map[string]bool)
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight != 0 {
+			continue
+		}
+		for _, name := range rule.Calls {
+			zeroWeight[name] = true
+		}
+	}
+	for _, name := range proofOnly {
+		if !zeroWeight[name] {
+			t.Fatalf("AcceptEx IOCP proof call %s should have corpus fuzz weight 0", name)
+		}
+	}
+
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expandedNames := make(map[string]bool, len(syscalls))
+	expanded := make(map[*prog.Syscall]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expandedNames[name] = true
+		expanded[target.Syscalls[id]] = true
+		for _, pattern := range []string{
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"AcceptEx$inet_tcp",
+			"WSARecv$accept*",
+			"WSASend$accept*",
+			"CreateIoCompletionPort$connect*",
+			"CreateIoCompletionPort$tcp_*",
+			"WSAGetOverlappedResult$connect*",
+			"WSAGetOverlappedResult$tcp_*",
+			"CancelIoEx$connect*",
+			"CancelIoEx$tcp_*",
+			"CancelIo$connect*",
+			"CancelIo$tcp_*",
+			"closesocket$connect*",
+			"closesocket$tcp_*",
+			"TransmitPackets$inet_accept*",
+			"TransmitFile$inet_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AcceptEx IOCP config leaves risky expanded syscall %q enabled via %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range proofOnly {
+		if !expandedNames[name] {
+			t.Fatalf("AcceptEx IOCP config must keep proof call %s enabled for seed replay", name)
+		}
+	}
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if !expandedNames[call.Meta.Name] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-acceptex-iocp.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdAcceptExCancelConfig(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-acceptex-cancel.cfg")
+	want := []string{
+		"bind$inet_tcp",
+		"listen$inet_tcp",
+		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"CancelIoEx$accept_pending",
+		"CancelIo$accept_pending",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("AcceptEx cancel enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_acceptex_iocp_cancel" ||
+		cfg.Experimental.BorrowingSeedPrefix != "nyx_exp_afd_acceptex_iocp_cancel" {
+		t.Fatalf("AcceptEx cancel seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if strings.HasPrefix(cfg.Experimental.SeedPrefix, "nyx_afd_") {
+		t.Fatalf("AcceptEx cancel focused seed %q would be visible to the formal AFD session",
+			cfg.Experimental.SeedPrefix)
+	}
+	if cfg.Experimental.MaxCallsPerProg < 8 {
+		t.Fatalf("AcceptEx cancel max_calls_per_prog=%d, want at least 8",
+			cfg.Experimental.MaxCallsPerProg)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("AcceptEx cancel config should disable collide while pending cleanup is isolated")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AcceptEx cancel config must reload between requests")
+	}
+
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{
+		"nyx_exp_afd_acceptex_iocp_cancel.txt",
+	}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AcceptEx cancel seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expandedNames := make(map[string]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expandedNames[name] = true
+		for _, pattern := range []string{
+			"connect$inet_tcp*",
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"AcceptEx$inet_tcp",
+			"GetAcceptExSockaddrs$inet_tcp",
+			"setsockopt$update_accept_context",
+			"recv$inet_accept*",
+			"send$inet_accept*",
+			"WSARecv$accept*",
+			"WSASend$accept*",
+			"CreateIoCompletionPort$socket",
+			"CreateIoCompletionPort$connect*",
+			"CreateIoCompletionPort$tcp_*",
+			"CreateIoCompletionPort$accept_recv_pending",
+			"CreateIoCompletionPort$accept_send_pending",
+			"WSAGetOverlappedResult$*",
+			"GetQueuedCompletionStatus$socket",
+			"CancelIoEx$connect*",
+			"CancelIoEx$tcp_*",
+			"CancelIoEx$accept_recv_pending",
+			"CancelIoEx$accept_send_pending",
+			"CancelIo$connect*",
+			"CancelIo$tcp_*",
+			"CancelIo$accept_recv_pending",
+			"CancelIo$accept_send_pending",
+			"closesocket$accept_pending",
+			"closesocket$connect*",
+			"closesocket$tcp_*",
+			"closesocket$accept_recv_pending",
+			"closesocket$accept_send_pending",
+			"syz_emit_ethernet$windows",
+			"syz_extract_tcp_res$windows*",
+			"WSAEventSelect$*",
+			"WSAEnumNetworkEvents$*",
+			"select$afd*",
+			"NtDeviceIoControlFile$afd_event_select_accept*",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept*",
+			"NtDeviceIoControlFile$afd_poll_accept*",
+			"TransmitPackets$inet_accept*",
+			"TransmitFile$inet_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AcceptEx cancel config leaves risky expanded syscall %q enabled via %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range want {
+		if !expandedNames[name] {
+			t.Fatalf("AcceptEx cancel config must keep %s enabled for seed replay", name)
+		}
+	}
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, want := range []string{
+			"AcceptEx$inet_tcp_pending(",
+			"CreateIoCompletionPort$accept_pending(",
+			"CancelIoEx$accept_pending(",
+		} {
+			if !strings.Contains(serialized, want) {
+				t.Fatalf("AcceptEx cancel seed %s missing %q:\n%s",
+					filepath.Base(path), want, serialized)
+			}
+		}
+		for _, forbidden := range []string{
+			"CancelIo$accept_pending(",
+			"closesocket$accept_pending(",
+			"WSAGetOverlappedResult$accept_pending(",
+			"GetQueuedCompletionStatus$socket(",
+			"GetAcceptExSockaddrs$inet_tcp(",
+			"setsockopt$update_accept_context(",
+			"syz_emit_ethernet$windows(",
+			"syz_extract_tcp_res$windows",
+		} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("AcceptEx cancel seed %s contains completion/vnet call %q:\n%s",
+					filepath.Base(path), forbidden, serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		if target.RuntimePolicy.ShouldScheduleProgram != nil &&
+			!target.RuntimePolicy.ShouldScheduleProgram("candidate", p) {
+			t.Fatalf("%s is rejected by the AFD runtime scheduler", filepath.Base(path))
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if cfg.Experimental.BorrowingSeedPrefix != "" &&
+				call.Meta.Attrs.NoGenerate && !target.GenerateNoGenerateCalls[call.Meta.ID] {
+				t.Fatalf("%s uses no_generate syscall %s without an AFD profile generation override",
+					filepath.Base(path), call.Meta.Name)
+			}
+			if !expandedNames[call.Meta.Name] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-acceptex-cancel.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdAcceptExUpdateConfig(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-acceptex-update.cfg")
+	want := []string{
+		"bind$inet_tcp",
+		"listen$inet_tcp",
+		"ioctlsocket$fionbio_tcp_created",
+		"connect$inet_tcp_nonblock",
+		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetQueuedCompletionStatus$socket",
+		"GetAcceptExSockaddrs$inet_tcp",
+		"setsockopt$update_accept_context",
+		"send$inet_tcp",
+		"recv$inet_accept_updated",
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows_synack",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("AcceptEx update enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_acceptex_iocp_local_update,nyx_afd_acceptex_vnet_iocp,nyx_afd_acceptex_vnet_sockaddrs" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("AcceptEx update seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if cfg.Experimental.MaxCallsPerProg < 17 {
+		t.Fatalf("AcceptEx update max_calls_per_prog=%d, want at least 17",
+			cfg.Experimental.MaxCallsPerProg)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("AcceptEx update config should disable collide while local/vnet completion paths are isolated")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AcceptEx update config must reload between requests")
+	}
+	for _, name := range []string{
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows_synack",
+	} {
+		if !slices.Contains(cfg.Experimental.NoGenerateSyscalls, name) {
+			t.Fatalf("AcceptEx update should keep vnet helper %q seed-only, no_generate_syscalls=%v",
+				name, cfg.Experimental.NoGenerateSyscalls)
+		}
+	}
+	zeroWeight := make(map[string]bool)
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight != 0 {
+			continue
+		}
+		for _, name := range rule.Calls {
+			zeroWeight[name] = true
+		}
+	}
+	for _, name := range []string{
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows_synack",
+	} {
+		if !zeroWeight[name] {
+			t.Fatalf("AcceptEx update vnet helper %s should have corpus fuzz weight 0", name)
+		}
+	}
+
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{
+		"nyx_afd_acceptex_vnet_iocp.txt",
+		"nyx_afd_acceptex_vnet_sockaddrs.txt",
+		"nyx_exp_afd_acceptex_iocp_local_update.txt",
+	}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AcceptEx update seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expandedNames := make(map[string]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expandedNames[name] = true
+		for _, pattern := range []string{
+			"connect$inet_tcp",
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"AcceptEx$inet_tcp",
+			"recv$inet_accept",
+			"recv$inet_accept_nonblock",
+			"send$inet_accept*",
+			"WSARecv$accept*",
+			"WSASend$accept*",
+			"CreateIoCompletionPort$socket",
+			"CreateIoCompletionPort$connect*",
+			"CreateIoCompletionPort$tcp_*",
+			"CreateIoCompletionPort$accept_recv_pending",
+			"CreateIoCompletionPort$accept_send_pending",
+			"WSAGetOverlappedResult$socket",
+			"WSAGetOverlappedResult$connect*",
+			"WSAGetOverlappedResult$tcp_*",
+			"WSAGetOverlappedResult$accept_recv_pending",
+			"WSAGetOverlappedResult$accept_send_pending",
+			"CancelIoEx$*",
+			"CancelIo$*",
+			"closesocket$*",
+			"WSAEventSelect$*",
+			"WSAEnumNetworkEvents$*",
+			"select$afd*",
+			"NtDeviceIoControlFile$afd_event_select_accept*",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept*",
+			"NtDeviceIoControlFile$afd_poll_accept*",
+			"TransmitPackets$inet_accept*",
+			"TransmitFile$inet_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AcceptEx update config leaves risky expanded syscall %q enabled via %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range want {
+		if !expandedNames[name] {
+			t.Fatalf("AcceptEx update config must keep %s enabled for seed replay", name)
+		}
+	}
+	gqcs := target.SyscallMap["GetQueuedCompletionStatus$socket"]
+	if gqcs == nil {
+		t.Fatal("missing GetQueuedCompletionStatus$socket")
+	}
+	timeout, ok := gqcs.Args[4].Type.(*prog.ConstType)
+	if !ok || timeout.Val != 0 {
+		t.Fatalf("GetQueuedCompletionStatus$socket timeout type=%v, want const[0]",
+			gqcs.Args[4].Type)
+	}
+	iocp := target.SyscallMap["CreateIoCompletionPort$accept_pending"]
+	if iocp == nil {
+		t.Fatal("missing CreateIoCompletionPort$accept_pending")
+	}
+	completionKey, ok := iocp.Args[2].Type.(*prog.ConstType)
+	if !ok || completionKey.Val != 0xafd {
+		t.Fatalf("CreateIoCompletionPort$accept_pending CompletionKey type=%v, want const[0xafd]",
+			iocp.Args[2].Type)
+	}
+	threads, ok := iocp.Args[3].Type.(*prog.ConstType)
+	if !ok || threads.Val != 0 {
+		t.Fatalf("CreateIoCompletionPort$accept_pending NumberOfConcurrentThreads type=%v, want const[0]",
+			iocp.Args[3].Type)
+	}
+	result := target.SyscallMap["WSAGetOverlappedResult$accept_pending"]
+	if result == nil {
+		t.Fatal("missing WSAGetOverlappedResult$accept_pending")
+	}
+	fwait, ok := result.Args[3].Type.(*prog.ConstType)
+	if !ok || fwait.Val != 0 {
+		t.Fatalf("WSAGetOverlappedResult$accept_pending fWait type=%v, want const[0]",
+			result.Args[3].Type)
+	}
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, forbidden := range []string{
+			"CancelIoEx$accept_pending(",
+			"CancelIo$accept_pending(",
+			"closesocket$accept_pending(",
+			"ConnectEx$",
+			"DisconnectEx$",
+		} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("AcceptEx update seed %s contains forbidden call %q:\n%s",
+					filepath.Base(path), forbidden, serialized)
+			}
+		}
+		for _, want := range []string{
+			"AcceptEx$inet_tcp_pending(",
+			"CreateIoCompletionPort$accept_pending(",
+			"WSAGetOverlappedResult$accept_pending(",
+			"GetQueuedCompletionStatus$socket(",
+			"setsockopt$update_accept_context(",
+			"recv$inet_accept_updated(",
+		} {
+			if !strings.Contains(serialized, want) {
+				t.Fatalf("AcceptEx update seed %s missing %q:\n%s",
+					filepath.Base(path), want, serialized)
+			}
+		}
+		if strings.Contains(filepath.Base(path), "local_update") {
+			for _, want := range []string{
+				"connect$inet_tcp_nonblock(",
+				"send$inet_tcp(",
+			} {
+				if !strings.Contains(serialized, want) {
+					t.Fatalf("AcceptEx local update seed missing %q:\n%s", want, serialized)
+				}
+			}
+			for _, forbidden := range []string{
+				"syz_emit_ethernet$windows(",
+				"syz_extract_tcp_res$windows",
+			} {
+				if strings.Contains(serialized, forbidden) {
+					t.Fatalf("AcceptEx local update seed contains vnet call %q:\n%s",
+						forbidden, serialized)
+				}
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		if target.RuntimePolicy.ShouldScheduleProgram != nil &&
+			!target.RuntimePolicy.ShouldScheduleProgram("candidate", p) {
+			t.Fatalf("%s is rejected by the AFD runtime scheduler", filepath.Base(path))
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expandedNames[call.Meta.Name] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-acceptex-update.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
 func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
 	if cfg.VM.KeepState {
@@ -1751,6 +2703,7 @@ func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
 }
 
 func TestWindowsAfdSessionKeepsPrivateEventPollSeedOnly(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -1812,6 +2765,7 @@ func TestWindowsAfdSessionKeepsPrivateEventPollSeedOnly(t *testing.T) {
 }
 
 func TestWindowsAfdSessionFormalSeedsUseNonblockingAcceptScaffolds(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -1874,6 +2828,17 @@ func TestWindowsAfdSessionFormalSeedsUseNonblockingAcceptScaffolds(t *testing.T)
 			"recv$inet_tcp_nonblock",
 			"WSARecv$tcp_nonblock",
 		},
+		"nyx_afd_connectex_iocp_local_update.txt": {
+			"bind$connectex_tcp",
+			"ConnectEx$inet_tcp_pending",
+			"CreateIoCompletionPort$connect_pending",
+			"WSAGetOverlappedResult$connect_pending",
+			"GetQueuedCompletionStatus$socket",
+			"setsockopt$update_connect_context",
+			"send$inet_tcp",
+			"getsockname$tcp",
+			"getpeername$tcp",
+		},
 	}
 	for seedName, wantCalls := range wantSeeds {
 		path := filepath.Join("..", "..", "sys", "windows", "test", seedName)
@@ -1922,6 +2887,7 @@ func TestWindowsAfdSessionFormalSeedsUseNonblockingAcceptScaffolds(t *testing.T)
 }
 
 func TestWindowsAfdSessionIncludesSplitTransmitNonblockSeeds(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2050,7 +3016,127 @@ func TestWindowsAfdSessionIncludesSplitTransmitNonblockSeeds(t *testing.T) {
 	}
 }
 
+func TestWindowsTransmitPacketsArgumentsStayBounded(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, name := range []string{
+		"TransmitPackets$inet_accept",
+		"TransmitPackets$inet_accept_nonblock",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing syscall %q", name)
+		}
+		sendSize, ok := call.Args[3].Type.(*prog.ConstType)
+		if !ok {
+			t.Fatalf("%s nSendSize type is %T, want *prog.ConstType", name, call.Args[3].Type)
+		}
+		if sendSize.Val != 0 {
+			t.Fatalf("%s nSendSize=%#x, want 0", name, sendSize.Val)
+		}
+		flags, ok := call.Args[5].Type.(*prog.ConstType)
+		if !ok {
+			t.Fatalf("%s dwFlags type is %T, want *prog.ConstType", name, call.Args[5].Type)
+		}
+		if flags.Val != 0 {
+			t.Fatalf("%s dwFlags=%#x, want 0", name, flags.Val)
+		}
+	}
+}
+
+func TestWindowsWSAStartupVersionStaysWinsock2(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	call := target.SyscallMap["WSAStartup"]
+	if call == nil {
+		t.Fatal("missing WSAStartup")
+	}
+	version, ok := call.Args[0].Type.(*prog.ConstType)
+	if !ok {
+		t.Fatalf("WSAStartup version type is %T, want *prog.ConstType", call.Args[0].Type)
+	}
+	if version.Val != 0x202 {
+		t.Fatalf("WSAStartup version=%#x, want 0x202", version.Val)
+	}
+}
+
+func TestWindowsWSABufferPayloadsStayBounded(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, tc := range []struct {
+		callName string
+		argIndex int
+	}{
+		{"WSASendTo$udp", 1},
+		{"WSASend$tcp", 1},
+		{"WSARecv$tcp_nonblock", 1},
+	} {
+		call := target.SyscallMap[tc.callName]
+		if call == nil {
+			t.Fatalf("missing syscall %q", tc.callName)
+		}
+		if tc.argIndex >= len(call.Args) {
+			t.Fatalf("%s missing arg %d", tc.callName, tc.argIndex)
+		}
+		ptr, ok := call.Args[tc.argIndex].Type.(*prog.PtrType)
+		if !ok {
+			t.Fatalf("%s arg %d type is %T, want *prog.PtrType",
+				tc.callName, tc.argIndex, call.Args[tc.argIndex].Type)
+		}
+		buffers, ok := ptr.Elem.(*prog.ArrayType)
+		if !ok {
+			t.Fatalf("%s arg %d elem is %T, want *prog.ArrayType",
+				tc.callName, tc.argIndex, ptr.Elem)
+		}
+		wsabuf, ok := buffers.Elem.(*prog.StructType)
+		if !ok {
+			t.Fatalf("%s buffer elem is %T, want *prog.StructType",
+				tc.callName, buffers.Elem)
+		}
+		var payload prog.Type
+		for _, field := range wsabuf.Fields {
+			if field.Name != "buf" {
+				continue
+			}
+			bufPtr, ok := field.Type.(*prog.PtrType)
+			if !ok {
+				t.Fatalf("%s WSABUF.buf type is %T, want *prog.PtrType",
+					tc.callName, field.Type)
+			}
+			payload = bufPtr.Elem
+			break
+		}
+		if payload == nil {
+			t.Fatalf("%s WSABUF has no buf field", tc.callName)
+		}
+		switch payload := payload.(type) {
+		case *prog.ArrayType:
+			if payload.Kind != prog.ArrayRangeLen || payload.RangeBegin != 0 || payload.RangeEnd != 256 {
+				t.Fatalf("%s WSABUF payload array range=%d:%d kind=%v, want 0:256 range",
+					tc.callName, payload.RangeBegin, payload.RangeEnd, payload.Kind)
+			}
+		case *prog.BufferType:
+			if payload.Kind != prog.BufferBlobRange || payload.RangeBegin != 0 || payload.RangeEnd != 256 {
+				t.Fatalf("%s WSABUF payload buffer range=%d:%d kind=%v, want 0:256 range",
+					tc.callName, payload.RangeBegin, payload.RangeEnd, payload.Kind)
+			}
+		default:
+			t.Fatalf("%s WSABUF.buf elem is %T, want bounded array/buffer",
+				tc.callName, payload)
+		}
+	}
+}
+
 func TestWindowsAfdSessionIncludesRecvMsgNonblockSeed(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2136,7 +3222,134 @@ func TestWindowsAfdSessionIncludesRecvMsgNonblockSeed(t *testing.T) {
 	}
 }
 
+func TestWindowsAfdSessionIncludesPrivateReadonlyQuerySeeds(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	syscallIDs, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls,
+		cfg.DisabledSyscalls, mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	noDirect, err := mgrconfig.ParseNoGenerateSyscalls(target, cfg.Experimental.NoGenerateSyscalls)
+	if err != nil {
+		t.Fatalf("ParseNoGenerateSyscalls: %v", err)
+	}
+	enabled := make(map[*prog.Syscall]bool, len(syscallIDs))
+	for _, id := range syscallIDs {
+		enabled[target.Syscalls[id]] = true
+	}
+	filterCfg := &mgrconfig.Config{
+		DisabledSyscalls: cfg.DisabledSyscalls,
+		Derived: mgrconfig.Derived{
+			Target:          target,
+			NoGenerateCalls: noDirect,
+		},
+	}
+	for _, tc := range []struct {
+		seedName string
+		want     []string
+	}{
+		{
+			seedName: "nyx_afd_private_tcp_query_nonblock.txt",
+			want: []string{
+				"NtDeviceIoControlFile$afd_query_recv_tcp",
+				"NtDeviceIoControlFile$afd_query_handles_tcp",
+				"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+				"NtDeviceIoControlFile$afd_get_context_tcp",
+				"NtDeviceIoControlFile$afd_get_qos_tcp",
+				"NtDeviceIoControlFile$afd_noop_tcp",
+			},
+		},
+		{
+			seedName: "nyx_afd_private_udp_query_nonblock.txt",
+			want: []string{
+				"WSAIoctl$sio_address_list_query",
+				"WSAIoctl$sio_get_interface_list",
+				"NtDeviceIoControlFile$afd_address_list_query_udp",
+				"NtDeviceIoControlFile$afd_query_handles_udp",
+				"NtDeviceIoControlFile$afd_get_qos_udp",
+				"NtDeviceIoControlFile$afd_noop_udp",
+				"WSAIoctl$sio_routing_interface_query",
+				"NtDeviceIoControlFile$afd_routing_interface_query_udp",
+				"NtDeviceIoControlFile$afd_query_handles_udp_peer",
+			},
+		},
+	} {
+		var seedPath string
+		for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+			cfg.Experimental.SeedExcludePrefixes) {
+			if filepath.Base(path) == tc.seedName {
+				seedPath = path
+				break
+			}
+		}
+		if seedPath == "" {
+			t.Fatalf("formal AFD session should include %s", tc.seedName)
+		}
+		data, err := os.ReadFile(seedPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", seedPath, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", seedPath, err)
+		}
+		serialized := string(p.Serialize())
+		for _, forbidden := range []string{
+			"connect$inet_tcp(",
+			"accept$inet_tcp(",
+			"socket$bound_udp(",
+			"socket$connected_udp(",
+			"socket$accept_tcp(",
+			"closesocket$any(",
+			"NtDeviceIoControlFile$afd_query_recv_accept(",
+			"NtDeviceIoControlFile$afd_event_select_accept",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept",
+			"NtDeviceIoControlFile$afd_poll_accept",
+		} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("%s uses formal-risky scaffold %q:\n%s",
+					tc.seedName, forbidden, serialized)
+			}
+		}
+		filtered := manager.FilterCandidatesForConfig([]fuzzer.Candidate{{
+			Prog:  p,
+			Flags: fuzzer.ProgMinimized,
+		}}, enabled, filterCfg, true)
+		if len(filtered.Candidates) != 1 {
+			t.Fatalf("got %d filtered private readonly seed candidates for %s, want 1",
+				len(filtered.Candidates), tc.seedName)
+		}
+		filteredText := string(filtered.Candidates[0].Prog.Serialize())
+		for _, name := range tc.want {
+			call := target.SyscallMap[name]
+			if call == nil {
+				t.Fatalf("missing private readonly syscall %q", name)
+			}
+			if !enabled[call] {
+				t.Fatalf("%s should stay enabled in formal AFD session", name)
+			}
+			if !call.Attrs.NoGenerate && !noDirect[call.ID] {
+				t.Fatalf("%s should stay out of formal fresh generation", name)
+			}
+			if !strings.Contains(filteredText, name+"(") {
+				t.Fatalf("%s lost %s after formal filtering:\n%s",
+					tc.seedName, name, filteredText)
+			}
+		}
+	}
+}
+
 func TestWindowsAfdSessionIncludesUdpLifecycleSeed(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2206,6 +3419,7 @@ func TestWindowsAfdSessionIncludesUdpLifecycleSeed(t *testing.T) {
 }
 
 func TestWindowsAfdSessionIncludesUdpDataSeeds(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2245,6 +3459,7 @@ func TestWindowsAfdSessionIncludesUdpDataSeeds(t *testing.T) {
 			"send$inet_udp(",
 			"sendto$udp_connected(",
 			"WSASendTo$udp(",
+			"WSASendTo$udp_bound(",
 			"sendto$udp_bound(",
 		},
 	}
@@ -2290,7 +3505,7 @@ func TestWindowsAfdSessionIncludesUdpDataSeeds(t *testing.T) {
 	}
 }
 
-func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
+func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2301,28 +3516,123 @@ func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile: %v", err)
 	}
 	want := []string{
-		"ioctlsocket$fionbio_tcp_created",
-		"connect$inet_tcp_nonblock",
+		"NtCreateFile$afd_tcp_endpoint",
+		"NtCreateFile$afd_udp_endpoint",
+		"NtDeviceIoControlFile$afd_bind_tcp",
+		"NtDeviceIoControlFile$afd_bind_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_bind_udp",
+		"NtDeviceIoControlFile$afd_bind_udp_nonblock",
+		"NtDeviceIoControlFile$afd_connect_tcp",
+		"NtDeviceIoControlFile$afd_connect_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock",
+		"NtDeviceIoControlFile$afd_connect_udp",
+		"NtDeviceIoControlFile$afd_connect_udp_nonblock",
+		"NtDeviceIoControlFile$afd_start_listen_tcp",
+		"NtDeviceIoControlFile$afd_start_listen_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_start_listen_tcp_delayed",
+		"NtDeviceIoControlFile$afd_start_listen_tcp_delayed_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_accept_tcp",
+		"NtDeviceIoControlFile$afd_accept_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_super_accept_tcp",
+		"NtDeviceIoControlFile$afd_super_accept_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_defer_accept_requeue_tcp",
+		"NtDeviceIoControlFile$afd_defer_accept_requeue_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_defer_accept_reject_tcp",
+		"NtDeviceIoControlFile$afd_defer_accept_reject_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_get_unaccepted_connect_data_tcp",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_bound",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_udp_created",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_udp_peered",
+		"NtDeviceIoControlFile$afd_get_information_tcp",
+		"NtDeviceIoControlFile$afd_get_information_udp",
+		"NtDeviceIoControlFile$afd_get_address_tcp",
+		"NtDeviceIoControlFile$afd_get_address_udp",
 		"NtDeviceIoControlFile$afd_query_recv_tcp",
 		"NtDeviceIoControlFile$afd_query_handles_tcp",
 		"NtDeviceIoControlFile$afd_query_handles_udp",
-		"NtDeviceIoControlFile$afd_query_handles_udp_peer",
 		"NtDeviceIoControlFile$afd_get_remote_address_tcp",
+		"NtDeviceIoControlFile$afd_set_context_tcp",
+		"NtDeviceIoControlFile$afd_set_context_udp",
 		"NtDeviceIoControlFile$afd_get_context_tcp",
+		"NtDeviceIoControlFile$afd_get_context_udp",
+		"NtDeviceIoControlFile$afd_set_send_connect_data_tcp",
+		"NtDeviceIoControlFile$afd_set_send_connect_options_tcp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_data_tcp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_options_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_options_length_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_tcp",
+		"NtDeviceIoControlFile$afd_get_receive_connect_data_tcp",
+		"NtDeviceIoControlFile$afd_get_receive_connect_options_tcp",
+		"NtDeviceIoControlFile$afd_get_receive_disconnect_data_tcp",
+		"NtDeviceIoControlFile$afd_get_receive_disconnect_options_tcp",
+		"NtDeviceIoControlFile$afd_set_send_connect_data_udp",
+		"NtDeviceIoControlFile$afd_set_send_connect_options_udp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_data_udp",
+		"NtDeviceIoControlFile$afd_set_send_disconnect_options_udp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_data_length_udp",
+		"NtDeviceIoControlFile$afd_set_receive_connect_options_length_udp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_udp",
+		"NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_udp",
+		"NtDeviceIoControlFile$afd_get_receive_connect_data_udp",
+		"NtDeviceIoControlFile$afd_get_receive_connect_options_udp",
+		"NtDeviceIoControlFile$afd_get_receive_disconnect_data_udp",
+		"NtDeviceIoControlFile$afd_get_receive_disconnect_options_udp",
+		"NtDeviceIoControlFile$afd_set_returned_receive_connect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_set_returned_receive_connect_options_length_tcp",
+		"NtDeviceIoControlFile$afd_set_returned_receive_disconnect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_set_returned_receive_disconnect_options_length_tcp",
+		"NtDeviceIoControlFile$afd_get_returned_receive_connect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_get_returned_receive_connect_options_length_tcp",
+		"NtDeviceIoControlFile$afd_get_returned_receive_disconnect_data_length_tcp",
+		"NtDeviceIoControlFile$afd_get_returned_receive_disconnect_options_length_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_tcp",
 		"NtDeviceIoControlFile$afd_get_qos_udp",
 		"NtDeviceIoControlFile$afd_noop_tcp",
+		"NtDeviceIoControlFile$afd_noop_accept_pending",
+		"NtDeviceIoControlFile$afd_noop_accept_pending_nonblock",
 		"NtDeviceIoControlFile$afd_noop_udp",
 		"NtDeviceIoControlFile$afd_address_list_query_udp",
 		"NtDeviceIoControlFile$afd_routing_interface_query_udp",
+		"NtDeviceIoControlFile$afd_address_list_change_udp_nonblock",
+		"NtDeviceIoControlFile$afd_routing_interface_change_udp_nonblock",
+		"NtDeviceIoControlFile$afd_send_udp_peer",
+		"NtDeviceIoControlFile$afd_send_udp_peer_nonblock",
+		"NtDeviceIoControlFile$afd_send_datagram_udp_bound",
+		"NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock",
+		"NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock",
+		"NtDeviceIoControlFile$afd_receive_datagram_udp_peer_nonblock",
+		"NtDeviceIoControlFile$afd_send_accept",
+		"NtDeviceIoControlFile$afd_send_accept_nonblock",
+		"NtDeviceIoControlFile$afd_receive_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_file_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_packets_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock",
 	}
 	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("private AFD enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
 			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
 	}
 	for _, name := range cfg.EnabledSyscalls {
-		if strings.Contains(name, "_accept") ||
-			strings.Contains(name, "event_select") ||
+		if strings.Contains(name, "event_select") ||
 			strings.Contains(name, "enum_network_events") ||
 			strings.Contains(name, "poll") {
 			t.Fatalf("private AFD config should keep %s seed-only", name)
@@ -2343,9 +3653,18 @@ func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
 		t.Fatalf("ParseEnabledSyscalls: %v", err)
 	}
 	forbidden := []string{
+		"WSAStartup",
+		"socket$inet_*",
 		"connect$inet_tcp",
+		"connect$inet_tcp_nonblock",
 		"recv$inet_tcp",
 		"WSARecv$tcp",
+		"ioctlsocket$fionbio_*",
+		"setsockopt$int_*",
+		"getsockopt$int_*",
+		"getsockname$*",
+		"getpeername$*",
+		"WSAIoctl$sio_*",
 		"WSAEventSelect$tcp",
 		"WSAEnumNetworkEvents$tcp",
 		"ConnectEx$inet_tcp*",
@@ -2360,7 +3679,6 @@ func TestWindowsAfdPrivateConfigStaysQueryOnly(t *testing.T) {
 		"recv$inet_accept",
 		"WSARecv$accept",
 		"WSARecvEx$inet_accept",
-		"NtDeviceIoControlFile$afd_*_accept",
 		"CreateIoCompletionPort$*",
 		"GetQueuedCompletionStatus$socket",
 		"WSAGetOverlappedResult$*",
@@ -2400,7 +3718,12 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 	for _, path := range matches {
 		gotSeeds = append(gotSeeds, filepath.Base(path))
 	}
-	wantSeeds := []string{"nyx_afd_private_core_readonly.txt"}
+	wantSeeds := []string{
+		"nyx_afd_private_core_endpoint_tcp.txt",
+		"nyx_afd_private_core_endpoint_udp.txt",
+		"nyx_afd_private_core_listen_accept.txt",
+		"nyx_afd_private_core_readonly.txt",
+	}
 	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
 		t.Fatalf("private AFD core seed set mismatch:\ngot:\n%s\nwant:\n%s",
 			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
@@ -2427,7 +3750,9 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 			if call.Meta.Name == "connect$inet_tcp" ||
 				call.Meta.Name == "accept$inet_tcp" ||
 				call.Meta.Name == "socket$accept_tcp" ||
-				strings.Contains(call.Meta.Name, "_accept") {
+				strings.HasPrefix(call.Meta.Name, "recv$inet_accept") ||
+				strings.HasPrefix(call.Meta.Name, "WSARecv$accept") ||
+				strings.HasPrefix(call.Meta.Name, "WSARecvEx$inet_accept") {
 				t.Fatalf("%s uses non-core private scaffold %s",
 					filepath.Base(path), call.Meta.Name)
 			}
@@ -2443,6 +3768,7 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdPrivateAcceptConfigUsesNonblockingAcceptOnly(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-accept.cfg")
 	want := []string{
 		"ioctlsocket$fionbio_listener",
@@ -2472,8 +3798,6 @@ func TestWindowsAfdPrivateAcceptConfigUsesNonblockingAcceptOnly(t *testing.T) {
 	}
 	for _, name := range cfg.EnabledSyscalls {
 		for _, pattern := range []string{
-			"connect$inet_tcp",
-			"accept$inet_tcp",
 			"socket$accept_tcp",
 			"WSAEventSelect$accept",
 			"WSAEnumNetworkEvents$accept",
@@ -2492,6 +3816,7 @@ func TestWindowsAfdPrivateAcceptConfigUsesNonblockingAcceptOnly(t *testing.T) {
 }
 
 func TestWindowsAfdPrivateAcceptConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2538,6 +3863,7 @@ func TestWindowsAfdPrivateAcceptConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2551,6 +3877,9 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 		"ioctlsocket$fionbio_tcp_created",
 		"connect$inet_tcp_nonblock",
 		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetQueuedCompletionStatus$socket",
 		"setsockopt$update_accept_context",
 		"send$inet_tcp",
 		"send$inet_accept_updated",
@@ -2567,8 +3896,8 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 		t.Fatalf("accept-updated AFD seed should stay regular-seed-only: seed=%q borrowing=%q",
 			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
 	}
-	if cfg.Experimental.MaxCallsPerProg < 15 {
-		t.Fatalf("accept-updated AFD max_calls_per_prog=%d, want at least 15 for full AcceptEx/update-context seed",
+	if cfg.Experimental.MaxCallsPerProg < 18 {
+		t.Fatalf("accept-updated AFD max_calls_per_prog=%d, want at least 18 for full AcceptEx/update-context seed",
 			cfg.Experimental.MaxCallsPerProg)
 	}
 	if !cfg.Experimental.DisableCollide {
@@ -2577,16 +3906,25 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 	if cfg.VM.KeepState {
 		t.Fatal("accept-updated AFD config should reload between requests")
 	}
+	noDirect, err := mgrconfig.ParseNoGenerateSyscalls(target, cfg.Experimental.NoGenerateSyscalls)
+	if err != nil {
+		t.Fatalf("ParseNoGenerateSyscalls: %v", err)
+	}
 	for _, name := range []string{
 		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
 		"setsockopt$update_accept_context",
 	} {
 		call := target.SyscallMap[name]
 		if call == nil {
 			t.Fatalf("missing accept-updated syscall %q", name)
 		}
-		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
-			t.Fatalf("%s must stay seed-only until direct update-context generation no longer causes reload/handshake slow", name)
+		if !call.Attrs.NoMinimize {
+			t.Fatalf("%s must stay no_minimize in the accept-updated focused profile", name)
+		}
+		if !call.Attrs.NoGenerate && !noDirect[call.ID] {
+			t.Fatalf("%s must stay config-blocked until direct update-context generation no longer causes reload/handshake slow", name)
 		}
 	}
 	for _, name := range []string{
@@ -2615,8 +3953,10 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 			"WSAEventSelect$accept*",
 			"WSAEnumNetworkEvents$accept*",
 			"NtDeviceIoControlFile$afd_*accept*",
-			"CreateIoCompletionPort$accept*",
-			"WSAGetOverlappedResult$accept*",
+			"CreateIoCompletionPort$accept_recv_pending",
+			"CreateIoCompletionPort$accept_send_pending",
+			"WSAGetOverlappedResult$accept_recv_pending",
+			"WSAGetOverlappedResult$accept_send_pending",
 			"CancelIoEx$accept*",
 			"CancelIo$accept*",
 			"closesocket$*",
@@ -2647,8 +3987,18 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 			"AcceptEx$inet_tcp",
 			"GetAcceptExSockaddrs$inet_tcp",
 			"closesocket$*",
-			"CreateIoCompletionPort$*",
-			"WSAGetOverlappedResult$*",
+			"CreateIoCompletionPort$socket",
+			"CreateIoCompletionPort$connect_pending",
+			"CreateIoCompletionPort$accept_recv_pending",
+			"CreateIoCompletionPort$accept_send_pending",
+			"CreateIoCompletionPort$tcp_recv_pending",
+			"CreateIoCompletionPort$tcp_send_pending",
+			"WSAGetOverlappedResult$socket",
+			"WSAGetOverlappedResult$connect_pending",
+			"WSAGetOverlappedResult$accept_recv_pending",
+			"WSAGetOverlappedResult$accept_send_pending",
+			"WSAGetOverlappedResult$tcp_recv_pending",
+			"WSAGetOverlappedResult$tcp_send_pending",
 			"CancelIoEx$*",
 			"CancelIo$*",
 			"TransmitPackets$inet_accept",
@@ -2663,6 +4013,9 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 	for _, name := range []string{
 		"socket$accept_tcp",
 		"AcceptEx$inet_tcp_pending",
+		"CreateIoCompletionPort$accept_pending",
+		"WSAGetOverlappedResult$accept_pending",
+		"GetQueuedCompletionStatus$socket",
 		"setsockopt$update_accept_context",
 	} {
 		if !expandedNames[name] {
@@ -2699,8 +4052,16 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 		for _, call := range p.Calls {
 			for _, pattern := range []string{
 				"closesocket$*",
-				"CreateIoCompletionPort$*",
-				"WSAGetOverlappedResult$*",
+				"CreateIoCompletionPort$connect_pending",
+				"CreateIoCompletionPort$accept_recv_pending",
+				"CreateIoCompletionPort$accept_send_pending",
+				"CreateIoCompletionPort$tcp_recv_pending",
+				"CreateIoCompletionPort$tcp_send_pending",
+				"WSAGetOverlappedResult$connect_pending",
+				"WSAGetOverlappedResult$accept_recv_pending",
+				"WSAGetOverlappedResult$accept_send_pending",
+				"WSAGetOverlappedResult$tcp_recv_pending",
+				"WSAGetOverlappedResult$tcp_send_pending",
 				"CancelIoEx$*",
 				"CancelIo$*",
 				"TransmitPackets$inet_accept",
@@ -2727,6 +4088,7 @@ func TestWindowsAfdAcceptUpdatedConfigStaysFocused(t *testing.T) {
 }
 
 func TestWindowsAfdPrivateEventConfigKeepsEventPollSeedOnly(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private-event.cfg")
 	want := []string{
 		"ioctlsocket$fionbio_listener",
@@ -2773,6 +4135,7 @@ func TestWindowsAfdPrivateEventConfigKeepsEventPollSeedOnly(t *testing.T) {
 }
 
 func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2832,6 +4195,7 @@ func TestWindowsAfdPrivateEventConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdPublicEventConfigUsesNonblockingEvents(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-public-event.cfg")
 	want := []string{
 		"ioctlsocket$fionbio_listener",
@@ -2905,6 +4269,7 @@ func TestWindowsAfdPublicEventConfigUsesNonblockingEvents(t *testing.T) {
 }
 
 func TestWindowsAfdPublicEventConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -2983,19 +4348,23 @@ func TestWindowsAfdPublicEventConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
 	}
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-transmit.cfg")
 	want := []string{
+		"NtCreateFile$afd_tcp_endpoint",
+		"NtDeviceIoControlFile$afd_bind_tcp",
+		"NtDeviceIoControlFile$afd_start_listen_tcp",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_accept_tcp",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted",
 		"WriteFile$afd_transmit",
-		"ioctlsocket$fionbio_listener",
-		"ioctlsocket$fionbio_tcp_created",
-		"connect$inet_tcp_nonblock",
-		"accept$inet_tcp_nonblock",
-		"TransmitFile$inet_accept_nonblock",
-		"TransmitPackets$inet_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock",
 	}
 	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("AFD transmit enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
@@ -3011,7 +4380,7 @@ func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
 			cfg.Experimental.SeedPrefix)
 	}
 	if !cfg.Experimental.DisableCollide {
-		t.Fatal("AFD transmit focused config should keep collide disabled while validating mswsock send paths")
+		t.Fatal("AFD transmit focused config should keep collide disabled while validating direct AFD transmit paths")
 	}
 	if cfg.VM.KeepState {
 		t.Fatal("AFD transmit config must reload between requests")
@@ -3023,12 +4392,20 @@ func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
 		t.Fatalf("ParseEnabledSyscalls: %v", err)
 	}
 	expandedNames := make(map[string]bool, len(syscalls))
+	expanded := make(map[*prog.Syscall]bool, len(syscalls))
 	for _, id := range syscalls {
 		name := target.Syscalls[id].Name
 		expandedNames[name] = true
+		expanded[target.Syscalls[id]] = true
 		for _, pattern := range []string{
-			"connect$inet_tcp",
-			"accept$inet_tcp",
+			"WSAStartup",
+			"WSACleanup",
+			"socket$inet_*",
+			"bind$inet_*",
+			"listen$inet_tcp",
+			"connect$inet_tcp*",
+			"accept$inet_tcp*",
+			"ioctlsocket$fionbio_*",
 			"socket$accept_tcp",
 			"socket$connected_tcp",
 			"AcceptEx$inet_tcp*",
@@ -3042,8 +4419,8 @@ func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
 			"closesocket$*",
 			"CreatePipe$anon",
 			"AddFontMemResourceEx",
-			"TransmitPackets$inet_accept",
-			"TransmitFile$inet_accept",
+			"TransmitPackets$inet_accept*",
+			"TransmitFile$inet_accept*",
 		} {
 			if mgrconfig.MatchSyscall(name, pattern) {
 				t.Fatalf("AFD transmit leaves risky syscall %q enabled via pattern %q",
@@ -3056,8 +4433,8 @@ func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
 	}
 	for _, name := range []string{
 		"WriteFile$afd_transmit",
-		"TransmitFile$inet_accept_nonblock",
-		"TransmitPackets$inet_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock",
+		"NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock",
 	} {
 		if !expandedNames[name] {
 			t.Fatalf("AFD transmit config must keep %s enabled", name)
@@ -3066,6 +4443,7 @@ func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
 }
 
 func TestWindowsAfdTransmitConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3097,12 +4475,18 @@ func TestWindowsAfdTransmitConfigCoversSeedSyscalls(t *testing.T) {
 		}
 		serialized := string(data)
 		for _, name := range []string{
+			"WSAStartup(",
+			"WSACleanup(",
+			"socket$inet_",
+			"bind$inet_",
+			"listen$inet_tcp(",
 			"connect$inet_tcp(",
 			"accept$inet_tcp(",
+			"ioctlsocket$fionbio_",
 			"socket$accept_tcp(",
 			"socket$connected_tcp(",
-			"TransmitFile$inet_accept(",
-			"TransmitPackets$inet_accept(",
+			"TransmitFile$inet_accept",
+			"TransmitPackets$inet_accept",
 			"CreatePipe$anon(",
 			"AddFontMemResourceEx(",
 			"WriteFile(",
@@ -3129,7 +4513,296 @@ func TestWindowsAfdTransmitConfigCoversSeedSyscalls(t *testing.T) {
 	}
 }
 
+func TestWindowsAfdRioConfigStaysRioOnly(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-rio.cfg")
+	want := []string{
+		"NtCreateFile$afd_rio_registration_domain",
+		"NtCreateFile$afd_rio_tcp_endpoint",
+		"NtDeviceIoControlFile$afd_rio_create_cq",
+		"NtDeviceIoControlFile$afd_rio_notify_cq",
+		"NtDeviceIoControlFile$afd_rio_register_buffer",
+		"NtDeviceIoControlFile$afd_rio_resize_cq",
+		"NtDeviceIoControlFile$afd_rio_destroy_cq",
+		"NtDeviceIoControlFile$afd_rio_deregister_buffer",
+		"NtDeviceIoControlFile$afd_rio_create_rqpair",
+		"NtDeviceIoControlFile$afd_rio_flush_send",
+		"NtDeviceIoControlFile$afd_rio_flush_receive",
+		"NtDeviceIoControlFile$afd_rio_resize_rqpair",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("AFD RIO enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_rio_" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("AFD RIO seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("AFD RIO focused config should keep collide disabled while validating Fast I/O reachability")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AFD RIO config must reload between requests")
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expandedNames := make(map[string]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expandedNames[name] = true
+		for _, pattern := range []string{
+			"WSAStartup",
+			"WSACleanup",
+			"socket$inet_*",
+			"bind$inet_*",
+			"listen$inet_tcp",
+			"connect$inet_tcp*",
+			"accept$inet_tcp*",
+			"ioctlsocket$fionbio_*",
+			"AcceptEx$inet_tcp*",
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"TransmitPackets$inet_accept*",
+			"TransmitFile$inet_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AFD RIO leaves risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range []string{
+		"NtCreateFile$afd_rio_registration_domain",
+		"NtDeviceIoControlFile$afd_rio_create_cq",
+		"NtDeviceIoControlFile$afd_rio_register_buffer",
+	} {
+		if !expandedNames[name] {
+			t.Fatalf("AFD RIO config must keep %s enabled", name)
+		}
+	}
+}
+
+func TestWindowsAfdRioConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-rio.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{"nyx_exp_afd_rio_rd.txt"}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AFD RIO seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, name := range []string{
+			"WSAStartup(",
+			"WSACleanup(",
+			"socket$inet_",
+			"bind$inet_",
+			"listen$inet_tcp(",
+			"connect$inet_tcp(",
+			"accept$inet_tcp(",
+			"ioctlsocket$fionbio_",
+			"TransmitFile$inet_accept",
+			"TransmitPackets$inet_accept",
+		} {
+			if strings.Contains(serialized, name) {
+				t.Fatalf("AFD RIO seed %s contains risky call %q:\n%s",
+					filepath.Base(path), name, serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.NoGenerate || target.CallIsAutomaticHelper(call.Meta) {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-rio.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdTliConfigStaysTliOnly(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-tli.cfg")
+	want := []string{
+		"NtCreateFile$afd_tli_tcp_endpoint",
+		"NtDeviceIoControlFile$afd_tli_type1_nobuf",
+		"NtDeviceIoControlFile$afd_tli_type2_nobuf",
+		"NtDeviceIoControlFile$afd_tli_type3_nobuf",
+		"NtDeviceIoControlFile$afd_tli_type1_inbuf",
+		"NtDeviceIoControlFile$afd_tli_type2_inbuf",
+		"NtDeviceIoControlFile$afd_tli_type3_inbuf",
+		"NtDeviceIoControlFile$afd_tli_type1_outbuf",
+		"NtDeviceIoControlFile$afd_tli_type2_outbuf",
+		"NtDeviceIoControlFile$afd_tli_type3_outbuf",
+		"NtDeviceIoControlFile$afd_tli_set_qos",
+		"NtDeviceIoControlFile$afd_tli_associate_qos",
+		"NtDeviceIoControlFile$afd_tli_isb_query",
+		"NtDeviceIoControlFile$afd_tli_isb_set",
+		"NtDeviceIoControlFile$afd_tli_type3_nobuf_pending",
+		"CancelIoEx$afd_tli_pending",
+		"CancelIo$afd_tli_pending",
+		"CloseHandle$afd_tli_pending",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("AFD TLI enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_tli_" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("AFD TLI seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("AFD TLI focused config should keep collide disabled while validating endpoint gate reachability")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("AFD TLI config must reload between requests")
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expandedNames := make(map[string]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expandedNames[name] = true
+		for _, pattern := range []string{
+			"WSAStartup",
+			"WSACleanup",
+			"socket$inet_*",
+			"bind$inet_*",
+			"listen$inet_tcp",
+			"connect$inet_tcp*",
+			"accept$inet_tcp*",
+			"ioctlsocket$fionbio_*",
+			"AcceptEx$inet_tcp*",
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"TransmitPackets$inet_accept*",
+			"TransmitFile$inet_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("AFD TLI leaves risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range []string{
+		"NtCreateFile$afd_tli_tcp_endpoint",
+		"NtDeviceIoControlFile$afd_tli_type3_nobuf",
+		"NtDeviceIoControlFile$afd_tli_set_qos",
+	} {
+		if !expandedNames[name] {
+			t.Fatalf("AFD TLI config must keep %s enabled", name)
+		}
+	}
+}
+
+func TestWindowsAfdTliConfigCoversSeedSyscalls(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-tli.cfg")
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{"nyx_exp_afd_tli_nobuf.txt"}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("AFD TLI seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, name := range []string{
+			"WSAStartup(",
+			"WSACleanup(",
+			"socket$inet_",
+			"bind$inet_",
+			"listen$inet_tcp(",
+			"connect$inet_tcp(",
+			"accept$inet_tcp(",
+			"ioctlsocket$fionbio_",
+			"TransmitFile$inet_accept",
+			"TransmitPackets$inet_accept",
+		} {
+			if strings.Contains(serialized, name) {
+				t.Fatalf("AFD TLI seed %s contains risky call %q:\n%s",
+					filepath.Base(path), name, serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.NoGenerate || target.CallIsAutomaticHelper(call.Meta) {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-tli.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
 func TestWindowsAfdSelectConfigStaysNonblocking(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3190,6 +4863,7 @@ func TestWindowsAfdSelectConfigStaysNonblocking(t *testing.T) {
 }
 
 func TestWindowsAfdSelectConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3247,6 +4921,7 @@ func TestWindowsAfdSelectConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdRecvMsgConfigStaysNonblocking(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3336,6 +5011,7 @@ func TestWindowsAfdRecvMsgConfigStaysNonblocking(t *testing.T) {
 }
 
 func TestWindowsAfdRecvMsgConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3396,6 +5072,7 @@ func TestWindowsAfdRecvMsgConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	for _, tc := range []struct {
 		cfgPath        string
 		seedPrefix     string
@@ -3522,6 +5199,7 @@ func TestWindowsAfdWSAIoctlConfigStaysLowRisk(t *testing.T) {
 }
 
 func TestWindowsAfdWSAIoctlConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3577,10 +5255,13 @@ func TestWindowsAfdWSAIoctlConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdAsyncConfigAvoidsDisconnectExGeneration(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-async.cfg")
 	for _, name := range []string{
 		"DisconnectEx$inet_tcp",
 		"DisconnectEx$inet_tcp_reuse",
+		"CreateIoCompletionPort$disconnect_reuse_pending",
+		"WSAGetOverlappedResult$disconnect_reuse_pending",
 		"ConnectEx$inet_tcp_reuse",
 	} {
 		if slices.Contains(cfg.EnabledSyscalls, name) {
@@ -3589,7 +5270,886 @@ func TestWindowsAfdAsyncConfigAvoidsDisconnectExGeneration(t *testing.T) {
 	}
 }
 
+func TestWindowsAfdConnectExIOCPConfig(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-connectex-iocp.cfg")
+	want := []string{
+		"bind$inet_tcp",
+		"listen$inet_tcp",
+		"bind$connectex_tcp",
+		"ConnectEx$inet_tcp_pending",
+		"CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending",
+		"GetQueuedCompletionStatus$socket",
+		"closesocket$connect_pending",
+		"setsockopt$update_connect_context",
+		"send$inet_tcp",
+		"getsockname$tcp",
+		"getpeername$tcp",
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("ConnectEx IOCP enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_connectex_iocp_" ||
+		cfg.Experimental.SeedExcludePrefixes != "nyx_exp_afd_connectex_iocp_cancel,nyx_exp_afd_connectex_iocp_vnet_update" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("ConnectEx IOCP seed prefixes are wrong: seed=%q exclude=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.SeedExcludePrefixes,
+			cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if strings.HasPrefix(cfg.Experimental.SeedPrefix, "nyx_afd_") {
+		t.Fatalf("ConnectEx IOCP focused seed %q would be visible to the formal AFD session",
+			cfg.Experimental.SeedPrefix)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("ConnectEx IOCP config should disable collide until the focused flow is stable")
+	}
+	if cfg.Experimental.ForceGenerateEveryN != 0 {
+		t.Fatalf("ConnectEx IOCP force_generate_every_n=%d, want 0 while fresh ConnectEx generation is state-gated",
+			cfg.Experimental.ForceGenerateEveryN)
+	}
+	for _, name := range []string{
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows",
+	} {
+		if !slices.Contains(cfg.Experimental.NoGenerateSyscalls, name) {
+			t.Fatalf("ConnectEx IOCP should keep unstable vnet helper %q seed-only, no_generate_syscalls=%v",
+				name, cfg.Experimental.NoGenerateSyscalls)
+		}
+	}
+	foundVNetSeedWeightZero := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight == 0 &&
+			slices.Contains(rule.Calls, "syz_emit_ethernet$windows") &&
+			slices.Contains(rule.Calls, "syz_extract_tcp_res$windows") {
+			foundVNetSeedWeightZero = true
+			break
+		}
+	}
+	if !foundVNetSeedWeightZero {
+		t.Fatal("ConnectEx IOCP should keep vnet completion seeds out of ordinary corpus mutation")
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("ConnectEx IOCP config must reload between requests")
+	}
+	gqcs := target.SyscallMap["GetQueuedCompletionStatus$socket"]
+	if gqcs == nil {
+		t.Fatal("missing GetQueuedCompletionStatus$socket")
+	}
+	timeout, ok := gqcs.Args[4].Type.(*prog.ConstType)
+	if !ok || timeout.Val != 0 {
+		t.Fatalf("GetQueuedCompletionStatus$socket timeout type=%v, want const[0]",
+			gqcs.Args[4].Type)
+	}
+	iocp := target.SyscallMap["CreateIoCompletionPort$connect_pending"]
+	if iocp == nil {
+		t.Fatal("missing CreateIoCompletionPort$connect_pending")
+	}
+	completionKey, ok := iocp.Args[2].Type.(*prog.ConstType)
+	if !ok || completionKey.Val != 0xafd {
+		t.Fatalf("CreateIoCompletionPort$connect_pending CompletionKey type=%v, want const[0xafd]",
+			iocp.Args[2].Type)
+	}
+	threads, ok := iocp.Args[3].Type.(*prog.ConstType)
+	if !ok || threads.Val != 0 {
+		t.Fatalf("CreateIoCompletionPort$connect_pending NumberOfConcurrentThreads type=%v, want const[0]",
+			iocp.Args[3].Type)
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expanded := make(map[*prog.Syscall]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expanded[target.Syscalls[id]] = true
+		for _, pattern := range []string{
+			"connect$inet_tcp*",
+			"ConnectEx$inet_tcp",
+			"ConnectEx$inet_tcp_reuse",
+			"DisconnectEx$inet_tcp*",
+			"AcceptEx$inet_tcp*",
+			"GetAcceptExSockaddrs$inet_tcp",
+			"CreateIoCompletionPort$socket",
+			"CreateIoCompletionPort$accept*",
+			"CreateIoCompletionPort$tcp_recv_pending",
+			"CreateIoCompletionPort$tcp_send_pending",
+			"WSAGetOverlappedResult$socket",
+			"WSAGetOverlappedResult$accept*",
+			"WSAGetOverlappedResult$tcp_recv_pending",
+			"WSAGetOverlappedResult$tcp_send_pending",
+			"CancelIoEx$socket",
+			"CancelIoEx$accept*",
+			"CancelIoEx$tcp_*_pending",
+			"CancelIoEx$connect_pending",
+			"CancelIo$socket",
+			"CancelIo$accept*",
+			"CancelIo$tcp_*_pending",
+			"CancelIo$connect_pending",
+			"WSAEventSelect$*",
+			"WSAEnumNetworkEvents$*",
+			"select$afd*",
+			"NtDeviceIoControlFile$afd_event_select_accept*",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept*",
+			"NtDeviceIoControlFile$afd_poll_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("ConnectEx IOCP leaves risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range []string{
+		"ConnectEx$inet_tcp_pending",
+		"CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending",
+		"GetQueuedCompletionStatus$socket",
+		"setsockopt$update_connect_context",
+		"send$inet_tcp",
+		"getsockname$tcp",
+		"getpeername$tcp",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing ConnectEx IOCP syscall %q", name)
+		}
+		if !expanded[call] {
+			t.Fatalf("ConnectEx IOCP expanded set missing %s", name)
+		}
+	}
+}
+
+func TestWindowsAfdPendingIOConfig(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-pending-io.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	want := []string{
+		"bind$inet_tcp",
+		"listen$inet_tcp",
+		"ioctlsocket$fionbio_listener",
+		"ioctlsocket$fionbio_tcp_created",
+		"ioctlsocket$fionbio_tcp_connected",
+		"connect$inet_tcp_nonblock",
+		"accept$inet_tcp_nonblock",
+		"send$inet_accept",
+		"WSARecv$tcp_pending",
+		"CreateIoCompletionPort$tcp_recv_pending",
+		"WSAGetOverlappedResult$tcp_recv_pending",
+		"GetQueuedCompletionStatus$socket",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("pending-IO AFD enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_pending_io_" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("pending-IO seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if strings.HasPrefix(cfg.Experimental.SeedPrefix, "nyx_afd_") {
+		t.Fatalf("pending-IO focused seed %q would be visible to the formal AFD session",
+			cfg.Experimental.SeedPrefix)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("pending-IO config should disable collide until focused flow is stable")
+	}
+	if cfg.Experimental.MaxCallsPerProg != 15 {
+		t.Fatalf("pending-IO max_calls_per_prog=%d, want exactly 15 for local listener proof seeds",
+			cfg.Experimental.MaxCallsPerProg)
+	}
+	proofOnly := []string{
+		"WSARecv$tcp_pending",
+		"CreateIoCompletionPort$tcp_recv_pending",
+		"WSAGetOverlappedResult$tcp_recv_pending",
+		"GetQueuedCompletionStatus$socket",
+	}
+	for _, name := range proofOnly {
+		if !slices.Contains(cfg.Experimental.NoGenerateSyscalls, name) {
+			t.Fatalf("pending-IO proof call %s should be listed in no_generate_syscalls: %v",
+				name, cfg.Experimental.NoGenerateSyscalls)
+		}
+	}
+	zeroWeight := make(map[string]bool)
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight != 0 {
+			continue
+		}
+		for _, name := range rule.Calls {
+			zeroWeight[name] = true
+		}
+	}
+	for _, name := range proofOnly {
+		if !zeroWeight[name] {
+			t.Fatalf("pending-IO proof call %s should have corpus fuzz weight 0", name)
+		}
+	}
+	for _, name := range []string{
+		"WSARecv$tcp_pending",
+		"CreateIoCompletionPort$tcp_recv_pending",
+		"WSAGetOverlappedResult$tcp_recv_pending",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing pending-IO syscall %q", name)
+		}
+		if !call.Attrs.NoGenerate || !call.Attrs.NoMinimize {
+			t.Fatalf("%s should stay proof/seed-only and no_minimize after focused smoke failure", name)
+		}
+	}
+	for _, name := range []string{
+		"WSASend$tcp_pending",
+		"WSASend$accept_pending",
+	} {
+		call := target.SyscallMap[name]
+		flags, ok := call.Args[4].Type.(*prog.ConstType)
+		if !ok || flags.Val != 0 {
+			t.Fatalf("%s flags type=%v, want const[0]", name, call.Args[4].Type)
+		}
+		routine, ok := call.Args[6].Type.(*prog.ConstType)
+		if !ok || routine.Val != 0 {
+			t.Fatalf("%s completion routine type=%v, want const[0]", name, call.Args[6].Type)
+		}
+	}
+	for _, name := range []string{
+		"WSARecv$tcp_pending",
+		"WSARecv$accept_pending",
+	} {
+		call := target.SyscallMap[name]
+		routine, ok := call.Args[6].Type.(*prog.ConstType)
+		if !ok || routine.Val != 0 {
+			t.Fatalf("%s completion routine type=%v, want const[0]", name, call.Args[6].Type)
+		}
+	}
+	for _, name := range []string{
+		"CreateIoCompletionPort$tcp_recv_pending",
+		"CreateIoCompletionPort$accept_recv_pending",
+	} {
+		call := target.SyscallMap[name]
+		completionKey, ok := call.Args[2].Type.(*prog.ConstType)
+		if !ok || completionKey.Val != 0xafd {
+			t.Fatalf("%s CompletionKey type=%v, want const[0xafd]", name, call.Args[2].Type)
+		}
+		threads, ok := call.Args[3].Type.(*prog.ConstType)
+		if !ok || threads.Val != 0 {
+			t.Fatalf("%s NumberOfConcurrentThreads type=%v, want const[0]", name, call.Args[3].Type)
+		}
+	}
+	for _, name := range []string{
+		"WSAGetOverlappedResult$tcp_recv_pending",
+		"WSAGetOverlappedResult$accept_recv_pending",
+	} {
+		call := target.SyscallMap[name]
+		fwait, ok := call.Args[3].Type.(*prog.ConstType)
+		if !ok || fwait.Val != 0 {
+			t.Fatalf("%s fWait type=%v, want const[0]", name, call.Args[3].Type)
+		}
+	}
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expanded := make(map[*prog.Syscall]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expanded[target.Syscalls[id]] = true
+		for _, pattern := range []string{
+			"ConnectEx$inet_tcp*",
+			"DisconnectEx$inet_tcp*",
+			"AcceptEx$inet_tcp*",
+			"setsockopt$update_accept_context",
+			"setsockopt$update_connect_context",
+			"WSAEventSelect$*",
+			"WSAEnumNetworkEvents$*",
+			"WSASend$*_pending",
+			"CancelIoEx$*_recv_pending",
+			"CancelIoEx$*_send_pending",
+			"CancelIo$*_recv_pending",
+			"CancelIo$*_send_pending",
+			"closesocket$*_recv_pending",
+			"closesocket$*_send_pending",
+			"select$afd*",
+			"NtDeviceIoControlFile$afd_event_select_accept*",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept*",
+			"NtDeviceIoControlFile$afd_poll_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("pending-IO config leaves unrelated risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range want {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing pending-IO syscall %q", name)
+		}
+		if !expanded[call] && !slices.Contains(cfg.EnabledSyscalls, name) {
+			t.Fatalf("pending-IO expanded set missing %s", name)
+		}
+	}
+	noDirect, err := mgrconfig.ParseNoGenerateSyscalls(target, cfg.Experimental.NoGenerateSyscalls)
+	if err != nil {
+		t.Fatalf("ParseNoGenerateSyscalls: %v", err)
+	}
+	ct := target.BuildChoiceTableWithNoDirectCalls(nil, expanded, noDirect)
+	for _, name := range proofOnly {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing pending-IO proof syscall %q", name)
+		}
+		if ct.DirectlyGeneratable(call.ID) {
+			t.Fatalf("%s should not be directly generated by pending-IO proof cfg", name)
+		}
+	}
+}
+
+func TestWindowsAfdPendingIOConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-pending-io.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{
+		"nyx_exp_afd_pending_io_tcp_recv_iocp.txt",
+	}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("pending-IO seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, forbidden := range []string{
+			"AcceptEx$",
+			"ConnectEx$",
+			"DisconnectEx$",
+			"WSAEventSelect$",
+			"WSAEnumNetworkEvents$",
+			"NtDeviceIoControlFile$afd_poll_accept",
+		} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("pending-IO seed %s contains forbidden call %q:\n%s",
+					filepath.Base(path), forbidden, serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		if target.RuntimePolicy.ShouldScheduleProgram != nil &&
+			!target.RuntimePolicy.ShouldScheduleProgram("candidate", p) {
+			t.Fatalf("%s is rejected by the AFD runtime scheduler", filepath.Base(path))
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if call.Meta.Attrs.NoGenerate && !slices.Contains(cfg.EnabledSyscalls, call.Meta.Name) {
+				t.Fatalf("%s uses no_generate syscall %s that is not explicitly enabled",
+					filepath.Base(path), call.Meta.Name)
+			}
+			if !expanded[call.Meta] && !slices.Contains(cfg.EnabledSyscalls, call.Meta.Name) {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-pending-io.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdConnectExIOCPConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-connectex-iocp.cfg")
+	matches := windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{
+		"nyx_exp_afd_connectex_iocp_local_update.txt",
+	}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("ConnectEx IOCP seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	proofSeeds := windowsSeedPrefixMatches(t, cfg.Experimental.SeedExcludePrefixes)
+	gotProofSeeds := make([]string, 0, len(proofSeeds))
+	for _, path := range proofSeeds {
+		gotProofSeeds = append(gotProofSeeds, filepath.Base(path))
+	}
+	wantProofSeeds := []string{
+		"nyx_exp_afd_connectex_iocp_cancel.txt",
+		"nyx_exp_afd_connectex_iocp_vnet_update.txt",
+	}
+	if strings.Join(gotProofSeeds, "\n") != strings.Join(wantProofSeeds, "\n") {
+		t.Fatalf("ConnectEx IOCP proof seed mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotProofSeeds, "\n"), strings.Join(wantProofSeeds, "\n"))
+	}
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, forbidden := range []string{
+			"AcceptEx$",
+			"DisconnectEx$",
+			"ConnectEx$inet_tcp_reuse",
+			"WSAEventSelect$",
+			"WSAEnumNetworkEvents$",
+			"NtDeviceIoControlFile$afd_poll_accept",
+		} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("ConnectEx IOCP seed %s contains forbidden call %q:\n%s",
+					filepath.Base(path), forbidden, serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-connectex-iocp.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+		if strings.Contains(filepath.Base(path), "vnet_update") {
+			for _, want := range []string{
+				"WSAGetOverlappedResult$connect_pending(",
+				"GetQueuedCompletionStatus$socket(",
+				"setsockopt$update_connect_context(",
+				"send$inet_tcp(",
+				"syz_extract_tcp_res$windows(",
+				"0x4e20",
+				"0x9c40",
+			} {
+				if !strings.Contains(serialized, want) {
+					t.Fatalf("ConnectEx vnet update seed missing %q:\n%s", want, serialized)
+				}
+			}
+			for _, oldPort := range []string{"0x4e22", "0x4e23"} {
+				if strings.Contains(serialized, oldPort) {
+					t.Fatalf("ConnectEx vnet update seed uses stale TCP port %s:\n%s",
+						oldPort, serialized)
+				}
+			}
+		}
+		if strings.Contains(filepath.Base(path), "local_update") {
+			for _, want := range []string{
+				"listen$inet_tcp(",
+				"WSAGetOverlappedResult$connect_pending(",
+				"GetQueuedCompletionStatus$socket(",
+				"setsockopt$update_connect_context(",
+				"send$inet_tcp(",
+			} {
+				if !strings.Contains(serialized, want) {
+					t.Fatalf("ConnectEx local update seed missing %q:\n%s", want, serialized)
+				}
+			}
+			for _, forbidden := range []string{
+				"syz_emit_ethernet$windows(",
+				"syz_extract_tcp_res$windows(",
+				"closesocket$",
+			} {
+				if strings.Contains(serialized, forbidden) {
+					t.Fatalf("ConnectEx local update seed contains non-local/finalizer call %q:\n%s",
+						forbidden, serialized)
+				}
+			}
+		}
+	}
+	for _, path := range proofSeeds {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read proof seed %s: %v", path, err)
+		}
+		serialized := string(data)
+		if _, err := target.Deserialize(data, prog.NonStrict); err != nil {
+			t.Fatalf("deserialize proof seed %s: %v", path, err)
+		}
+		if strings.Contains(filepath.Base(path), "cancel") {
+			for _, want := range []string{
+				"CancelIoEx$connect_pending(",
+			} {
+				if !strings.Contains(serialized, want) {
+					t.Fatalf("ConnectEx cancel proof seed %s missing %q:\n%s",
+						filepath.Base(path), want, serialized)
+				}
+			}
+			for _, forbidden := range []string{
+				"CancelIo$connect_pending(",
+				"closesocket$connect_pending(",
+				"WSAGetOverlappedResult$connect_pending(",
+				"GetQueuedCompletionStatus$socket(",
+				"setsockopt$update_connect_context(",
+			} {
+				if strings.Contains(serialized, forbidden) {
+					t.Fatalf("ConnectEx cancel proof seed %s contains completion/update call %q:\n%s",
+						filepath.Base(path), forbidden, serialized)
+				}
+			}
+			continue
+		}
+		for _, want := range []string{
+			"WSAGetOverlappedResult$connect_pending(",
+			"GetQueuedCompletionStatus$socket(",
+			"setsockopt$update_connect_context(",
+			"send$inet_tcp(",
+		} {
+			if !strings.Contains(serialized, want) {
+				t.Fatalf("ConnectEx update proof seed %s missing %q:\n%s",
+					filepath.Base(path), want, serialized)
+			}
+		}
+	}
+}
+
+func TestWindowsAfdDisconnectExReuseConfig(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-disconnectex-reuse.cfg")
+	want := []string{
+		"bind$inet_tcp",
+		"listen$inet_tcp",
+		"bind$connectex_tcp",
+		"connect$inet_tcp",
+		"accept$inet_tcp",
+		"closesocket$any",
+		"ConnectEx$inet_tcp_pending",
+		"DisconnectEx$inet_tcp_reuse",
+		"CreateIoCompletionPort$disconnect_reuse_pending",
+		"WSAGetOverlappedResult$disconnect_reuse_pending",
+		"ConnectEx$inet_tcp_reuse",
+		"CreateIoCompletionPort$connect_pending",
+		"WSAGetOverlappedResult$connect_pending",
+		"GetQueuedCompletionStatus$socket",
+		"setsockopt$update_connect_context",
+	}
+	if strings.Join(cfg.EnabledSyscalls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("DisconnectEx reuse enabled syscalls mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(cfg.EnabledSyscalls, "\n"), strings.Join(want, "\n"))
+	}
+	if cfg.Experimental.SeedPrefix != "nyx_exp_afd_disconnectex_reuse" ||
+		cfg.Experimental.BorrowingSeedPrefix != "" {
+		t.Fatalf("DisconnectEx reuse seed prefixes are wrong: seed=%q borrowing=%q",
+			cfg.Experimental.SeedPrefix, cfg.Experimental.BorrowingSeedPrefix)
+	}
+	if strings.HasPrefix(cfg.Experimental.SeedPrefix, "nyx_afd_") {
+		t.Fatalf("DisconnectEx reuse focused seed %q would be visible to the formal AFD session",
+			cfg.Experimental.SeedPrefix)
+	}
+	if !cfg.Experimental.DisableCollide {
+		t.Fatal("DisconnectEx reuse config should disable collide until the focused flow is stable")
+	}
+	if cfg.Experimental.MaxCallsPerProg != 22 {
+		t.Fatalf("DisconnectEx reuse max_calls_per_prog=%d, want 22", cfg.Experimental.MaxCallsPerProg)
+	}
+	if cfg.VM.KeepState {
+		t.Fatal("DisconnectEx reuse config must reload between requests")
+	}
+	for _, name := range []string{"connect$inet_tcp", "accept$inet_tcp"} {
+		if !slices.Contains(cfg.Experimental.NoGenerateSyscalls, name) {
+			t.Fatalf("DisconnectEx reuse blocking scaffold %s must be no-direct: %v",
+				name, cfg.Experimental.NoGenerateSyscalls)
+		}
+	}
+	foundZeroWeight := false
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		if rule.Weight != 0 {
+			continue
+		}
+		if slices.Contains(rule.Calls, "connect$inet_tcp") {
+			foundZeroWeight = true
+			break
+		}
+	}
+	if !foundZeroWeight {
+		t.Fatalf("DisconnectEx reuse config must zero-weight blocking scaffold corpus fuzz rules: %+v",
+			cfg.Experimental.CorpusFuzzWeightRules)
+	}
+	noDirect, err := mgrconfig.ParseNoGenerateSyscalls(target, cfg.Experimental.NoGenerateSyscalls)
+	if err != nil {
+		t.Fatalf("ParseNoGenerateSyscalls: %v", err)
+	}
+	for _, tc := range []struct {
+		name  string
+		index int
+	}{
+		{"DisconnectEx$inet_tcp_reuse", 1},
+	} {
+		call := target.SyscallMap[tc.name]
+		if call == nil {
+			t.Fatalf("missing %s", tc.name)
+		}
+		ptr, ok := call.Args[tc.index].Type.(*prog.PtrType)
+		if !ok {
+			t.Fatalf("%s overlapped type=%v, want ptr[inout, OVERLAPPED]",
+				tc.name, call.Args[tc.index].Type)
+		}
+		st, ok := ptr.Elem.(*prog.StructType)
+		if !ok || st.Name() != "OVERLAPPED" {
+			t.Fatalf("%s overlapped elem=%v, want OVERLAPPED", tc.name, ptr.Elem)
+		}
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls,
+		mgrconfig.ManualDescriptions)
+	if err != nil {
+		t.Fatalf("ParseEnabledSyscalls: %v", err)
+	}
+	expandedNames := make(map[string]bool, len(syscalls))
+	expanded := make(map[*prog.Syscall]bool, len(syscalls))
+	for _, id := range syscalls {
+		name := target.Syscalls[id].Name
+		expandedNames[name] = true
+		expanded[target.Syscalls[id]] = true
+		for _, pattern := range []string{
+			"socket$accept_tcp",
+			"socket$connected_tcp",
+			"ioctlsocket$fionbio_listener",
+			"ioctlsocket$fionbio_tcp_created",
+			"connect$inet_tcp_nonblock",
+			"accept$inet_tcp_nonblock",
+			"send$inet_tcp",
+			"recv$inet_tcp",
+			"ConnectEx$inet_tcp",
+			"DisconnectEx$inet_tcp",
+			"AcceptEx$inet_tcp*",
+			"CreateIoCompletionPort$socket",
+			"CreateIoCompletionPort$accept*",
+			"CreateIoCompletionPort$tcp_recv_pending",
+			"CreateIoCompletionPort$tcp_send_pending",
+			"WSAGetOverlappedResult$socket",
+			"WSAGetOverlappedResult$accept*",
+			"WSAGetOverlappedResult$tcp_recv_pending",
+			"WSAGetOverlappedResult$tcp_send_pending",
+			"CancelIoEx$*",
+			"CancelIo$*",
+			"closesocket$accept_pending",
+			"closesocket$accept_recv_pending",
+			"closesocket$accept_send_pending",
+			"closesocket$connect_pending",
+			"closesocket$tcp_recv_pending",
+			"closesocket$tcp_send_pending",
+			"WSAEventSelect$*",
+			"WSAEnumNetworkEvents$*",
+			"select$afd*",
+			"NtDeviceIoControlFile$afd_event_select_accept*",
+			"NtDeviceIoControlFile$afd_enum_network_events_accept*",
+			"NtDeviceIoControlFile$afd_poll_accept*",
+			"TransmitFile$inet_accept*",
+			"TransmitPackets$inet_accept*",
+		} {
+			if mgrconfig.MatchSyscall(name, pattern) {
+				t.Fatalf("DisconnectEx reuse config leaves risky syscall %q enabled via pattern %q",
+					name, pattern)
+			}
+		}
+	}
+	for _, name := range want {
+		if !expandedNames[name] {
+			t.Fatalf("DisconnectEx reuse config must keep %s enabled", name)
+		}
+	}
+	ct := target.BuildChoiceTableWithNoDirectCalls(nil, expanded, noDirect)
+	for _, name := range []string{"connect$inet_tcp", "accept$inet_tcp"} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing %s", name)
+		}
+		if ct.DirectlyGeneratable(call.ID) {
+			t.Fatalf("%s should be enabled for seeds but not directly generated", name)
+		}
+	}
+}
+
+func TestWindowsAfdDisconnectExReuseConfigCoversSeedSyscalls(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-disconnectex-reuse.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	matches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	gotSeeds := make([]string, 0, len(matches))
+	for _, path := range matches {
+		gotSeeds = append(gotSeeds, filepath.Base(path))
+	}
+	wantSeeds := []string{
+		"nyx_exp_afd_disconnectex_reuse.txt",
+		"nyx_exp_afd_disconnectex_reuse_connectex_peerclose.txt",
+	}
+	if strings.Join(gotSeeds, "\n") != strings.Join(wantSeeds, "\n") {
+		t.Fatalf("DisconnectEx reuse seed set mismatch:\ngot:\n%s\nwant:\n%s",
+			strings.Join(gotSeeds, "\n"), strings.Join(wantSeeds, "\n"))
+	}
+	enabled := make(map[*prog.Syscall]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("unknown enabled syscall %q", name)
+		}
+		enabled[call] = true
+	}
+	expanded, _ := target.TransitivelyEnabledCalls(enabled)
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		serialized := string(data)
+		for _, forbidden := range []string{
+			"socket$accept_tcp(",
+			"ioctlsocket$fionbio_listener(",
+			"ioctlsocket$fionbio_tcp_created(",
+			"connect$inet_tcp_nonblock(",
+			"accept$inet_tcp_nonblock(",
+			"ConnectEx$inet_tcp(",
+			"DisconnectEx$inet_tcp(",
+			"AcceptEx$",
+			"CancelIo",
+			"WSAEventSelect$",
+			"WSAEnumNetworkEvents$",
+			"select$afd",
+			"NtDeviceIoControlFile$afd_",
+			"TransmitFile$",
+			"TransmitPackets$",
+			"closesocket$accept_pending",
+			"closesocket$connect_pending",
+			"closesocket$tcp_",
+		} {
+			if strings.Contains(serialized, forbidden) {
+				t.Fatalf("DisconnectEx reuse seed %s contains forbidden call %q:\n%s",
+					filepath.Base(path), forbidden, serialized)
+			}
+		}
+		for _, want := range []string{
+			"socket$inet_tcp(",
+			"accept$inet_tcp(",
+			"closesocket$any(",
+			"DisconnectEx$inet_tcp_reuse(",
+			"CreateIoCompletionPort$disconnect_reuse_pending(",
+			"WSAGetOverlappedResult$disconnect_reuse_pending(",
+			"ConnectEx$inet_tcp_reuse(",
+			"CreateIoCompletionPort$connect_pending(",
+			"WSAGetOverlappedResult$connect_pending(",
+			"GetQueuedCompletionStatus$socket(",
+			"setsockopt$update_connect_context(",
+		} {
+			if !strings.Contains(serialized, want) {
+				t.Fatalf("DisconnectEx reuse seed %s missing %q:\n%s",
+					filepath.Base(path), want, serialized)
+			}
+		}
+		switch filepath.Base(path) {
+		case "nyx_exp_afd_disconnectex_reuse_connectex_peerclose.txt":
+			for _, want := range []string{
+				"bind$connectex_tcp(",
+				"ConnectEx$inet_tcp_pending(",
+			} {
+				if !strings.Contains(serialized, want) {
+					t.Fatalf("ConnectEx-driven DisconnectEx reuse seed %s missing %q:\n%s",
+						filepath.Base(path), want, serialized)
+				}
+			}
+			if strings.Contains(serialized, "connect$inet_tcp(") {
+				t.Fatalf("ConnectEx-driven DisconnectEx reuse seed uses blocking connect:\n%s", serialized)
+			}
+		default:
+			if !strings.Contains(serialized, "connect$inet_tcp(") {
+				t.Fatalf("blocking DisconnectEx reuse seed %s missing connect$inet_tcp:\n%s",
+					filepath.Base(path), serialized)
+			}
+			if strings.Contains(serialized, "ConnectEx$inet_tcp_pending(") {
+				t.Fatalf("blocking DisconnectEx reuse seed %s contains ConnectEx pending:\n%s",
+					filepath.Base(path), serialized)
+			}
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		if target.RuntimePolicy.ShouldScheduleProgram != nil &&
+			!target.RuntimePolicy.ShouldScheduleProgram("candidate", p) {
+			t.Fatalf("%s is rejected by the AFD runtime scheduler", filepath.Base(path))
+		}
+		for _, call := range p.Calls {
+			if call.Meta.Attrs.AutomaticHelper {
+				continue
+			}
+			if !expanded[call.Meta] {
+				t.Fatalf("%s uses %s, which is not enabled by windows-nyx-afd-disconnectex-reuse.cfg",
+					filepath.Base(path), call.Meta.Name)
+			}
+		}
+	}
+}
+
 func TestWindowsDemoExecEncodingUsesTargetIDs(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	table := loadDemoSyscallTable(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -3851,6 +6411,7 @@ func TestStandaloneBootstrapProgramFitsReferenceNyxPayload(t *testing.T) {
 }
 
 func TestStandaloneGenericProgramsContainRequestedSyscall(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3876,6 +6437,7 @@ func TestStandaloneGenericProgramsContainRequestedSyscall(t *testing.T) {
 		"WSAGetOverlappedResult$connect_pending":      true,
 		"CancelIoEx$connect_pending":                  true,
 		"CancelIo$connect_pending":                    true,
+		"setsockopt$update_connect_context":           true,
 		"closesocket$connect_pending":                 true,
 		"WSARecv$tcp_pending":                         true,
 		"WSASend$tcp_pending":                         true,
@@ -3952,6 +6514,7 @@ func TestStandaloneGenericProgramsContainRequestedSyscall(t *testing.T) {
 		"WSAGetOverlappedResult$connect_pending",
 		"CancelIoEx$connect_pending",
 		"CancelIo$connect_pending",
+		"setsockopt$update_connect_context",
 		"closesocket$connect_pending",
 		"WSARecv$tcp_pending",
 		"WSASend$tcp_pending",
@@ -4042,6 +6605,7 @@ func TestStandaloneGenericProgramsContainRequestedSyscall(t *testing.T) {
 }
 
 func TestDescribeExecProgramReportsFirstDeepAFDCall(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -4141,6 +6705,7 @@ func TestStandaloneProgramFileLoadsWindowsVNetSeed(t *testing.T) {
 }
 
 func TestStandaloneStagedProgramFilesLoadWindowsVNetSeeds(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -4242,6 +6807,7 @@ func TestStandaloneStagedVNetModeSupportsGuestIdle(t *testing.T) {
 }
 
 func TestStandaloneProgramCanApplyWindowsTargetProfile(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	path := filepath.Join(t.TempDir(), "afd_accept_get_qos.txt")
 	text := []byte(`WSAStartup(0x202, &(0x7f0000000000)=0x0)
 r0 = socket$accept_tcp(0x2, 0x1, 0x6)
@@ -4425,6 +6991,53 @@ func TestFullchainBincoverEnablesRawCover(t *testing.T) {
 	} {
 		if !strings.Contains(scriptSrc, want) {
 			t.Fatalf("run-nyx-fullchain bincover config materialization missing %q", want)
+		}
+	}
+}
+
+func TestFullchainNyxMemoryOverrideIsWired(t *testing.T) {
+	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
+	scriptData, err := os.ReadFile(scriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("run-nyx-fullchain.sh is outside this test environment: %v", err)
+		}
+		t.Fatalf("read %s: %v", scriptPath, err)
+	}
+	scriptSrc := string(scriptData)
+	for _, want := range []string{
+		`NYX_MEMORY="${NYX_MEMORY:-4096}"`,
+		`jq_filter="$jq_filter | .vm.memory = (\$vm_memory | tonumber)"`,
+		`--arg vm_memory "$NYX_MEMORY"`,
+		`--memory "$NYX_MEMORY"`,
+		`Using manager config copy with memory`,
+	} {
+		if !strings.Contains(scriptSrc, want) {
+			t.Fatalf("run-nyx-fullchain memory override missing %q", want)
+		}
+	}
+}
+
+func TestFullchainBuildSkipEnvironmentDefaultsAreWired(t *testing.T) {
+	scriptPath := filepath.Join("..", "..", "..", "guest-vm", "run-nyx-fullchain.sh")
+	scriptData, err := os.ReadFile(scriptPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skipf("run-nyx-fullchain.sh is outside this test environment: %v", err)
+		}
+		t.Fatalf("read %s: %v", scriptPath, err)
+	}
+	scriptSrc := string(scriptData)
+	for _, want := range []string{
+		`keep_overlay="${KEEP_OVERLAY:-0}"`,
+		`keep_workdir="${KEEP_WORKDIR:-0}"`,
+		`skip_host_build="${SKIP_HOST_BUILD:-0}"`,
+		`skip_executor_build="${SKIP_EXECUTOR_BUILD:-0}"`,
+		`skip_guest_prepare="${SKIP_GUEST_PREPARE:-0}"`,
+		`collect_stats="${COLLECT_STATS:-0}"`,
+	} {
+		if !strings.Contains(scriptSrc, want) {
+			t.Fatalf("run-nyx-fullchain build-skip env default missing %q", want)
 		}
 	}
 }
@@ -4615,6 +7228,7 @@ func TestRunnerDoesNotDrainReloadBeforeNextPayload(t *testing.T) {
 }
 
 func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -4650,6 +7264,10 @@ func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 		{
 			name: "WSAGetOverlappedResult$connect_pending",
 			want: []string{"WSAStartup(", "socket$listener_tcp(", "ConnectEx$inet_tcp_pending(", "WSAGetOverlappedResult$connect_pending("},
+		},
+		{
+			name: "setsockopt$update_connect_context",
+			want: []string{"WSAStartup(", "socket$inet_tcp(", "ConnectEx$inet_tcp_pending(", "WSAGetOverlappedResult$connect_pending(", "GetQueuedCompletionStatus$socket(", "setsockopt$update_connect_context("},
 		},
 		{
 			name: "closesocket$connect_pending",
@@ -4756,6 +7374,7 @@ func TestStandaloneGenericProgramsReceiveTransitiveScaffold(t *testing.T) {
 			test.name == "ConnectEx$inet_tcp" ||
 			test.name == "CancelIoEx$connect_pending" ||
 			test.name == "WSAGetOverlappedResult$connect_pending" ||
+			test.name == "setsockopt$update_connect_context" ||
 			test.name == "closesocket$connect_pending" ||
 			test.name == "TransmitPackets$inet_accept" ||
 			test.name == "WSARecvMsg$udp" ||
@@ -5615,7 +8234,9 @@ func TestWindowsNetInjectionStubsFailFast(t *testing.T) {
 		"dst_ip != SYZ_WINDOWS_NET_INJECTION_PEER_IPV4",
 		"src_port != SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT",
 		"dst_port != SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT",
-		"SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK",
+		"bool is_syn = (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) == SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN",
+		"bool is_synack = (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) == (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)",
+		"(!is_syn && !is_synack)",
 		"windows net injection %s non-target tcp",
 		"windows_net_load_be32(tcp + 4)",
 		"windows_net_load_be32(tcp + 8)",
@@ -5666,6 +8287,7 @@ func TestWindowsNyxExecutorBuildEnablesNetInjection(t *testing.T) {
 }
 
 func TestWindowsSocketStateWrappersLogWinsockErrors(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
 	if err != nil {
