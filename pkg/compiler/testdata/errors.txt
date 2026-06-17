@@ -63,7 +63,7 @@ foo$4(a int8, a int16)		### duplicate argument a in syscall foo$4
 foo$4()				### syscall foo$4 redeclared, previously declared at LOCATION
 foo()
 foo()				### syscall foo redeclared, previously declared at LOCATION
-foo$5(a0 int8, a1 int8, a2 int8, a3 int8, a4 int8, a5 int8, a6 int8, a7 int8, a8 int8, a9 int8)	### syscall foo$5 has 10 arguments, allowed maximum is 9
+foo$5(a0 int8, a1 int8, a2 int8, a3 int8, a4 int8, a5 int8, a6 int8, a7 int8, a8 int8, a9 int8, a10 int8, a11 int8)	### syscall foo$5 has 12 arguments, allowed maximum is 11
 foo$6(parent int8)		### reserved argument name parent in syscall foo$6
 
 f1 = 1

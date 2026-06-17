@@ -71,7 +71,7 @@ const int kInPipeFd = kMaxFd - 1; // remapped from stdin
 const int kOutPipeFd = kMaxFd - 2; // remapped from stdout
 const int kCoverFd = kOutPipeFd - kMaxThreads;
 const int kExtraCoverFd = kCoverFd - 1;
-const int kMaxArgs = 10;
+const int kMaxArgs = 11;
 const int kCoverSize = 512 << 10;
 const int kFailStatus = 67;
 
@@ -521,10 +521,16 @@ static void mmap_input();
 #include <urlmon.h>
 #include <wincrypt.h>
 #include <windows.h>
+#include <winternl.h>
 #include <winscard.h>
 #include <winsock2.h>
 #include <winspool.h>
 #include <ws2tcpip.h>
+
+extern "C" {
+NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID,
+				     PIO_STATUS_BLOCK, ULONG, PVOID, ULONG, PVOID, ULONG);
+}
 
 static bool windows_winsock_extension(SOCKET s, const GUID& guid, void** out)
 {
@@ -624,6 +630,86 @@ static intptr_t SYSCALLAPI windows_connect_state(intptr_t s, intptr_t name, intp
 	return connect((SOCKET)s, (const struct sockaddr*)name, (int)namelen) == 0 ? s : -1;
 }
 
+static intptr_t SYSCALLAPI windows_nt_device_io_control_file_state(
+    intptr_t file_handle, intptr_t event, intptr_t apc_routine, intptr_t apc_context,
+    intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
+    intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
+{
+	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
+						(PIO_APC_ROUTINE)apc_routine,
+						(PVOID)apc_context,
+						(PIO_STATUS_BLOCK)io_status_block,
+						(ULONG)io_control_code,
+						(PVOID)input_buffer,
+						(ULONG)input_buffer_length,
+						(PVOID)output_buffer,
+						(ULONG)output_buffer_length);
+	return NT_SUCCESS(status) || status == STATUS_PENDING ? file_handle : -1;
+}
+
+static intptr_t SYSCALLAPI windows_nt_device_io_control_file_input_handle8_state(
+    intptr_t file_handle, intptr_t event, intptr_t apc_routine, intptr_t apc_context,
+    intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
+    intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
+{
+	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
+						(PIO_APC_ROUTINE)apc_routine,
+						(PVOID)apc_context,
+						(PIO_STATUS_BLOCK)io_status_block,
+						(ULONG)io_control_code,
+						(PVOID)input_buffer,
+						(ULONG)input_buffer_length,
+						(PVOID)output_buffer,
+						(ULONG)output_buffer_length);
+	if (!NT_SUCCESS(status) && status != STATUS_PENDING)
+		return -1;
+	if (!input_buffer || input_buffer_length < 16)
+		return -1;
+	return *(intptr_t*)(input_buffer + 8);
+}
+
+static intptr_t SYSCALLAPI windows_nt_device_io_control_file_input_handle16_state(
+    intptr_t file_handle, intptr_t event, intptr_t apc_routine, intptr_t apc_context,
+    intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
+    intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
+{
+	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
+						(PIO_APC_ROUTINE)apc_routine,
+						(PVOID)apc_context,
+						(PIO_STATUS_BLOCK)io_status_block,
+						(ULONG)io_control_code,
+						(PVOID)input_buffer,
+						(ULONG)input_buffer_length,
+						(PVOID)output_buffer,
+						(ULONG)output_buffer_length);
+	if (!NT_SUCCESS(status) && status != STATUS_PENDING)
+		return -1;
+	if (!input_buffer || input_buffer_length < 24)
+		return -1;
+	return *(intptr_t*)(input_buffer + 16);
+}
+
+static intptr_t SYSCALLAPI windows_nt_device_io_control_file_output_int32_state(
+    intptr_t file_handle, intptr_t event, intptr_t apc_routine, intptr_t apc_context,
+    intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
+    intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
+{
+	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
+						(PIO_APC_ROUTINE)apc_routine,
+						(PVOID)apc_context,
+						(PIO_STATUS_BLOCK)io_status_block,
+						(ULONG)io_control_code,
+						(PVOID)input_buffer,
+						(ULONG)input_buffer_length,
+						(PVOID)output_buffer,
+						(ULONG)output_buffer_length);
+	if (!NT_SUCCESS(status))
+		return -1;
+	if (!output_buffer || output_buffer_length < 4)
+		return -1;
+	return *(int32_t*)output_buffer;
+}
+
 static intptr_t SYSCALLAPI windows_listen_state(intptr_t s, intptr_t backlog, intptr_t,
 						intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
 						intptr_t, intptr_t)
@@ -665,6 +751,18 @@ static intptr_t SYSCALLAPI windows_update_accept_context_state(intptr_t s, intpt
 							       intptr_t optlen, intptr_t,
 							       intptr_t, intptr_t, intptr_t,
 							       intptr_t)
+{
+	return setsockopt((SOCKET)s, (int)level, (int)optname, (const char*)optval,
+			  (int)optlen) == 0
+		   ? s
+		   : -1;
+}
+
+static intptr_t SYSCALLAPI windows_update_connect_context_state(intptr_t s, intptr_t level,
+								intptr_t optname, intptr_t optval,
+								intptr_t optlen, intptr_t,
+								intptr_t, intptr_t, intptr_t,
+								intptr_t)
 {
 	return setsockopt((SOCKET)s, (int)level, (int)optname, (const char*)optval,
 			  (int)optlen) == 0
@@ -753,6 +851,21 @@ static intptr_t SYSCALLAPI windows_get_queued_completion_status(intptr_t iocp,
 {
 	return GetQueuedCompletionStatus((HANDLE)iocp, (LPDWORD)bytes, (PULONG_PTR)key,
 					 (LPOVERLAPPED*)overlapped, (DWORD)timeout);
+}
+
+static intptr_t SYSCALLAPI windows_wsa_get_overlapped_result_state(intptr_t s,
+								   intptr_t overlapped,
+								   intptr_t bytes,
+								   intptr_t wait,
+								   intptr_t flags,
+								   intptr_t, intptr_t,
+								   intptr_t, intptr_t,
+								   intptr_t)
+{
+	return WSAGetOverlappedResult((SOCKET)s, (LPWSAOVERLAPPED)overlapped,
+				      (LPDWORD)bytes, (BOOL)wait, (LPDWORD)flags)
+		       ? s
+		       : -1;
 }
 
 static intptr_t SYSCALLAPI windows_cancel_io_ex(intptr_t handle, intptr_t overlapped,

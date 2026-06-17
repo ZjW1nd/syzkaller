@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/google/syzkaller/prog"
 	_ "github.com/google/syzkaller/sys" // trigger register.go init()
@@ -29,6 +31,9 @@ type windowsNyxConfig struct {
 }
 
 func main() {
+	write := flag.Bool("w", false, "rewrite executor/syscalls_windows_nyx_demo.h with current windows/amd64 target IDs")
+	flag.Parse()
+
 	t, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ERR:", err)
@@ -43,6 +48,15 @@ func main() {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ERR:", err)
 		os.Exit(1)
+	}
+	if *write {
+		kept, removed, err := rewriteSparseTable(t, services, "executor/syscalls_windows_nyx_demo.h")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "ERR:", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Rewrote executor/syscalls_windows_nyx_demo.h: kept=%d removed_stale=%d\n", kept, removed)
+		return
 	}
 	enabledUnmapped, err := enabledUnmappedCalls(t, sparse, "tools/syz-nyx-runner/windows-nyx-test.cfg")
 	if err != nil {
@@ -86,6 +100,77 @@ func readSparseEntries(path string) ([]sparseEntry, error) {
 	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].macro < entries[j].macro })
 	return entries, nil
+}
+
+func rewriteSparseTable(target *prog.Target, services []serviceEntry, path string) (int, int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	src := string(data)
+	stmtRe := regexp.MustCompile(`(?ms)^\s*syscalls\[(W32_[A-Z0-9_]+)\]\s*=\s*call_t\{"([^"]+)".*?;\n`)
+	matches := stmtRe.FindAllStringSubmatchIndex(src, -1)
+	if len(matches) == 0 {
+		return 0, 0, fmt.Errorf("no sparse syscall assignment statements found in %s", path)
+	}
+	var out strings.Builder
+	macroIDs := make(map[string]int)
+	last := 0
+	kept, removed := 0, 0
+	for _, match := range matches {
+		out.WriteString(src[last:match[0]])
+		stmt := src[match[0]:match[1]]
+		macro := src[match[2]:match[3]]
+		name := src[match[4]:match[5]]
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			removed++
+		} else {
+			macroIDs[macro] = meta.ID
+			out.WriteString(stmt)
+			kept++
+		}
+		last = match[1]
+	}
+	out.WriteString(src[last:])
+	src = out.String()
+
+	for _, entry := range services {
+		meta := target.SyscallMap[entry.targetName]
+		if meta == nil {
+			return 0, 0, fmt.Errorf("service entry target %q missing from windows/amd64 target", entry.targetName)
+		}
+		macroIDs[entry.macro] = meta.ID
+	}
+
+	include := `#include "windows_service_26200.h"`
+	includeAt := strings.Index(src, include)
+	if includeAt == -1 {
+		return 0, 0, fmt.Errorf("%s marker not found in %s", include, path)
+	}
+	before := src[:includeAt]
+	after := src[includeAt:]
+	defineRe := regexp.MustCompile(`(?m)^#define\s+W32_[A-Z0-9_]+\s+\d+\n`)
+	before = defineRe.ReplaceAllString(before, "")
+
+	macros := make([]string, 0, len(macroIDs))
+	for macro := range macroIDs {
+		macros = append(macros, macro)
+	}
+	sort.Strings(macros)
+	var defs strings.Builder
+	for _, macro := range macros {
+		fmt.Fprintf(&defs, "#define %-32s %d\n", macro, macroIDs[macro])
+	}
+
+	rewritten := strings.TrimRight(before, "\n") + "\n" + defs.String() + after
+	if rewritten == string(data) {
+		return kept, removed, nil
+	}
+	if err := os.WriteFile(path, []byte(rewritten), 0644); err != nil {
+		return 0, 0, err
+	}
+	return kept, removed, nil
 }
 
 func readServiceEntries(path string) ([]serviceEntry, error) {

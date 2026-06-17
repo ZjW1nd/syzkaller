@@ -1318,12 +1318,13 @@ static bool windows_net_injection_parse_tcp_frame(const char* data, size_t lengt
 	uint16 src_port = windows_net_load_be16(tcp);
 	uint16 dst_port = windows_net_load_be16(tcp + 2);
 	uint8 flags = (uint8)tcp[13];
+	bool is_syn = (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) == SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN;
+	bool is_synack = (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) == (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK);
 	if (src_ip != SYZ_WINDOWS_NET_INJECTION_LOCAL_IPV4 ||
 	    dst_ip != SYZ_WINDOWS_NET_INJECTION_PEER_IPV4 ||
 	    src_port != SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT ||
 	    dst_port != SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT ||
-	    (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) !=
-		(SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) {
+	    (!is_syn && !is_synack)) {
 		windows_nyx_log("windows net injection %s non-target tcp src=0x%x dst=0x%x sport=%u dport=%u flags=0x%02x attempt=%d\n",
 				owner, src_ip, dst_ip, src_port, dst_port, flags, attempt);
 		return false;

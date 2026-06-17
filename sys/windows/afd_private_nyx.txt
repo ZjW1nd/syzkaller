@@ -1,9 +1,863 @@
 # Controlled private afd.sys DeviceControl surface for Nyx experiments.
-# These variants intentionally reuse SOCKET_* endpoint states from socket_nyx.txt
-# instead of introducing a separate AFD endpoint handle resource.
+# AFD endpoint handles are opened directly with NtCreateFile + AfdOpenPacketXX
+# and then consumed by typed NtDeviceIoControlFile$afd_* variants.
+
+resource AFD_ENDPOINT[FILE_HANDLE]: INVALID_HANDLE_VALUE
+resource AFD_TCP[AFD_ENDPOINT]
+resource AFD_TCP_CREATED[AFD_TCP]
+resource AFD_TCP_CREATED_NONBLOCK[AFD_TCP]
+resource AFD_TCP_BOUND[AFD_TCP]
+resource AFD_TCP_BOUND_NONBLOCK[AFD_TCP]
+resource AFD_TCP_LISTENING[AFD_TCP]
+resource AFD_TCP_LISTENING_NONBLOCK[AFD_TCP]
+resource AFD_TCP_LISTEN_BACKLOG[AFD_TCP_LISTENING]
+resource AFD_TCP_LISTEN_BACKLOG_NONBLOCK[AFD_TCP_LISTENING_NONBLOCK]
+resource AFD_TCP_LISTENING_DELAYED[AFD_TCP_LISTEN_BACKLOG]
+resource AFD_TCP_LISTENING_DELAYED_NONBLOCK[AFD_TCP_LISTEN_BACKLOG_NONBLOCK]
+resource AFD_TCP_UNACCEPTED_CONNECTION[AFD_TCP_LISTEN_BACKLOG]
+resource AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK[AFD_TCP_LISTEN_BACKLOG_NONBLOCK]
+resource AFD_TCP_UNACCEPTED_CONNECTION_DELAYED[AFD_TCP_LISTENING_DELAYED]
+resource AFD_TCP_UNACCEPTED_CONNECTION_DELAYED_NONBLOCK[AFD_TCP_LISTENING_DELAYED_NONBLOCK]
+resource AFD_TCP_CONNECTED[AFD_TCP]
+resource AFD_TCP_CONNECTED_NONBLOCK[AFD_TCP]
+resource AFD_TCP_ACCEPTED[AFD_TCP_CONNECTED]
+resource AFD_TCP_ACCEPTED_NONBLOCK[AFD_TCP_ACCEPTED]
+resource AFD_TCP_TRANSMIT_PENDING[AFD_TCP_CONNECTED]
+resource AFD_TCP_TRANSMIT_PENDING_NONBLOCK[AFD_TCP_CONNECTED_NONBLOCK]
+resource AFD_TCP_ACCEPTED_TRANSMIT_PENDING[AFD_TCP_ACCEPTED]
+resource AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK[AFD_TCP_ACCEPTED_NONBLOCK]
+resource AFD_TCP_TRANSMIT_CLOSING[AFD_TCP_CONNECTED]
+resource AFD_TCP_TRANSMIT_CLOSING_NONBLOCK[AFD_TCP_CONNECTED_NONBLOCK]
+resource AFD_TCP_ACCEPTED_TRANSMIT_CLOSING[AFD_TCP_ACCEPTED]
+resource AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK[AFD_TCP_ACCEPTED_NONBLOCK]
+resource AFD_TCP_CONTEXT[AFD_TCP]
+resource AFD_TCP_SEND_CONNECT_DATA[AFD_TCP]
+resource AFD_TCP_SEND_CONNECT_OPTIONS[AFD_TCP]
+resource AFD_TCP_SEND_DISCONNECT_DATA[AFD_TCP]
+resource AFD_TCP_SEND_DISCONNECT_OPTIONS[AFD_TCP]
+resource AFD_TCP_RECEIVE_CONNECT_DATA[AFD_TCP]
+resource AFD_TCP_RECEIVE_CONNECT_OPTIONS[AFD_TCP]
+resource AFD_TCP_RECEIVE_DISCONNECT_DATA[AFD_TCP]
+resource AFD_TCP_RECEIVE_DISCONNECT_OPTIONS[AFD_TCP]
+resource AFD_TCP_ACCEPT_PENDING[AFD_TCP]
+resource AFD_TCP_ACCEPT_PENDING_NONBLOCK[AFD_TCP_ACCEPT_PENDING]
+resource AFD_TCP_PREACCEPTED_CONNECTION[AFD_TCP_ACCEPT_PENDING]
+resource AFD_TCP_PREACCEPTED_CONNECTION_NONBLOCK[AFD_TCP_ACCEPT_PENDING_NONBLOCK]
+resource AFD_TCP_LISTEN_IRP_PENDING[AFD_TCP_LISTENING]
+resource AFD_TCP_LISTEN_IRP_PENDING_NONBLOCK[AFD_TCP_LISTENING_NONBLOCK]
+resource AFD_TCP_LISTEN_IRP_PENDING_LIFO[AFD_TCP_LISTEN_IRP_PENDING]
+resource AFD_TCP_LISTEN_IRP_PENDING_LIFO_NONBLOCK[AFD_TCP_LISTEN_IRP_PENDING_NONBLOCK]
+resource AFD_TCP_DISCONNECTED[AFD_TCP]
+resource AFD_UDP[AFD_ENDPOINT]
+resource AFD_UDP_CREATED[AFD_UDP]
+resource AFD_UDP_CREATED_NONBLOCK[AFD_UDP]
+resource AFD_UDP_BOUND[AFD_UDP]
+resource AFD_UDP_BOUND_NONBLOCK[AFD_UDP]
+resource AFD_UDP_PEERED[AFD_UDP]
+resource AFD_UDP_PEERED_NONBLOCK[AFD_UDP]
+resource AFD_UDP_CONTEXT[AFD_UDP]
+resource AFD_UDP_SEND_CONNECT_DATA[AFD_UDP]
+resource AFD_UDP_SEND_CONNECT_OPTIONS[AFD_UDP]
+resource AFD_UDP_SEND_DISCONNECT_DATA[AFD_UDP]
+resource AFD_UDP_SEND_DISCONNECT_OPTIONS[AFD_UDP]
+resource AFD_UDP_RECEIVE_CONNECT_DATA[AFD_UDP]
+resource AFD_UDP_RECEIVE_CONNECT_OPTIONS[AFD_UDP]
+resource AFD_UDP_RECEIVE_DISCONNECT_DATA[AFD_UDP]
+resource AFD_UDP_RECEIVE_DISCONNECT_OPTIONS[AFD_UDP]
+resource AFD_UDP_ADDRESS_LIST_CHANGE_PENDING[AFD_UDP_BOUND]
+resource AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK[AFD_UDP_BOUND_NONBLOCK]
+resource AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING[AFD_UDP_PEERED]
+resource AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK[AFD_UDP_PEERED_NONBLOCK]
+resource AFD_RIO_RD[AFD_ENDPOINT]
+resource AFD_RIO_ENDPOINT_CAPABLE[AFD_ENDPOINT]
+resource AFD_RIO_CQ[int32]: 0
+resource AFD_RIO_BUFFER[int32]: 0
+resource AFD_RIO_RQPAIR[AFD_RIO_ENDPOINT_CAPABLE]
+resource AFD_TLI_ENDPOINT[AFD_ENDPOINT]
+resource AFD_TLI_QOS[AFD_TLI_ENDPOINT]
+resource AFD_TLI_PENDING[AFD_TLI_ENDPOINT]
+resource AFD_TCP_QOS[AFD_TCP]
+resource AFD_UDP_QOS[AFD_UDP]
+resource AFD_VALIDATED_GROUP[int32]
+resource AFD_TCP_SUPERDISCONNECT_PENDING[AFD_TCP_CONNECTED]
+resource AFD_TCP_SUPERDISCONNECT_PENDING_NONBLOCK[AFD_TCP_CONNECTED_NONBLOCK]
+resource AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING[AFD_TCP_ACCEPTED]
+resource AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING_NONBLOCK[AFD_TCP_ACCEPTED_NONBLOCK]
+resource AFD_SAN_HELPER[AFD_ENDPOINT]
+resource AFD_SAN_ENDPOINT[AFD_ENDPOINT]
+resource AFD_SAN_CONTEXT[AFD_SAN_ENDPOINT]
+resource AFD_SAN_REQUEST[AFD_SAN_ENDPOINT]
+resource AFD_SAN_SERVICE[AFD_SAN_HELPER]
+resource AFD_SOCKET_TRANSFER_ACTIVE[AFD_ENDPOINT]
+resource AFD_NOTIFY_REGISTRATION[AFD_ENDPOINT]
+resource AFD_TRANSMIT_FILE_HANDLE[FILE_HANDLE]: INVALID_HANDLE_VALUE
+resource AFD_ACCEPT_SEQUENCE[int32]: 0
+resource AFD_TCP_RETURNED_CONNECTION[AFD_ACCEPT_SEQUENCE]
+resource AFD_TCP_RETURNED_CONNECTION_NONBLOCK[AFD_TCP_RETURNED_CONNECTION]
+resource AFD_TCP_RETURNED_CONNECTION_DELAYED[AFD_TCP_RETURNED_CONNECTION]
+resource AFD_TCP_RETURNED_CONNECTION_DELAYED_NONBLOCK[AFD_TCP_RETURNED_CONNECTION_NONBLOCK]
 
 afd_poll_events = 0x1, 0x2, 0x4, 0x8, 0x10, 0x20, 0x40, 0x80, 0x100, 0x200, 0x3ff
 afd_query_handles_flags = 0x1, 0x2, 0x3
+afd_bind_share_access = 0, 1, 2, 3
+afd_flags = 0, 0x1, 0x2, 0x3
+afd_recv_tdi_flags = 0x20, 0x40
+afd_send_tdi_flags = 0, 0x20, 0x40
+afd_partial_disconnect_mode = 0x1, 0x2, 0x3, 0x4, 0x8, 0xf
+afd_information_type = 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15
+afd_tli_type12_request_flags = 0, 1, 2, 3, 0x10000
+afd_tli_safe_control_code = 0x2000747a, 0x4004747b, 0x8800000b, 0x8800001a, 0xc8000019
+afd_super_disconnect_flags = 0, 0x2
+afd_notify_event_filter = 0x1, 0x2, 0x4, 0x7
+afd_notify_trigger_flags = 0x5, 0x6, 0x9, 0xa
+afd_notify_operation = 0x1, 0x2, 0x3, 0x6, 0x7
+afd_san_event_bits = 0, 0x1, 0x2, 0x4, 0x7f
+afd_security_information = 0x1, 0x2, 0x4, 0x7
+
+AFD_DEVICE_NAME {
+	C0	const[0x5c, int16]
+	C1	const[0x44, int16]
+	C2	const[0x65, int16]
+	C3	const[0x76, int16]
+	C4	const[0x69, int16]
+	C5	const[0x63, int16]
+	C6	const[0x65, int16]
+	C7	const[0x5c, int16]
+	C8	const[0x41, int16]
+	C9	const[0x66, int16]
+	C10	const[0x64, int16]
+	C11	const[0x0, int16]
+} [size[24]]
+
+UNICODE_STRING_AFD_DEVICE {
+	Length		const[22, int16]
+	MaximumLength	const[24, int16]
+	Pad0		const[0, int32]
+	Buffer		ptr[in, AFD_DEVICE_NAME]
+} [size[16]]
+
+OBJECT_ATTRIBUTES_AFD_DEVICE {
+	Length			const[48, int32]
+	Pad0			const[0, int32]
+	RootDirectory		const[0, intptr]
+	ObjectName		ptr[in, UNICODE_STRING_AFD_DEVICE]
+	Attributes		const[0x40, int32]
+	Pad1			const[0, int32]
+	SecurityDescriptor	const[0, intptr]
+	SecurityQualityOfService	const[0, intptr]
+} [size[48]]
+
+SECURITY_DESCRIPTOR_RELATIVE_NULL_DACL {
+	Revision	const[1, int8]
+	Sbz1		const[0, int8]
+	Control		const[0x8004, int16]
+	Owner		const[0, int32]
+	Group		const[0, int32]
+	Sacl		const[0, int32]
+	Dacl		const[0, int32]
+} [size[20]]
+
+AFD_OPEN_PACKET_EA_NAME {
+	C0	const['A', int8]
+	C1	const['f', int8]
+	C2	const['d', int8]
+	C3	const['O', int8]
+	C4	const['p', int8]
+	C5	const['e', int8]
+	C6	const['n', int8]
+	C7	const['P', int8]
+	C8	const['a', int8]
+	C9	const['c', int8]
+	C10	const['k', int8]
+	C11	const['e', int8]
+	C12	const['t', int8]
+	C13	const['X', int8]
+	C14	const['X', int8]
+	C15	const[0, int8]
+} [size[16]]
+
+AFD_OPEN_PACKET_TCP {
+	EndpointFlags			const[0, int32]
+	GroupID				const[0, int32]
+	AddressFamily			const[2, int32]
+	SocketType			const[1, int32]
+	Protocol			const[6, int32]
+	TransportDeviceNameLength	const[0, int32]
+} [size[24]]
+
+AFD_OPEN_PACKET_UDP {
+	EndpointFlags			const[1, int32]
+	GroupID				const[0, int32]
+	AddressFamily			const[2, int32]
+	SocketType			const[2, int32]
+	Protocol			const[17, int32]
+	TransportDeviceNameLength	const[0, int32]
+} [size[24]]
+
+AFD_OPEN_PACKET_RIO_TCP {
+	EndpointFlags			const[0x10000000, int32]
+	GroupID				const[0, int32]
+	AddressFamily			const[2, int32]
+	SocketType			const[1, int32]
+	Protocol			const[6, int32]
+	TransportDeviceNameLength	const[0, int32]
+} [size[24]]
+
+AFD_OPEN_PACKET_DIRECT_TL_TCP {
+	EndpointFlags			const[0x10000000, int32]
+	GroupID				const[0, int32]
+	AddressFamily			const[2, int32]
+	SocketType			const[1, int32]
+	Protocol			const[6, int32]
+	TransportDeviceNameLength	const[0, int32]
+} [size[24]]
+
+FILE_FULL_EA_INFORMATION_AFD_OPEN_TCP {
+	NextEntryOffset	const[0, int32]
+	Flags		const[0, int8]
+	EaNameLength	const[15, int8]
+	EaValueLength	const[24, int16]
+	EaName		AFD_OPEN_PACKET_EA_NAME
+	EaValue		AFD_OPEN_PACKET_TCP
+} [size[48]]
+
+FILE_FULL_EA_INFORMATION_AFD_OPEN_UDP {
+	NextEntryOffset	const[0, int32]
+	Flags		const[0, int8]
+	EaNameLength	const[15, int8]
+	EaValueLength	const[24, int16]
+	EaName		AFD_OPEN_PACKET_EA_NAME
+	EaValue		AFD_OPEN_PACKET_UDP
+} [size[48]]
+
+FILE_FULL_EA_INFORMATION_AFD_OPEN_RIO_TCP {
+	NextEntryOffset	const[0, int32]
+	Flags		const[0, int8]
+	EaNameLength	const[15, int8]
+	EaValueLength	const[24, int16]
+	EaName		AFD_OPEN_PACKET_EA_NAME
+	EaValue		AFD_OPEN_PACKET_RIO_TCP
+} [size[48]]
+
+FILE_FULL_EA_INFORMATION_AFD_OPEN_TLI_TCP {
+	NextEntryOffset	const[0, int32]
+	Flags		const[0, int8]
+	EaNameLength	const[15, int8]
+	EaValueLength	const[24, int16]
+	EaName		AFD_OPEN_PACKET_EA_NAME
+	EaValue		AFD_OPEN_PACKET_DIRECT_TL_TCP
+} [size[48]]
+
+AFD_SW_OPEN_PACKET_EA_NAME {
+	C0	const['A', int8]
+	C1	const['f', int8]
+	C2	const['d', int8]
+	C3	const['S', int8]
+	C4	const['w', int8]
+	C5	const['O', int8]
+	C6	const['p', int8]
+	C7	const['e', int8]
+	C8	const['n', int8]
+	C9	const['P', int8]
+	C10	const['a', int8]
+	C11	const['c', int8]
+	C12	const['k', int8]
+	C13	const['e', int8]
+	C14	const['t', int8]
+	C15	const[0, int8]
+} [size[16]]
+
+FILE_FULL_EA_INFORMATION_AFD_SW_OPEN {
+	NextEntryOffset	const[0, int32]
+	Flags		const[0, int8]
+	EaNameLength	const[15, int8]
+	EaValueLength	const[0, int16]
+	EaName		AFD_SW_OPEN_PACKET_EA_NAME
+} [size[24]]
+
+AFD_RIO_RD_OPEN_PACKET_EA_NAME {
+	C0	const['A', int8]
+	C1	const['f', int8]
+	C2	const['d', int8]
+	C3	const['R', int8]
+	C4	const['i', int8]
+	C5	const['o', int8]
+	C6	const['R', int8]
+	C7	const['D', int8]
+	C8	const['O', int8]
+	C9	const['p', int8]
+	C10	const['e', int8]
+	C11	const['n', int8]
+	C12	const['P', int8]
+	C13	const['a', int8]
+	C14	const['c', int8]
+	C15	const['k', int8]
+	C16	const['e', int8]
+	C17	const['t', int8]
+	C18	const[0, int8]
+} [size[19]]
+
+FILE_FULL_EA_INFORMATION_AFD_RIO_RD_OPEN {
+	NextEntryOffset	const[0, int32]
+	Flags		const[0, int8]
+	EaNameLength	const[18, int8]
+	EaValueLength	const[0, int16]
+	EaName		AFD_RIO_RD_OPEN_PACKET_EA_NAME
+	Pad0		const[0, int8]
+} [size[28]]
+
+LARGE_INTEGER_ZERO [
+	QuadPart	const[0, int64]
+	Parts		LARGE_INTEGER_ZERO_PARTS
+]
+
+LARGE_INTEGER_ZERO_PARTS {
+	LowPart		const[0, int32]
+	HighPart	const[0, int32]
+}
+
+AFD_BIND_INFO_TL {
+	ShareAccess	flags[afd_bind_share_access, int32]
+	Address		sockaddr_in
+} [size[20]]
+
+AFD_CONNECT_JOIN_INFO_TL {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 7]
+	RootEndpoint	const[0, intptr]
+	ConnectEndpoint	const[0, intptr]
+	RemoteAddress	sockaddr_in
+} [size[40]]
+
+AFD_CONNECT_JOIN_INFO_TL_LISTENER {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 7]
+	RootEndpoint	const[0, intptr]
+	Listener	AFD_TCP_LISTEN_BACKLOG
+	RemoteAddress	sockaddr_in
+} [size[40]]
+
+AFD_CONNECT_JOIN_INFO_TL_LISTENER_NONBLOCK {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 7]
+	RootEndpoint	const[0, intptr]
+	Listener	AFD_TCP_LISTEN_BACKLOG_NONBLOCK
+	RemoteAddress	sockaddr_in
+} [size[40]]
+
+AFD_CONNECT_JOIN_INFO_TL_LISTENER_DELAYED {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 7]
+	RootEndpoint	const[0, intptr]
+	Listener	AFD_TCP_LISTENING_DELAYED
+	RemoteAddress	sockaddr_in
+} [size[40]]
+
+AFD_CONNECT_JOIN_INFO_TL_LISTENER_DELAYED_NONBLOCK {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 7]
+	RootEndpoint	const[0, intptr]
+	Listener	AFD_TCP_LISTENING_DELAYED_NONBLOCK
+	RemoteAddress	sockaddr_in
+} [size[40]]
+
+AFD_TRANSPORT_ADDRESS_IPV4 {
+	TAAddressCount	const[1, int32]
+	AddressLength	const[16, int16]
+	AddressType	const[2, int16]
+	Address		sockaddr_in
+} [size[24]]
+
+AFD_TRANSPORT_ADDRESS_IPV4_PAIR {
+	TAAddressCount		const[2, int32]
+	RemoteAddressLength	const[16, int16]
+	RemoteAddressType	const[2, int16]
+	RemoteAddress		sockaddr_in
+	LocalAddressLength	const[16, int16]
+	LocalAddressType	const[2, int16]
+	LocalAddress		sockaddr_in
+} [size[44]]
+
+AFD_VALIDATE_GROUP_INFO {
+	GroupIndex	int32[0:64]
+	RemoteAddress	AFD_TRANSPORT_ADDRESS_IPV4
+} [size[28]]
+
+AFD_VALIDATE_GROUP_INFO_VALIDATED {
+	GroupIndex	AFD_VALIDATED_GROUP
+	RemoteAddress	AFD_TRANSPORT_ADDRESS_IPV4
+} [size[28]]
+
+AFD_SUPER_CONNECT_INFO_TDI {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 3]
+	RemoteAddress	AFD_TRANSPORT_ADDRESS_IPV4
+} [size[28]]
+
+AFD_SUPER_CONNECT_INFO_TL {
+	SanActive	const[1, int8]
+	Pad0		array[const[0, int8], 9]
+	RemoteAddress	sockaddr_in
+} [size[28]]
+
+AFD_LISTEN_INFO {
+	SanActive		const[0, int8]
+	Pad0			array[const[0, int8], 3]
+	MaximumConnectionQueue	int32[1:200]
+	UseDelayedAcceptance	const[0, int8]
+	Pad1			array[const[0, int8], 3]
+} [size[12]]
+
+AFD_LISTEN_INFO_DELAYED {
+	SanActive		const[0, int8]
+	Pad0			array[const[0, int8], 3]
+	MaximumConnectionQueue	int32[1:200]
+	UseDelayedAcceptance	const[1, int8]
+	Pad1			array[const[0, int8], 3]
+} [size[12]]
+
+AFD_WAIT_FOR_LISTEN_INFO {
+	SequenceNumber	int32
+	RemoteAddress	sockaddr_in
+} [size[20]]
+
+AFD_ACCEPT_INFO_TCP {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 3]
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION
+	AcceptHandle	AFD_TCP_CREATED
+} [size[16]]
+
+AFD_ACCEPT_INFO_TCP_NONBLOCK {
+	SanActive	const[0, int8]
+	Pad0		array[const[0, int8], 3]
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION_NONBLOCK
+	AcceptHandle	AFD_TCP_CREATED_NONBLOCK
+} [size[16]]
+
+AFD_DEFER_ACCEPT_INFO_REQUEUE_DELAYED {
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION_DELAYED
+	RejectConnection	const[0, int8]
+	Pad0		array[const[0, int8], 3]
+} [size[8]]
+
+AFD_DEFER_ACCEPT_INFO_REQUEUE_DELAYED_NONBLOCK {
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION_DELAYED_NONBLOCK
+	RejectConnection	const[0, int8]
+	Pad0		array[const[0, int8], 3]
+} [size[8]]
+
+AFD_DEFER_ACCEPT_INFO_REJECT_DELAYED {
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION_DELAYED
+	RejectConnection	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+} [size[8]]
+
+AFD_DEFER_ACCEPT_INFO_REJECT_DELAYED_NONBLOCK {
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION_DELAYED_NONBLOCK
+	RejectConnection	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+} [size[8]]
+
+AFD_SUPER_ACCEPT_INFO_TCP {
+	SanActive		const[0, int8]
+	UseDelayedAcceptance	const[0, int8]
+	Pad0			array[const[0, int8], 6]
+	AcceptHandle		AFD_TCP_CREATED
+	ReceiveDataLength	const[0, int32]
+	LocalAddressLength	const[32, int32]
+	RemoteAddressLength	const[32, int32]
+} [size[32]]
+
+AFD_SUPER_ACCEPT_INFO_TCP_NONBLOCK {
+	SanActive		const[0, int8]
+	UseDelayedAcceptance	const[0, int8]
+	Pad0			array[const[0, int8], 6]
+	AcceptHandle		AFD_TCP_CREATED_NONBLOCK
+	ReceiveDataLength	const[0, int32]
+	LocalAddressLength	const[32, int32]
+	RemoteAddressLength	const[32, int32]
+} [size[32]]
+
+AFD_SUPER_ACCEPT_SOCKADDR {
+	Address	sockaddr_in
+	Pad0	array[int8, 16]
+} [size[32]]
+
+AFD_SUPER_ACCEPT_OUTPUT {
+	LocalAddress	AFD_SUPER_ACCEPT_SOCKADDR
+	RemoteAddress	AFD_SUPER_ACCEPT_SOCKADDR
+} [size[64]]
+
+AFD_UNACCEPTED_CONNECT_DATA_QUERY {
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION
+	Pad0		const[0, int32]
+	QueryLengthOnly	const[1, int32]
+} [size[12]]
+
+AFD_UNACCEPTED_CONNECT_DATA_RESULT {
+	SequenceNumber	AFD_ACCEPT_SEQUENCE
+	ConnectDataLength	int32
+	QueryLengthOnly	const[1, int32]
+} [size[12]]
+
+AFD_CONNECT_DATA_RETURNED_TARGET {
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION
+	Pad0		const[0, int32]
+	Pad1		const[0, int32]
+} [size[12]]
+
+AFD_CONNECT_DATA_RETURNED_LENGTH_QUERY {
+	SequenceNumber	AFD_TCP_RETURNED_CONNECTION
+	Pad0		const[0, int32]
+	QueryLengthOnly	const[1, int32]
+} [size[12]]
+
+AFD_CONNECT_DATA_LENGTH_RESULT {
+	SequenceNumber	AFD_ACCEPT_SEQUENCE
+	ConnectDataLength	int32
+	QueryLengthOnly	const[1, int32]
+} [size[12]]
+
+AFD_CONNECT_DATA_LENGTH {
+	Length	int32[1:256]
+} [size[4]]
+
+AFD_WSABUF_IN {
+	len	bytesize[buf, int32]
+	buf	ptr[in, array[int8, 0:256]]
+} [size[16]]
+
+AFD_WSABUF_OUT {
+	len	bytesize[buf, int32]
+	buf	ptr[out, array[int8, 0:256]]
+} [size[16]]
+
+AFD_SEND_INFO {
+	BufferArray	ptr[in, array[AFD_WSABUF_IN, 1]]
+	BufferCount	const[1, int32]
+	AfdFlags	flags[afd_flags, int32]
+	TdiFlags	flags[afd_send_tdi_flags, int32]
+	Pad0		const[0, int32]
+} [size[24]]
+
+AFD_RECV_INFO {
+	BufferArray	ptr[in, array[AFD_WSABUF_OUT, 1]]
+	BufferCount	const[1, int32]
+	AfdFlags	flags[afd_flags, int32]
+	TdiFlags	flags[afd_recv_tdi_flags, int32]
+	Pad0		const[0, int32]
+} [size[24]]
+
+AFD_DATAGRAM_INFO {
+	BufferArray	ptr[in, array[AFD_WSABUF_OUT, 1]]
+	BufferCount	const[1, int32]
+	AfdFlags	flags[afd_flags, int32]
+	TdiFlags	flags[afd_recv_tdi_flags, int32]
+	Pad0		const[0, int32]
+	Address		ptr[out, sockaddr_in]
+	AddressLength	ptr[inout, len[Address, int32]]
+} [size[40]]
+
+TDI_REQUEST_SEND_DATAGRAM_AFD {
+	SendDatagramInformation	ptr[in, TDI_CONNECTION_INFORMATION_AFD]
+} [size[8]]
+
+TDI_CONNECTION_INFORMATION_AFD {
+	UserDataLength		const[0, int32]
+	Pad0			const[0, int32]
+	UserData		const[0, intptr]
+	OptionsLength		const[0, int32]
+	Pad1			const[0, int32]
+	Options			const[0, intptr]
+	RemoteAddressLength	bytesize[RemoteAddress, int32]
+	Pad2			const[0, int32]
+	RemoteAddress		ptr[in, sockaddr_in]
+} [size[48]]
+
+AFD_SEND_DATAGRAM_INFO {
+	BufferArray	ptr[in, array[AFD_WSABUF_IN, 1]]
+	BufferCount	const[1, int32]
+	AfdFlags	flags[afd_flags, int32]
+	TdiRequest	TDI_REQUEST_SEND_DATAGRAM_AFD
+	TdiConnInfo	TDI_CONNECTION_INFORMATION_AFD
+} [size[72]]
+
+AFD_SEND_MESSAGE_INFO_CONNECTED {
+	BufferArray	ptr[in, array[AFD_WSABUF_IN, 1]]
+	BufferCount	const[1, int32]
+	AfdFlags	flags[afd_flags, int32]
+	TdiFlags	flags[afd_send_tdi_flags, int32]
+	Pad0		const[0, int32]
+	DataBuffer	const[0, intptr]
+	DataLength	const[0, int32]
+	Pad1		const[0, int32]
+	ControlBuffer	ptr[in, array[int8, 0:128], opt]
+	ControlLength	bytesize[ControlBuffer, int32]
+	Pad2		const[0, int32]
+	Reserved	const[0, intptr]
+} [size[64]]
+
+AFD_SEND_MESSAGE_INFO_DATAGRAM {
+	BufferArray	ptr[in, array[AFD_WSABUF_IN, 1]]
+	BufferCount	const[1, int32]
+	AfdFlags	flags[afd_flags, int32]
+	TdiFlags	flags[afd_send_tdi_flags, int32]
+	Pad0		const[0, int32]
+	DataBuffer	ptr[in, sockaddr_in]
+	DataLength	bytesize[DataBuffer, int32]
+	Pad1		const[0, int32]
+	ControlBuffer	ptr[in, array[int8, 0:128], opt]
+	ControlLength	bytesize[ControlBuffer, int32]
+	Pad2		const[0, int32]
+	Reserved	const[0, intptr]
+} [size[64]]
+
+AFD_RECV_MESSAGE_INFO {
+	DatagramInfo	AFD_DATAGRAM_INFO
+	ControlBuffer	ptr[out, array[int8, 0:128]]
+	ControlLength	ptr[inout, len[ControlBuffer, int32]]
+	MsgFlags	ptr[inout, int32]
+} [size[64]]
+
+AFD_TRANSMIT_FILE_STATUS {
+	FileAccessFailed	int8
+} [size[1]]
+
+AFD_TRANSMIT_FILE_INFO_FILE {
+	Offset			LARGE_INTEGER_ZERO
+	WriteLength		const[0, int64]
+	SendPacketLength	const[0, int32]
+	Pad0			const[0, int32]
+	FileHandle		AFD_TRANSMIT_FILE_HANDLE
+	Head			const[0, intptr]
+	HeadLength		const[0, int32]
+	Pad1			const[0, int32]
+	Tail			const[0, intptr]
+	TailLength		const[0, int32]
+	Flags			const[0, int32]
+} [size[64]]
+
+AFD_TRANSMIT_FILE_INFO_FILE_DISCONNECT {
+	Offset			LARGE_INTEGER_ZERO
+	WriteLength		const[0, int64]
+	SendPacketLength	const[0, int32]
+	Pad0			const[0, int32]
+	FileHandle		AFD_TRANSMIT_FILE_HANDLE
+	Head			const[0, intptr]
+	HeadLength		const[0, int32]
+	Pad1			const[0, int32]
+	Tail			const[0, intptr]
+	TailLength		const[0, int32]
+	Flags			const[0x1, int32]
+} [size[64]]
+
+AFD_TRANSMIT_FILE_INFO_FILE_REUSE {
+	Offset			LARGE_INTEGER_ZERO
+	WriteLength		const[0, int64]
+	SendPacketLength	const[0, int32]
+	Pad0			const[0, int32]
+	FileHandle		AFD_TRANSMIT_FILE_HANDLE
+	Head			const[0, intptr]
+	HeadLength		const[0, int32]
+	Pad1			const[0, int32]
+	Tail			const[0, intptr]
+	TailLength		const[0, int32]
+	Flags			const[0x2, int32]
+} [size[64]]
+
+AFD_TRANSMIT_FILE_INFO_BUFFERS {
+	Offset			LARGE_INTEGER_ZERO
+	WriteLength		const[0, int64]
+	SendPacketLength	const[0, int32]
+	Pad0			const[0, int32]
+	FileHandle		const[0, intptr]
+	Head			ptr[in, array[int8, 1:256]]
+	HeadLength		bytesize[Head, int32]
+	Pad1			const[0, int32]
+	Tail			ptr[in, array[int8, 0:256]]
+	TailLength		bytesize[Tail, int32]
+	Flags			const[0, int32]
+} [size[64]]
+
+AFD_TPACKETS_ELEMENT_MEMORY {
+	Flags		const[0x5, int32]
+	Length		bytesize[Buffer, int32]
+	Buffer		ptr[in, array[int8, 1:256]]
+	Reserved	const[0, intptr]
+} [size[24]]
+
+AFD_TPACKETS_ELEMENT_FILE {
+	Flags		const[0x6, int32]
+	Length		const[0, int32]
+	FileOffset	LARGE_INTEGER_ZERO
+	FileHandle	AFD_TRANSMIT_FILE_HANDLE
+} [size[24]]
+
+AFD_TPACKETS_INFO_MEMORY {
+	ElementArray	ptr[in, array[AFD_TPACKETS_ELEMENT_MEMORY, 1]]
+	ElementCount	const[1, int32]
+	SendSize	const[0, int32]
+	Flags		const[0, int32]
+	Pad0		const[0, int32]
+} [size[24]]
+
+AFD_TPACKETS_INFO_MEMORY_DISCONNECT {
+	ElementArray	ptr[in, array[AFD_TPACKETS_ELEMENT_MEMORY, 1]]
+	ElementCount	const[1, int32]
+	SendSize	const[0, int32]
+	Flags		const[0x1, int32]
+	Pad0		const[0, int32]
+} [size[24]]
+
+AFD_TPACKETS_INFO_MEMORY_REUSE {
+	ElementArray	ptr[in, array[AFD_TPACKETS_ELEMENT_MEMORY, 1]]
+	ElementCount	const[1, int32]
+	SendSize	const[0, int32]
+	Flags		const[0x2, int32]
+	Pad0		const[0, int32]
+} [size[24]]
+
+AFD_TPACKETS_INFO_FILE {
+	ElementArray	ptr[in, array[AFD_TPACKETS_ELEMENT_FILE, 1]]
+	ElementCount	const[1, int32]
+	SendSize	const[0, int32]
+	Flags		const[0, int32]
+	Pad0		const[0, int32]
+} [size[24]]
+
+AFD_RIO_CQ_ENTRY {
+	RequestContext	intptr
+	Status		int32
+	BytesTransferred	int32
+	SocketContext	intptr
+} [size[24]]
+
+AFD_RIO_CQ_QUEUE_4 {
+	Head		const[0, int32]
+	Tail		const[0, int32]
+	Flags		const[0, int32]
+	Pad0		const[0, int32]
+	Entries		array[AFD_RIO_CQ_ENTRY, 4]
+} [size[112]]
+
+AFD_RIO_RQ_QUEUE_2 {
+	Header		array[const[0, int8], 16]
+	Entries		array[int8, 144]
+} [size[160]]
+
+AFD_RIO_CREATE_CQ {
+	Operation	const[0, int32]
+	QueueSize	const[4, int32]
+	NotifyFlags	const[0, int32]
+	Pad0		const[0, int32]
+	Event		const[0, intptr]
+	CompletionContext	const[0, intptr]
+	UserContext	const[0, intptr]
+	Flags		const[0, int32]
+	Pad1		const[0, int32]
+	QueueBuffer	ptr[inout, AFD_RIO_CQ_QUEUE_4]
+} [size[56]]
+
+AFD_RIO_DESTROY_CQ {
+	Operation	const[1, int32]
+	CqId		AFD_RIO_CQ
+} [size[8]]
+
+AFD_RIO_NOTIFY_CQ {
+	Operation	const[2, int32]
+	CqId		AFD_RIO_CQ
+} [size[8]]
+
+AFD_RIO_REGISTER_BUFFER {
+	Operation	const[4, int32]
+	Pad0		const[0, int32]
+	Buffer		ptr[in, array[int8, 1:256]]
+	Length		bytesize[Buffer, int32]
+	Pad1		const[0, int32]
+} [size[24]]
+
+AFD_RIO_DEREGISTER_BUFFER {
+	Operation	const[5, int32]
+	BufferId	AFD_RIO_BUFFER
+} [size[8]]
+
+AFD_RIO_RESIZE_CQ {
+	Operation	const[8, int32]
+	CqId		AFD_RIO_CQ
+	QueueSize	const[4, int32]
+	QueueBufferSize	const[112, int32]
+	QueueBuffer	ptr[inout, AFD_RIO_CQ_QUEUE_4]
+} [size[24]]
+
+AFD_RIO_CREATE_RQPAIR {
+	Operation		const[3, int32]
+	SendCqId		AFD_RIO_CQ
+	RecvCqId		AFD_RIO_CQ
+	SendQueueSize		const[2, int32]
+	SendQueueBufferSize	const[160, int32]
+	Pad0			const[0, int32]
+	SendQueueBuffer	ptr[inout, AFD_RIO_RQ_QUEUE_2]
+	RecvQueueSize		const[2, int32]
+	RecvQueueBufferSize	const[160, int32]
+	RecvQueueBuffer	ptr[inout, AFD_RIO_RQ_QUEUE_2]
+	RegistrationDomain	AFD_RIO_RD
+	Context			const[0, intptr]
+} [size[64]]
+
+AFD_RIO_OPCODE_FLUSH_SEND {
+	Operation	const[6, int32]
+} [size[4]]
+
+AFD_RIO_OPCODE_FLUSH_RECEIVE {
+	Operation	const[7, int32]
+} [size[4]]
+
+AFD_RIO_RESIZE_RQPAIR {
+	Operation		const[9, int32]
+	SendQueueSize		const[2, int32]
+	SendQueueBufferSize	const[160, int32]
+	Pad0			const[0, int32]
+	SendQueueBuffer	ptr[inout, AFD_RIO_RQ_QUEUE_2]
+	RecvQueueSize		const[2, int32]
+	RecvQueueBufferSize	const[160, int32]
+	RecvQueueBuffer	ptr[inout, AFD_RIO_RQ_QUEUE_2]
+} [size[40]]
+
+AFD_PARTIAL_DISCONNECT_INFO {
+	DisconnectMode	flags[afd_partial_disconnect_mode, int32]
+	Pad0		const[0, int32]
+	Timeout		LARGE_INTEGER_ZERO
+} [size[16]]
+
+AFD_PARTIAL_DISCONNECT_INFO_UNCONNECT_DATAGRAM {
+	DisconnectMode	const[0x8, int32]
+	Pad0		const[0, int32]
+	Timeout		LARGE_INTEGER_ZERO
+} [size[16]]
+
+AFD_UNBIND_INFO_TCP {
+	AddressFamily	const[2, int32]
+	Protocol	const[6, int32]
+} [size[8]]
+
+AFD_UNBIND_INFO_UDP {
+	AddressFamily	const[2, int32]
+	Protocol	const[17, int32]
+} [size[8]]
+
+AFD_INFORMATION_BOOLEAN_NONBLOCK {
+	InformationType	const[2, int32]
+	Pad0		const[0, int32]
+	Boolean		bool8
+	Pad1		array[const[0, int8], 7]
+} [size[16]]
+
+AFD_INFORMATION_QUERY {
+	InformationType	flags[afd_information_type, int32]
+	Pad0		const[0, int32]
+	Information	array[int8, 8]
+} [size[16]]
 
 AFD_RECEIVE_INFORMATION {
 	BytesAvailable		int32
@@ -20,23 +874,263 @@ AFD_HANDLE_INFO {
 } [size[16]]
 
 AFD_QOS_INFO {
-	Data	array[int8, 88]
+	Qos		array[int8, 80]
+	GroupQos	bool8
+	Pad0		array[const[0, int8], 7]
 } [size[88]]
 
+AFD_SUPER_DISCONNECT_INFO {
+	Flags	flags[afd_super_disconnect_flags, int32]
+} [size[4]]
+
+AFD_SWITCH_CONTEXT {
+	SelectEventsActive	int8
+	Reserved0		array[const[0, int8], 18]
+	ControlByte		int8
+	Reserved1		array[const[0, int8], 12]
+} [size[32]]
+
+AFD_SAN_CONNECT_INFO {
+	ListenHandle	AFD_TCP_LISTEN_BACKLOG
+	SwitchContext	ptr[inout, AFD_SWITCH_CONTEXT]
+	RemoteAddress	AFD_TRANSPORT_ADDRESS_IPV4_PAIR
+} [size[64]]
+
+AFD_SAN_CONNECT_OUTPUT {
+	AcceptHandle	intptr
+	ReceiveLength	int32
+	Pad0		const[0, int32]
+} [size[16]]
+
+AFD_SWITCH_ACQUIRE_CTX_INFO {
+	SocketHandle		AFD_SAN_ENDPOINT
+	SwitchContext		ptr[inout, AFD_SWITCH_CONTEXT]
+	SocketContextBuffer	ptr[out, array[int8, 1:256]]
+	SocketContextLength	bytesize[SocketContextBuffer, int32]
+	Pad0			const[0, int32]
+} [size[32]]
+
+AFD_SAN_FAST_ENDPOINT_INFO {
+	SwitchContext	ptr[inout, AFD_SWITCH_CONTEXT, opt]
+	EventBits	flags[afd_san_event_bits, int32]
+	Status		int32
+	RequestToken	intptr
+} [size[24]]
+
+AFD_SAN_FAST_REQUEST_INFO {
+	RequestToken	AFD_SAN_REQUEST
+	Status		int32
+	Information	int32[0:4096]
+} [size[16]]
+
+AFD_SAN_FAST_SERVICE_INFO {
+	ProcessHandle	const[0, intptr]
+	Flags		flags[afd_san_event_bits, int32]
+	Pad0		const[0, int32]
+} [size[16]]
+
+AFD_NOTIFY_REGISTRATION_CURRENT {
+	SocketHandle	const[0, intptr]
+	CompletionKey	intptr
+	EventFilter	flags[afd_notify_event_filter, int16]
+	TriggerFlags	flags[afd_notify_trigger_flags, int8]
+	Operation	flags[afd_notify_operation, int8]
+	Status		int32
+} [size[24]]
+
+AFD_NOTIFY_COMPLETION_ENTRY {
+	CompletionKey	intptr
+	Overlapped	intptr
+	Internal	intptr
+	Information	intptr
+} [size[32]]
+
+AFD_NOTIFY_SOCK_INFO_REGISTER_ONE {
+	CompletionPortHandle		IOCP_HANDLE
+	RegistrationCount		const[1, int32]
+	Pad0				const[0, int32]
+	RegistrationArray		ptr[inout, array[AFD_NOTIFY_REGISTRATION_CURRENT, 1]]
+	CompletionPortEntries		const[0, intptr]
+	CompletionEntryArrayCount	const[0, int32]
+	TimeoutMs			const[0, int32]
+	ReceivedEntryCount		const[0, intptr]
+} [size[48]]
+
+AFD_NOTIFY_SOCK_INFO_DRAIN_ONE {
+	CompletionPortHandle		IOCP_HANDLE
+	RegistrationCount		const[1, int32]
+	Pad0				const[0, int32]
+	RegistrationArray		ptr[inout, array[AFD_NOTIFY_REGISTRATION_CURRENT, 1]]
+	CompletionPortEntries		ptr[out, array[AFD_NOTIFY_COMPLETION_ENTRY, 1]]
+	CompletionEntryArrayCount	const[1, int32]
+	TimeoutMs			const[0, int32]
+	ReceivedEntryCount		ptr[out, int32]
+} [size[48]]
+
+AFD_TLI_IO_CONTROL_TYPE1_NOBUF {
+	RequestType	const[1, int32]
+	RequestFlags	flags[afd_tli_type12_request_flags, int32]
+	ControlCode	flags[afd_tli_safe_control_code, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	const[0, intptr]
+	InputBufferLength	const[0, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_TYPE2_NOBUF {
+	RequestType	const[2, int32]
+	RequestFlags	flags[afd_tli_type12_request_flags, int32]
+	ControlCode	flags[afd_tli_safe_control_code, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	const[0, intptr]
+	InputBufferLength	const[0, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_TYPE3_NOBUF {
+	RequestType	const[3, int32]
+	RequestFlags	const[0, int32]
+	ControlCode	flags[afd_tli_safe_control_code, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	const[0, intptr]
+	InputBufferLength	const[0, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_TYPE1_INBUF {
+	RequestType	const[1, int32]
+	RequestFlags	flags[afd_tli_type12_request_flags, int32]
+	ControlCode	flags[afd_tli_safe_control_code, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	ptr[in, array[int8, 1:256]]
+	InputBufferLength	bytesize[InputBuffer, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_TYPE2_INBUF {
+	RequestType	const[2, int32]
+	RequestFlags	flags[afd_tli_type12_request_flags, int32]
+	ControlCode	flags[afd_tli_safe_control_code, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	ptr[in, array[int8, 1:256]]
+	InputBufferLength	bytesize[InputBuffer, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_TYPE3_INBUF {
+	RequestType	const[3, int32]
+	RequestFlags	const[0, int32]
+	ControlCode	flags[afd_tli_safe_control_code, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	ptr[in, array[int8, 1:256]]
+	InputBufferLength	bytesize[InputBuffer, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_SET_QOS {
+	RequestType	const[3, int32]
+	RequestFlags	const[0, int32]
+	ControlCode	const[0x8800000b, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	ptr[in, AFD_QOS_INFO]
+	InputBufferLength	bytesize[InputBuffer, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_ASSOCIATE_QOS {
+	RequestType	const[3, int32]
+	RequestFlags	const[0, int32]
+	ControlCode	const[0x8800001a, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	ptr[in, array[int8, 1:88]]
+	InputBufferLength	bytesize[InputBuffer, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_ISB_QUERY {
+	RequestType	const[3, int32]
+	RequestFlags	const[0, int32]
+	ControlCode	const[0x4004747b, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	const[0, intptr]
+	InputBufferLength	const[0, intptr]
+} [size[32]]
+
+AFD_TLI_IO_CONTROL_ISB_SET {
+	RequestType	const[3, int32]
+	RequestFlags	const[0, int32]
+	ControlCode	const[0x2000747a, int32]
+	UseHandle	const[1, int8]
+	Pad0		array[const[0, int8], 3]
+	InputBuffer	ptr[in, array[int8, 1:64]]
+	InputBufferLength	bytesize[InputBuffer, intptr]
+} [size[32]]
+
+AFD_ADDRESS_FAMILY_INET {
+	Family	const[2, int16]
+} [size[2]]
+
+AFD_TDI_ADDRESS_IP {
+	TAAddressCount0	const[1, int8]
+	TAAddressCount1	const[0, int8]
+	TAAddressCount2	const[0, int8]
+	TAAddressCount3	const[0, int8]
+	AddressLength0	const[0xe, int8]
+	AddressLength1	const[0, int8]
+	AddressType0	const[2, int8]
+	AddressType1	const[0, int8]
+	Port		sock_port
+	Address		array[int8, 4]
+	Zero		array[const[0, int8], 8]
+} [size[22]]
+
+AFD_ADDRESS_LIST_CHANGE_INFO {
+	Reserved0	const[0, intptr]
+	Address		ptr[in, AFD_ADDRESS_FAMILY_INET]
+	AddressLength	bytesize[Address, int32]
+	Flags		const[0x2, int32]
+	Pad0		const[0, int64]
+} [size[32]]
+
+AFD_ADDRESS_LIST_CHANGE_INFO_BLOCKING {
+	Reserved0	const[0, intptr]
+	Address		ptr[in, AFD_ADDRESS_FAMILY_INET]
+	AddressLength	bytesize[Address, int32]
+	Flags		const[0, int32]
+	Pad0		const[0, int64]
+} [size[32]]
+
+AFD_ROUTING_INTERFACE_CHANGE_INFO {
+	Reserved0	const[0, intptr]
+	Address		ptr[in, AFD_TDI_ADDRESS_IP]
+	AddressLength	bytesize[Address, int32]
+	Flags		const[0x2, int32]
+	Pad0		const[0, int64]
+} [size[32]]
+
+AFD_ROUTING_INTERFACE_CHANGE_INFO_BLOCKING {
+	Reserved0	const[0, intptr]
+	Address		ptr[in, AFD_TDI_ADDRESS_IP]
+	AddressLength	bytesize[Address, int32]
+	Flags		const[0, int32]
+	Pad0		const[0, int64]
+} [size[32]]
+
 AFD_POLL_HANDLE_INFO {
-	Handle		SOCKET
+	Handle		AFD_TCP
 	PollEvents	flags[afd_poll_events, int32]
 	Status		int32
 } [size[16]]
 
 AFD_POLL_HANDLE_INFO_ACCEPT_NONBLOCK {
-	Handle		SOCKET_TCP_ACCEPTED_NONBLOCK
+	Handle		AFD_TCP
 	PollEvents	flags[afd_poll_events, int32]
 	Status		int32
 } [size[16]]
 
 AFD_POLL_INFO {
-	Timeout		LARGE_INTEGER
+	Timeout		LARGE_INTEGER_ZERO
 	NumberOfHandles	const[1, int32]
 	Unique		bool8
 	Pad0		array[const[0, int8], 3]
@@ -44,7 +1138,7 @@ AFD_POLL_INFO {
 } [size[32]]
 
 AFD_POLL_INFO_ACCEPT_NONBLOCK {
-	Timeout		LARGE_INTEGER
+	Timeout		LARGE_INTEGER_ZERO
 	NumberOfHandles	const[1, int32]
 	Unique		bool8
 	Pad0		array[const[0, int8], 3]
@@ -52,7 +1146,7 @@ AFD_POLL_INFO_ACCEPT_NONBLOCK {
 } [size[32]]
 
 AFD_EVENT_SELECT_INFO {
-	Event		WSAEVENT_HANDLE
+	Event		EVENT_HANDLE
 	PollEvents	flags[afd_poll_events, int32]
 	Padding		const[0, int32]
 } [size[16]]
@@ -68,26 +1162,346 @@ AFD_ENUM_NETWORK_EVENTS_INFO {
 	EventStatus	array[int32, 13]
 } [size[56]]
 
-NtDeviceIoControlFile$afd_query_recv_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12033], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_RECEIVE_INFORMATION], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_query_recv_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12033], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_RECEIVE_INFORMATION], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_query_handles_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_query_handles_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_query_handles_udp(FileHandle SOCKET_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_query_handles_udp_peer(FileHandle SOCKET_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_get_remote_address_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_get_context_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12043], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_get_qos_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_get_qos_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_get_qos_udp(FileHandle SOCKET_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_noop_tcp(FileHandle SOCKET_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0])
-NtDeviceIoControlFile$afd_noop_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0])
-NtDeviceIoControlFile$afd_noop_udp(FileHandle SOCKET_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0])
-NtDeviceIoControlFile$afd_address_list_query_udp(FileHandle SOCKET_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120b3], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, afd_address_list], OutputBufferLength bytesize[OutputBuffer])
-NtDeviceIoControlFile$afd_routing_interface_query_udp(FileHandle SOCKET_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120ab], InputBuffer ptr[in, sockaddr_in], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
+NtCreateFile$afd_tcp_endpoint(FileHandle ptr[out, AFD_TCP_CREATED], DesiredAccess const[0xc0100000], ObjectAttributes ptr[in, OBJECT_ATTRIBUTES_AFD_DEVICE], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], AllocationSize const[0], FileAttributes const[0], ShareAccess const[0x3], CreateDisposition const[0x3], CreateOptions const[0], EaBuffer ptr[in, FILE_FULL_EA_INFORMATION_AFD_OPEN_TCP], EaLength bytesize[EaBuffer])
+NtCreateFile$afd_udp_endpoint(FileHandle ptr[out, AFD_UDP_CREATED], DesiredAccess const[0xc0100000], ObjectAttributes ptr[in, OBJECT_ATTRIBUTES_AFD_DEVICE], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], AllocationSize const[0], FileAttributes const[0], ShareAccess const[0x3], CreateDisposition const[0x3], CreateOptions const[0], EaBuffer ptr[in, FILE_FULL_EA_INFORMATION_AFD_OPEN_UDP], EaLength bytesize[EaBuffer])
+NtCreateFile$afd_rio_registration_domain(FileHandle ptr[out, AFD_RIO_RD], DesiredAccess const[0xc0100000], ObjectAttributes ptr[in, OBJECT_ATTRIBUTES_AFD_DEVICE], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], AllocationSize const[0], FileAttributes const[0], ShareAccess const[0x3], CreateDisposition const[0x3], CreateOptions const[0], EaBuffer ptr[in, FILE_FULL_EA_INFORMATION_AFD_RIO_RD_OPEN], EaLength bytesize[EaBuffer])
+NtCreateFile$afd_rio_tcp_endpoint(FileHandle ptr[out, AFD_RIO_ENDPOINT_CAPABLE], DesiredAccess const[0xc0100000], ObjectAttributes ptr[in, OBJECT_ATTRIBUTES_AFD_DEVICE], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], AllocationSize const[0], FileAttributes const[0], ShareAccess const[0x3], CreateDisposition const[0x3], CreateOptions const[0], EaBuffer ptr[in, FILE_FULL_EA_INFORMATION_AFD_OPEN_RIO_TCP], EaLength bytesize[EaBuffer]) (no_generate, no_minimize)
+NtCreateFile$afd_tli_tcp_endpoint(FileHandle ptr[out, AFD_TLI_ENDPOINT], DesiredAccess const[0xc0100000], ObjectAttributes ptr[in, OBJECT_ATTRIBUTES_AFD_DEVICE], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], AllocationSize const[0], FileAttributes const[0], ShareAccess const[0x3], CreateDisposition const[0x3], CreateOptions const[0], EaBuffer ptr[in, FILE_FULL_EA_INFORMATION_AFD_OPEN_TLI_TCP], EaLength bytesize[EaBuffer]) (no_generate, no_minimize)
+NtCreateFile$afd_san_helper(FileHandle ptr[out, AFD_SAN_HELPER], DesiredAccess const[0xc0100000], ObjectAttributes ptr[in, OBJECT_ATTRIBUTES_AFD_DEVICE], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], AllocationSize const[0], FileAttributes const[0], ShareAccess const[0x3], CreateDisposition const[0x3], CreateOptions const[0], EaBuffer ptr[in, FILE_FULL_EA_INFORMATION_AFD_SW_OPEN], EaLength bytesize[EaBuffer]) (no_generate, no_minimize)
+CreateFileA$afd_transmit(lpFileName ptr[in, filename], dwDesiredAccess flags[file_access_rights], dwShareMode flags[file_share_mode], lpSecurityAttributes ptr[in, SECURITY_ATTRIBUTES, opt], dwCreationDisposition flags[file_create_disposition], dwFlagsAndAttributes flags[file_attributes], hTemplateFile AFD_TRANSMIT_FILE_HANDLE[opt]) AFD_TRANSMIT_FILE_HANDLE (automatic_helper)
+WriteFile$afd_transmit(hFile AFD_TRANSMIT_FILE_HANDLE, lpBuffer ptr[in, array[int8]], nNumberOfBytesToWrite bytesize[lpBuffer], lpNumberOfBytesWritten ptr[out, int32], lpOverlapped const[0]) (automatic_helper)
 
-NtDeviceIoControlFile$afd_event_select_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12087], InputBuffer ptr[in, AFD_EVENT_SELECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
-NtDeviceIoControlFile$afd_enum_network_events_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208b], InputBuffer ptr[in, WSAEVENT_HANDLE, opt], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_ENUM_NETWORK_EVENTS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
-NtDeviceIoControlFile$afd_poll_accept(FileHandle SOCKET_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12024], InputBuffer ptr[inout, AFD_POLL_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[inout, AFD_POLL_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
-NtDeviceIoControlFile$afd_event_select_accept_nonblock(FileHandle SOCKET_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12087], InputBuffer ptr[in, AFD_EVENT_SELECT_INFO_NOEVENT], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
-NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock(FileHandle SOCKET_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_ENUM_NETWORK_EVENTS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
-NtDeviceIoControlFile$afd_poll_accept_nonblock(FileHandle SOCKET_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12024], InputBuffer ptr[inout, AFD_POLL_INFO_ACCEPT_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[inout, AFD_POLL_INFO_ACCEPT_NONBLOCK], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtReadFile$afd_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[out, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0])
+NtReadFile$afd_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[out, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0]) (no_generate, no_minimize)
+NtReadFile$afd_udp_peer_nonblock(FileHandle AFD_UDP_PEERED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[out, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0])
+
+NtWriteFile$afd_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[in, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0]) (no_generate, no_minimize)
+NtWriteFile$afd_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[in, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0])
+NtWriteFile$afd_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[in, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0]) (no_generate, no_minimize)
+NtWriteFile$afd_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[in, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0]) (no_generate, no_minimize)
+NtWriteFile$afd_udp_peer(FileHandle AFD_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[in, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0])
+NtWriteFile$afd_udp_peer_nonblock(FileHandle AFD_UDP_PEERED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], Buffer ptr[in, array[int8, 1:128]], Length bytesize[Buffer], ByteOffset const[0], Key const[0])
+
+GetKernelObjectSecurity$afd_endpoint(Handle AFD_ENDPOINT, RequestedInformation flags[afd_security_information], pSecurityDescriptor ptr[out, array[int8, 0:512]], nLength bytesize[pSecurityDescriptor], lpnLengthNeeded ptr[out, int32]) (no_generate, no_minimize)
+SetKernelObjectSecurity$afd_endpoint(Handle AFD_ENDPOINT, SecurityInformation const[0x4], SecurityDescriptor ptr[in, SECURITY_DESCRIPTOR_RELATIVE_NULL_DACL]) (no_generate, no_minimize)
+
+CloseHandle$afd_tcp_created(hObject AFD_TCP_CREATED) (no_generate, no_minimize)
+CloseHandle$afd_tcp_created_nonblock(hObject AFD_TCP_CREATED_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_bound(hObject AFD_TCP_BOUND) (no_generate, no_minimize)
+CloseHandle$afd_tcp_bound_nonblock(hObject AFD_TCP_BOUND_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_listening(hObject AFD_TCP_LISTENING) (no_generate, no_minimize)
+CloseHandle$afd_tcp_listening_nonblock(hObject AFD_TCP_LISTENING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_listen_backlog(hObject AFD_TCP_LISTEN_BACKLOG) (no_generate, no_minimize)
+CloseHandle$afd_tcp_listen_backlog_nonblock(hObject AFD_TCP_LISTEN_BACKLOG_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_listening_delayed(hObject AFD_TCP_LISTENING_DELAYED) (no_generate, no_minimize)
+CloseHandle$afd_tcp_listening_delayed_nonblock(hObject AFD_TCP_LISTENING_DELAYED_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_connected(hObject AFD_TCP_CONNECTED) (no_generate, no_minimize)
+CloseHandle$afd_tcp_connected_nonblock(hObject AFD_TCP_CONNECTED_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_accepted(hObject AFD_TCP_ACCEPTED) (no_generate, no_minimize)
+CloseHandle$afd_tcp_accepted_nonblock(hObject AFD_TCP_ACCEPTED_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_disconnected(hObject AFD_TCP_DISCONNECTED) (no_generate, no_minimize)
+CloseHandle$afd_udp_created(hObject AFD_UDP_CREATED) (no_generate, no_minimize)
+CloseHandle$afd_udp_created_nonblock(hObject AFD_UDP_CREATED_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_udp_bound(hObject AFD_UDP_BOUND) (no_generate, no_minimize)
+CloseHandle$afd_udp_bound_nonblock(hObject AFD_UDP_BOUND_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_udp_peered(hObject AFD_UDP_PEERED) (no_generate, no_minimize)
+CloseHandle$afd_udp_peered_nonblock(hObject AFD_UDP_PEERED_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_rio_registration_domain(hObject AFD_RIO_RD) (no_generate, no_minimize)
+CloseHandle$afd_rio_endpoint(hObject AFD_RIO_ENDPOINT_CAPABLE) (no_generate, no_minimize)
+CloseHandle$afd_rio_rqpair(hObject AFD_RIO_RQPAIR) (no_generate, no_minimize)
+CloseHandle$afd_tli_endpoint(hObject AFD_TLI_ENDPOINT) (no_generate, no_minimize)
+CloseHandle$afd_san_helper(hObject AFD_SAN_HELPER) (no_generate, no_minimize)
+CloseHandle$afd_san_endpoint(hObject AFD_SAN_ENDPOINT) (no_generate, no_minimize)
+
+NtDeviceIoControlFile$afd_rio_create_cq(FileHandle AFD_RIO_RD, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_CREATE_CQ], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, int32], OutputBufferLength bytesize[OutputBuffer]) AFD_RIO_CQ
+NtDeviceIoControlFile$afd_rio_destroy_cq(FileHandle AFD_RIO_RD, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_DESTROY_CQ], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_rio_notify_cq(FileHandle AFD_RIO_RD, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_NOTIFY_CQ], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_rio_register_buffer(FileHandle AFD_RIO_RD, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_REGISTER_BUFFER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, int32], OutputBufferLength bytesize[OutputBuffer]) AFD_RIO_BUFFER
+NtDeviceIoControlFile$afd_rio_deregister_buffer(FileHandle AFD_RIO_RD, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_DEREGISTER_BUFFER], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_rio_resize_cq(FileHandle AFD_RIO_RD, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_RESIZE_CQ], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_rio_create_rqpair(FileHandle AFD_RIO_ENDPOINT_CAPABLE, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_CREATE_RQPAIR], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_RIO_RQPAIR (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_rio_flush_send(FileHandle AFD_RIO_RQPAIR, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_OPCODE_FLUSH_SEND], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_rio_flush_receive(FileHandle AFD_RIO_RQPAIR, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_OPCODE_FLUSH_RECEIVE], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_rio_resize_rqpair(FileHandle AFD_RIO_RQPAIR, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211b], InputBuffer ptr[in, AFD_RIO_RESIZE_RQPAIR], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+
+NtDeviceIoControlFile$afd_tli_type1_nobuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE1_NOBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type2_nobuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE2_NOBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type3_nobuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE3_NOBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type1_inbuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE1_INBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type2_inbuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE2_INBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type3_inbuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE3_INBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type1_outbuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE1_NOBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type2_outbuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE2_NOBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type3_outbuf(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE3_NOBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_set_qos(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_SET_QOS], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TLI_QOS (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_associate_qos(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_ASSOCIATE_QOS], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_isb_query(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_ISB_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 1:128]], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_isb_set(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_ISB_SET], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_tli_type3_nobuf_pending(FileHandle AFD_TLI_ENDPOINT, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bf], InputBuffer ptr[in, AFD_TLI_IO_CONTROL_TYPE3_NOBUF], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 1:128]], OutputBufferLength bytesize[OutputBuffer]) AFD_TLI_PENDING (no_generate, no_minimize)
+CancelIoEx$afd_tli_pending(hFile AFD_TLI_PENDING, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIo$afd_tli_pending(hFile AFD_TLI_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_tli_pending(hObject AFD_TLI_PENDING) (no_generate, no_minimize)
+
+NtDeviceIoControlFile$afd_bind_tcp(FileHandle AFD_TCP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_BOUND
+NtDeviceIoControlFile$afd_bind_tcp_nonblock(FileHandle AFD_TCP_CREATED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_BOUND_NONBLOCK
+NtDeviceIoControlFile$afd_bind_udp(FileHandle AFD_UDP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_BOUND
+NtDeviceIoControlFile$afd_bind_udp_nonblock(FileHandle AFD_UDP_CREATED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_BOUND_NONBLOCK
+NtDeviceIoControlFile$afd_connect_tcp(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECTED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connect_tcp_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECTED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connect_tcp_to_listener(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL_LISTENER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_UNACCEPTED_CONNECTION (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL_LISTENER_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL_LISTENER_DELAYED], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_UNACCEPTED_CONNECTION_DELAYED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL_LISTENER_DELAYED_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_UNACCEPTED_CONNECTION_DELAYED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connect_udp(FileHandle AFD_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_PEERED
+NtDeviceIoControlFile$afd_connect_udp_nonblock(FileHandle AFD_UDP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_PEERED_NONBLOCK
+NtDeviceIoControlFile$afd_connectex_tcp(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bb], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECTED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connectex_tcp_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bb], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECTED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connectex_udp(FileHandle AFD_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bb], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_PEERED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_connectex_udp_nonblock(FileHandle AFD_UDP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120bb], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_PEERED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_connect_tcp(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c7], InputBuffer ptr[in, AFD_SUPER_CONNECT_INFO_TDI], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[in, array[int8, 0:256], opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECTED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_connect_tcp_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c7], InputBuffer ptr[in, AFD_SUPER_CONNECT_INFO_TDI], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[in, array[int8, 0:256], opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECTED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_connect_tli(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c7], InputBuffer ptr[in, AFD_SUPER_CONNECT_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[in, array[int8, 0:256], opt], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_start_listen_tcp(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200b], InputBuffer ptr[in, AFD_LISTEN_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_LISTEN_BACKLOG
+NtDeviceIoControlFile$afd_start_listen_tcp_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200b], InputBuffer ptr[in, AFD_LISTEN_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_LISTEN_BACKLOG_NONBLOCK
+NtDeviceIoControlFile$afd_start_listen_tcp_delayed(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200b], InputBuffer ptr[in, AFD_LISTEN_INFO_DELAYED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_LISTENING_DELAYED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_start_listen_tcp_delayed_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200b], InputBuffer ptr[in, AFD_LISTEN_INFO_DELAYED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_LISTENING_DELAYED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_tcp(FileHandle AFD_TCP_UNACCEPTED_CONNECTION, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200c], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RETURNED_CONNECTION (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock(FileHandle AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200c], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RETURNED_CONNECTION_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp(FileHandle AFD_TCP_UNACCEPTED_CONNECTION_DELAYED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200c], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RETURNED_CONNECTION_DELAYED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock(FileHandle AFD_TCP_UNACCEPTED_CONNECTION_DELAYED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200c], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RETURNED_CONNECTION_DELAYED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp(FileHandle AFD_TCP_UNACCEPTED_CONNECTION, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12090], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RETURNED_CONNECTION (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock(FileHandle AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12090], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RETURNED_CONNECTION_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200c], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_LISTEN_IRP_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp_nonblock(FileHandle AFD_TCP_LISTEN_BACKLOG_NONBLOCK, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1200c], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_LISTEN_IRP_PENDING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12090], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_LISTEN_IRP_PENDING_LIFO (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp_nonblock(FileHandle AFD_TCP_LISTEN_BACKLOG_NONBLOCK, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12090], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_WAIT_FOR_LISTEN_INFO], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_LISTEN_IRP_PENDING_LIFO_NONBLOCK (no_generate, no_minimize)
+CancelIoEx$afd_listen_irp_pending(hFile AFD_TCP_LISTEN_IRP_PENDING, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_listen_irp_pending_nonblock(hFile AFD_TCP_LISTEN_IRP_PENDING_NONBLOCK, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_listen_irp_pending_lifo(hFile AFD_TCP_LISTEN_IRP_PENDING_LIFO, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_listen_irp_pending_lifo_nonblock(hFile AFD_TCP_LISTEN_IRP_PENDING_LIFO_NONBLOCK, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIo$afd_listen_irp_pending(hFile AFD_TCP_LISTEN_IRP_PENDING) (no_generate, no_minimize)
+CancelIo$afd_listen_irp_pending_nonblock(hFile AFD_TCP_LISTEN_IRP_PENDING_NONBLOCK) (no_generate, no_minimize)
+CancelIo$afd_listen_irp_pending_lifo(hFile AFD_TCP_LISTEN_IRP_PENDING_LIFO) (no_generate, no_minimize)
+CancelIo$afd_listen_irp_pending_lifo_nonblock(hFile AFD_TCP_LISTEN_IRP_PENDING_LIFO_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_listen_irp_pending(hObject AFD_TCP_LISTEN_IRP_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_listen_irp_pending_nonblock(hObject AFD_TCP_LISTEN_IRP_PENDING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_listen_irp_pending_lifo(hObject AFD_TCP_LISTEN_IRP_PENDING_LIFO) (no_generate, no_minimize)
+CloseHandle$afd_listen_irp_pending_lifo_nonblock(hObject AFD_TCP_LISTEN_IRP_PENDING_LIFO_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_transmit_pending(hObject AFD_TCP_TRANSMIT_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_tcp_transmit_pending_nonblock(hObject AFD_TCP_TRANSMIT_PENDING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_accept_transmit_pending(hObject AFD_TCP_ACCEPTED_TRANSMIT_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_accept_transmit_pending_nonblock(hObject AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_tcp_transmit_closing(hObject AFD_TCP_TRANSMIT_CLOSING) (no_generate, no_minimize)
+CloseHandle$afd_tcp_transmit_closing_nonblock(hObject AFD_TCP_TRANSMIT_CLOSING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_accept_transmit_closing(hObject AFD_TCP_ACCEPTED_TRANSMIT_CLOSING) (no_generate, no_minimize)
+CloseHandle$afd_accept_transmit_closing_nonblock(hObject AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_accept_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12010], InputBuffer ptr[in, AFD_ACCEPT_INFO_TCP], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_ACCEPTED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_accept_tcp_nonblock(FileHandle AFD_TCP_LISTEN_BACKLOG_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12010], InputBuffer ptr[in, AFD_ACCEPT_INFO_TCP_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_ACCEPTED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_accept_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12083], InputBuffer ptr[in, AFD_SUPER_ACCEPT_INFO_TCP], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_SUPER_ACCEPT_OUTPUT], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_PREACCEPTED_CONNECTION (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_accept_tcp_nonblock(FileHandle AFD_TCP_LISTEN_BACKLOG_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12083], InputBuffer ptr[in, AFD_SUPER_ACCEPT_INFO_TCP_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_SUPER_ACCEPT_OUTPUT], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_PREACCEPTED_CONNECTION_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_noop_preaccepted(FileHandle AFD_TCP_PREACCEPTED_CONNECTION, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12047], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_noop_preaccepted_nonblock(FileHandle AFD_TCP_PREACCEPTED_CONNECTION_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12047], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_defer_accept_requeue_tcp(FileHandle AFD_TCP_LISTENING_DELAYED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208c], InputBuffer ptr[in, AFD_DEFER_ACCEPT_INFO_REQUEUE_DELAYED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_UNACCEPTED_CONNECTION_DELAYED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_defer_accept_requeue_tcp_nonblock(FileHandle AFD_TCP_LISTENING_DELAYED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208c], InputBuffer ptr[in, AFD_DEFER_ACCEPT_INFO_REQUEUE_DELAYED_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_UNACCEPTED_CONNECTION_DELAYED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_defer_accept_reject_tcp(FileHandle AFD_TCP_LISTENING_DELAYED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208c], InputBuffer ptr[in, AFD_DEFER_ACCEPT_INFO_REJECT_DELAYED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_defer_accept_reject_tcp_nonblock(FileHandle AFD_TCP_LISTENING_DELAYED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208c], InputBuffer ptr[in, AFD_DEFER_ACCEPT_INFO_REJECT_DELAYED_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_unaccepted_connect_data_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120a7], InputBuffer ptr[in, AFD_UNACCEPTED_CONNECT_DATA_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_UNACCEPTED_CONNECT_DATA_RESULT], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created(FileHandle AFD_TCP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_CREATED_NONBLOCK
+NtDeviceIoControlFile$afd_set_information_nonblock_tcp_bound(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_BOUND_NONBLOCK
+NtDeviceIoControlFile$afd_set_information_nonblock_tcp_listening(FileHandle AFD_TCP_LISTENING, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_LISTENING_NONBLOCK
+NtDeviceIoControlFile$afd_set_information_nonblock_tcp_connected(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_CONNECTED_NONBLOCK
+NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_ACCEPTED_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_information_nonblock_udp_created(FileHandle AFD_UDP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_CREATED_NONBLOCK
+NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound(FileHandle AFD_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_BOUND_NONBLOCK
+NtDeviceIoControlFile$afd_set_information_nonblock_udp_peered(FileHandle AFD_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203b], InputBuffer ptr[in, AFD_INFORMATION_BOOLEAN_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_PEERED_NONBLOCK
+NtDeviceIoControlFile$afd_get_information_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207b], InputBuffer ptr[inout, AFD_INFORMATION_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[inout, AFD_INFORMATION_QUERY], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_information_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207b], InputBuffer ptr[inout, AFD_INFORMATION_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[inout, AFD_INFORMATION_QUERY], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_partial_disconnect_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1202b], InputBuffer ptr[in, AFD_PARTIAL_DISCONNECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_DISCONNECTED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_disconnect_tcp(FileHandle AFD_TCP_CONNECTED, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120cb], InputBuffer ptr[in, AFD_SUPER_DISCONNECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_SUPERDISCONNECT_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_disconnect_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120cb], InputBuffer ptr[in, AFD_SUPER_DISCONNECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_SUPERDISCONNECT_PENDING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_disconnect_accept(FileHandle AFD_TCP_ACCEPTED, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120cb], InputBuffer ptr[in, AFD_SUPER_DISCONNECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_super_disconnect_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120cb], InputBuffer ptr[in, AFD_SUPER_DISCONNECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING_NONBLOCK (no_generate, no_minimize)
+CancelIoEx$afd_super_disconnect_pending(hFile AFD_TCP_SUPERDISCONNECT_PENDING, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_super_disconnect_pending_nonblock(hFile AFD_TCP_SUPERDISCONNECT_PENDING_NONBLOCK, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_accept_super_disconnect_pending(hFile AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_accept_super_disconnect_pending_nonblock(hFile AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING_NONBLOCK, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CloseHandle$afd_super_disconnect_pending(hObject AFD_TCP_SUPERDISCONNECT_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_super_disconnect_pending_nonblock(hObject AFD_TCP_SUPERDISCONNECT_PENDING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_accept_super_disconnect_pending(hObject AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_accept_super_disconnect_pending_nonblock(hObject AFD_TCP_ACCEPTED_SUPERDISCONNECT_PENDING_NONBLOCK) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_unconnect_udp(FileHandle AFD_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1202b], InputBuffer ptr[in, AFD_PARTIAL_DISCONNECT_INFO_UNCONNECT_DATAGRAM], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_BOUND (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_unbind_tcp(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12113], InputBuffer ptr[in, AFD_UNBIND_INFO_TCP], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_CREATED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_unbind_udp(FileHandle AFD_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12113], InputBuffer ptr[in, AFD_UNBIND_INFO_UDP], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_CREATED (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_send_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201f], InputBuffer ptr[in, AFD_SEND_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_send_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201f], InputBuffer ptr[in, AFD_SEND_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_receive_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12017], InputBuffer ptr[in, AFD_RECV_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201f], InputBuffer ptr[in, AFD_SEND_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_send_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201f], InputBuffer ptr[in, AFD_SEND_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_receive_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12017], InputBuffer ptr[in, AFD_RECV_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_send_udp_peer(FileHandle AFD_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201f], InputBuffer ptr[in, AFD_SEND_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_udp_peer_nonblock(FileHandle AFD_UDP_PEERED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201f], InputBuffer ptr[in, AFD_SEND_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_datagram_udp_bound(FileHandle AFD_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12023], InputBuffer ptr[in, AFD_SEND_DATAGRAM_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock(FileHandle AFD_UDP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12023], InputBuffer ptr[in, AFD_SEND_DATAGRAM_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock(FileHandle AFD_UDP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201b], InputBuffer ptr[in, AFD_DATAGRAM_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_receive_datagram_udp_peer_nonblock(FileHandle AFD_UDP_PEERED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1201b], InputBuffer ptr[in, AFD_DATAGRAM_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_receive_message_udp_bound_nonblock(FileHandle AFD_UDP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120cf], InputBuffer ptr[in, AFD_RECV_MESSAGE_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_receive_message_udp_peer_nonblock(FileHandle AFD_UDP_PEERED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120cf], InputBuffer ptr[in, AFD_RECV_MESSAGE_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_message_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_CONNECTED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_send_message_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_CONNECTED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_message_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_CONNECTED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_send_message_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_CONNECTED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_send_message_udp_bound(FileHandle AFD_UDP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_DATAGRAM], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_message_udp_bound_nonblock(FileHandle AFD_UDP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_DATAGRAM], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_message_udp_peer(FileHandle AFD_UDP_PEERED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_CONNECTED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_send_message_udp_peer_nonblock(FileHandle AFD_UDP_PEERED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d3], InputBuffer ptr[in, AFD_SEND_MESSAGE_INFO_CONNECTED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0])
+
+NtDeviceIoControlFile$afd_transmit_file_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_PENDING_NONBLOCK (no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK (no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_buffers_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_BUFFERS], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_PENDING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_buffers_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_BUFFERS], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_disconnect_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_disconnect_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_disconnect_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_disconnect_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_reuse_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_reuse_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_reuse_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_file_reuse_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1207f], InputBuffer ptr[in, AFD_TRANSMIT_FILE_INFO_FILE_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_PENDING_NONBLOCK (no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK (no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_file_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_FILE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_PENDING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_file_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_FILE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_disconnect_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_disconnect_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_disconnect_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_disconnect_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_DISCONNECT], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_reuse_tcp(FileHandle AFD_TCP_CONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_reuse_tcp_nonblock(FileHandle AFD_TCP_CONNECTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_reuse_accept(FileHandle AFD_TCP_ACCEPTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_transmit_packets_reuse_accept_nonblock(FileHandle AFD_TCP_ACCEPTED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120c3], InputBuffer ptr[in, AFD_TPACKETS_INFO_MEMORY_REUSE], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_TRANSMIT_FILE_STATUS], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK (no_generate, no_minimize)
+
+NtDeviceIoControlFile$afd_get_address_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1202f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_address_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1202f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_query_recv_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12033], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_RECEIVE_INFORMATION], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_query_recv_accept(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12033], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_RECEIVE_INFORMATION], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_query_handles_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_query_handles_accept(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_query_handles_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_query_handles_udp_peer(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12037], InputBuffer ptr[in, AFD_QUERY_HANDLES_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_HANDLE_INFO], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_remote_address_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1203f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_set_context_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12047], InputBuffer ptr[in, array[int8, 1:256]], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_CONTEXT
+NtDeviceIoControlFile$afd_set_context_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12047], InputBuffer ptr[in, array[int8, 1:256]], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_CONTEXT
+NtDeviceIoControlFile$afd_get_context_tcp(FileHandle AFD_TCP_CONTEXT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12043], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_context_udp(FileHandle AFD_UDP_CONTEXT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12043], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_set_send_connect_data_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1204b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_SEND_CONNECT_DATA
+NtDeviceIoControlFile$afd_set_send_connect_options_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1204f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_SEND_CONNECT_OPTIONS
+NtDeviceIoControlFile$afd_set_send_disconnect_data_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12053], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_SEND_DISCONNECT_DATA
+NtDeviceIoControlFile$afd_set_send_disconnect_options_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12057], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_SEND_DISCONNECT_OPTIONS
+NtDeviceIoControlFile$afd_set_receive_connect_data_length_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1206b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RECEIVE_CONNECT_DATA
+NtDeviceIoControlFile$afd_set_receive_connect_options_length_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1206f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RECEIVE_CONNECT_OPTIONS
+NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12073], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RECEIVE_DISCONNECT_DATA
+NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12077], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_RECEIVE_DISCONNECT_OPTIONS
+NtDeviceIoControlFile$afd_get_receive_connect_data_tcp(FileHandle AFD_TCP_RECEIVE_CONNECT_DATA, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1205b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_receive_connect_options_tcp(FileHandle AFD_TCP_RECEIVE_CONNECT_OPTIONS, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1205f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_receive_disconnect_data_tcp(FileHandle AFD_TCP_RECEIVE_DISCONNECT_DATA, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12063], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_receive_disconnect_options_tcp(FileHandle AFD_TCP_RECEIVE_DISCONNECT_OPTIONS, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12067], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_set_send_connect_data_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1204b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_SEND_CONNECT_DATA
+NtDeviceIoControlFile$afd_set_send_connect_options_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1204f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_SEND_CONNECT_OPTIONS
+NtDeviceIoControlFile$afd_set_send_disconnect_data_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12053], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_SEND_DISCONNECT_DATA
+NtDeviceIoControlFile$afd_set_send_disconnect_options_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12057], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, array[int8, 1:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_SEND_DISCONNECT_OPTIONS
+NtDeviceIoControlFile$afd_set_receive_connect_data_length_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1206b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_RECEIVE_CONNECT_DATA
+NtDeviceIoControlFile$afd_set_receive_connect_options_length_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1206f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_RECEIVE_CONNECT_OPTIONS
+NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12073], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_RECEIVE_DISCONNECT_DATA
+NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12077], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_RECEIVE_DISCONNECT_OPTIONS
+NtDeviceIoControlFile$afd_get_receive_connect_data_udp(FileHandle AFD_UDP_RECEIVE_CONNECT_DATA, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1205b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_receive_connect_options_udp(FileHandle AFD_UDP_RECEIVE_CONNECT_OPTIONS, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1205f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_receive_disconnect_data_udp(FileHandle AFD_UDP_RECEIVE_DISCONNECT_DATA, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12063], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_receive_disconnect_options_udp(FileHandle AFD_UDP_RECEIVE_DISCONNECT_OPTIONS, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12067], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_set_returned_receive_connect_data_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1206b], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_TARGET], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_returned_receive_connect_options_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1206f], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_TARGET], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_returned_receive_disconnect_data_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12073], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_TARGET], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_returned_receive_disconnect_options_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12077], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_TARGET], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[in, AFD_CONNECT_DATA_LENGTH], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_returned_receive_connect_data_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1205b], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_LENGTH_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_CONNECT_DATA_LENGTH_RESULT], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_returned_receive_connect_options_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1205f], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_LENGTH_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_CONNECT_DATA_LENGTH_RESULT], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_returned_receive_disconnect_data_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12063], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_LENGTH_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_CONNECT_DATA_LENGTH_RESULT], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_returned_receive_disconnect_options_length_tcp(FileHandle AFD_TCP_LISTEN_BACKLOG, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12067], InputBuffer ptr[in, AFD_CONNECT_DATA_RETURNED_LENGTH_QUERY], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_CONNECT_DATA_LENGTH_RESULT], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+CloseHandle$afd_tcp_send_connect_data(hObject AFD_TCP_SEND_CONNECT_DATA) (no_generate, no_minimize)
+CloseHandle$afd_tcp_send_connect_options(hObject AFD_TCP_SEND_CONNECT_OPTIONS) (no_generate, no_minimize)
+CloseHandle$afd_tcp_send_disconnect_data(hObject AFD_TCP_SEND_DISCONNECT_DATA) (no_generate, no_minimize)
+CloseHandle$afd_tcp_send_disconnect_options(hObject AFD_TCP_SEND_DISCONNECT_OPTIONS) (no_generate, no_minimize)
+CloseHandle$afd_udp_send_connect_data(hObject AFD_UDP_SEND_CONNECT_DATA) (no_generate, no_minimize)
+CloseHandle$afd_udp_send_connect_options(hObject AFD_UDP_SEND_CONNECT_OPTIONS) (no_generate, no_minimize)
+CloseHandle$afd_udp_send_disconnect_data(hObject AFD_UDP_SEND_DISCONNECT_DATA) (no_generate, no_minimize)
+CloseHandle$afd_udp_send_disconnect_options(hObject AFD_UDP_SEND_DISCONNECT_OPTIONS) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_qos_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12094], InputBuffer ptr[in, AFD_QOS_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TCP_QOS (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_qos_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12094], InputBuffer ptr[in, AFD_QOS_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_QOS (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_set_qos_tli(FileHandle AFD_TLI_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12094], InputBuffer ptr[in, AFD_QOS_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_TLI_QOS (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_qos_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_qos_accept(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_qos_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_get_qos_tcp_set(FileHandle AFD_TCP_QOS, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_qos_udp_set(FileHandle AFD_UDP_QOS, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_get_qos_tli(FileHandle AFD_TLI_QOS, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12098], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_QOS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_noop_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_noop_accept(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_noop_accept_pending(FileHandle AFD_TCP_ACCEPT_PENDING, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_noop_accept_pending_nonblock(FileHandle AFD_TCP_ACCEPT_PENDING_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_noop_tcp_listening_nonblock(FileHandle AFD_TCP_LISTENING_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_noop_tcp_disconnected(FileHandle AFD_TCP_DISCONNECTED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_noop_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1209f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0])
+NtDeviceIoControlFile$afd_validate_group_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120a0], InputBuffer ptr[in, AFD_VALIDATE_GROUP_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_VALIDATED_GROUP (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_validate_group_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120a0], InputBuffer ptr[in, AFD_VALIDATE_GROUP_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_VALIDATED_GROUP (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_validate_group_recheck_tcp(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120a0], InputBuffer ptr[in, AFD_VALIDATE_GROUP_INFO_VALIDATED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_validate_group_recheck_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120a0], InputBuffer ptr[in, AFD_VALIDATE_GROUP_INFO_VALIDATED], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_address_list_query_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120b3], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, afd_address_list], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_routing_interface_query_udp(FileHandle AFD_UDP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120ab], InputBuffer ptr[in, sockaddr_in], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer])
+NtDeviceIoControlFile$afd_address_list_change_udp(FileHandle AFD_UDP_BOUND, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120b4], InputBuffer ptr[in, AFD_ADDRESS_LIST_CHANGE_INFO_BLOCKING], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_ADDRESS_LIST_CHANGE_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_address_list_change_udp_nonblock(FileHandle AFD_UDP_BOUND_NONBLOCK, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120b4], InputBuffer ptr[in, AFD_ADDRESS_LIST_CHANGE_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK
+NtDeviceIoControlFile$afd_routing_interface_change_udp(FileHandle AFD_UDP_PEERED, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120ac], InputBuffer ptr[in, AFD_ROUTING_INTERFACE_CHANGE_INFO_BLOCKING], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_routing_interface_change_udp_nonblock(FileHandle AFD_UDP_PEERED_NONBLOCK, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120ac], InputBuffer ptr[in, AFD_ROUTING_INTERFACE_CHANGE_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK
+CancelIoEx$afd_address_list_change_pending(hFile AFD_UDP_ADDRESS_LIST_CHANGE_PENDING, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_address_list_change_pending_nonblock(hFile AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_routing_interface_change_pending(hFile AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIoEx$afd_routing_interface_change_pending_nonblock(hFile AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CancelIo$afd_address_list_change_pending(hFile AFD_UDP_ADDRESS_LIST_CHANGE_PENDING) (no_generate, no_minimize)
+CancelIo$afd_address_list_change_pending_nonblock(hFile AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK) (no_generate, no_minimize)
+CancelIo$afd_routing_interface_change_pending(hFile AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING) (no_generate, no_minimize)
+CancelIo$afd_routing_interface_change_pending_nonblock(hFile AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_address_list_change_pending(hObject AFD_UDP_ADDRESS_LIST_CHANGE_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_address_list_change_pending_nonblock(hObject AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK) (no_generate, no_minimize)
+CloseHandle$afd_routing_interface_change_pending(hObject AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING) (no_generate, no_minimize)
+CloseHandle$afd_routing_interface_change_pending_nonblock(hObject AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK) (no_generate, no_minimize)
+
+NtDeviceIoControlFile$afd_san_fast_cement_endpoint(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120d7], InputBuffer ptr[in, AFD_SAN_FAST_ENDPOINT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_SAN_REQUEST (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_set_events(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120db], InputBuffer ptr[in, AFD_SAN_FAST_ENDPOINT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_reset_events(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120df], InputBuffer ptr[in, AFD_SAN_FAST_ENDPOINT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_connect_handler(FileHandle AFD_SAN_HELPER, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120e2], InputBuffer ptr[in, AFD_SAN_CONNECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_SAN_CONNECT_OUTPUT], OutputBufferLength bytesize[OutputBuffer]) AFD_SAN_ENDPOINT (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_complete_accept(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120e7], InputBuffer ptr[in, AFD_SAN_FAST_ENDPOINT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_complete_request(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120eb], InputBuffer ptr[in, AFD_SAN_FAST_REQUEST_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_complete_io(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120ef], InputBuffer ptr[in, AFD_SAN_FAST_REQUEST_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_refresh_endpoint(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120f3], InputBuffer ptr[in, AFD_SAN_FAST_ENDPOINT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_transfer_ctx(FileHandle AFD_SAN_CONTEXT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120f7], InputBuffer ptr[in, AFD_SAN_FAST_ENDPOINT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_acquire_context(FileHandle AFD_SAN_HELPER, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120fb], InputBuffer ptr[in, AFD_SWITCH_ACQUIRE_CTX_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 0:256]], OutputBufferLength bytesize[OutputBuffer]) AFD_SAN_CONTEXT (no_generate, no_minimize)
+CancelIoEx$afd_san_context(hFile AFD_SAN_CONTEXT, lpOverlapped ptr[inout, OVERLAPPED, opt]) (no_generate, no_minimize)
+CloseHandle$afd_san_context(hObject AFD_SAN_CONTEXT) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_get_service_pid(FileHandle AFD_SAN_HELPER, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x120ff], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, intptr], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_set_service_process(FileHandle AFD_SAN_HELPER, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12103], InputBuffer ptr[in, AFD_SAN_FAST_SERVICE_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_SAN_SERVICE (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_provider_change(FileHandle AFD_SAN_SERVICE, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12107], InputBuffer ptr[in, AFD_SAN_FAST_SERVICE_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_fast_unknown_1210b(FileHandle AFD_SAN_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1210b], InputBuffer ptr[in, AFD_SAN_FAST_ENDPOINT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 0:128]], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_san_addr_list_change(FileHandle AFD_SAN_ENDPOINT, Event EVENT_HANDLE, ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1210c], InputBuffer ptr[in, AFD_ADDRESS_LIST_CHANGE_INFO_BLOCKING], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_SAN_REQUEST (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_sqm(FileHandle AFD_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12117], InputBuffer ptr[in, array[int8, 0:64], opt], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, array[int8, 0:64], opt], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_socket_transfer_begin(FileHandle AFD_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1211f], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) AFD_SOCKET_TRANSFER_ACTIVE (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_socket_transfer_end(FileHandle AFD_SOCKET_TRANSFER_ACTIVE, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12123], InputBuffer const[0], InputBufferLength const[0], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_notify_sock_register(FileHandle AFD_ENDPOINT, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12127], InputBuffer ptr[inout, AFD_NOTIFY_SOCK_INFO_REGISTER_ONE], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) AFD_NOTIFY_REGISTRATION (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_notify_sock_drain(FileHandle AFD_NOTIFY_REGISTRATION, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12127], InputBuffer ptr[inout, AFD_NOTIFY_SOCK_INFO_DRAIN_ONE], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+
+NtDeviceIoControlFile$afd_event_select_accept(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12087], InputBuffer ptr[in, AFD_EVENT_SELECT_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_enum_network_events_accept(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208b], InputBuffer ptr[in, EVENT_HANDLE, opt], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, AFD_ENUM_NETWORK_EVENTS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_poll_accept(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12024], InputBuffer ptr[inout, AFD_POLL_INFO], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[inout, AFD_POLL_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_event_select_accept_nonblock(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12087], InputBuffer ptr[in, AFD_EVENT_SELECT_INFO_NOEVENT], InputBufferLength bytesize[InputBuffer], OutputBuffer const[0], OutputBufferLength const[0]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x1208b], InputBuffer const[0], InputBufferLength const[0], OutputBuffer ptr[out, AFD_ENUM_NETWORK_EVENTS_INFO], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)
+NtDeviceIoControlFile$afd_poll_accept_nonblock(FileHandle AFD_TCP, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12024], InputBuffer ptr[inout, AFD_POLL_INFO_ACCEPT_NONBLOCK], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[inout, AFD_POLL_INFO_ACCEPT_NONBLOCK], OutputBufferLength bytesize[OutputBuffer]) (no_generate, no_minimize)

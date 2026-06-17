@@ -16,6 +16,20 @@ resource IOCP_HANDLE[HANDLE]
 resource PIPE_READ_HANDLE[FILE_HANDLE]
 resource PIPE_WRITE_HANDLE[FILE_HANDLE]
 
+type sock_port int16be[20000:20004]
+
+sockaddr_in {
+	family	const[2, int16]
+	port	sock_port
+	addr	int32be
+	zero	array[const[0, int8], 8]
+} [size[16]]
+
+afd_address_list {
+	count	int32
+	addrs	array[sockaddr_in, 4]
+} [size[68]]
+
 syz_execute_func(text ptr[in, text[target]])
 syz_kafl_bugcheck_trigger() (no_generate, no_minimize)
 
