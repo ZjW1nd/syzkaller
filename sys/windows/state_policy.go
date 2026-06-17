@@ -21,6 +21,15 @@ func applyWindowsTargetProfile(target *prog.Target, profile string) (*prog.Targe
 		return target, nil
 	case windowsTargetProfileAFD:
 		clone := target.Clone()
+		windowsAFDAllowProfileGenerationPrefix(clone, "NtDeviceIoControlFile$afd_")
+		windowsAFDAllowProfileGeneration(clone,
+			"NtCreateFile$afd_tli_tcp_endpoint",
+			"AcceptEx$inet_tcp_pending",
+			"CreateIoCompletionPort$accept_pending",
+			"CancelIoEx$accept_pending",
+			"CancelIo$accept_pending",
+			"closesocket$accept_pending",
+		)
 		clone.MinimumHintsCallRelevance = 4
 		clone.MinimumTriageCallRelevance = 4
 		clone.MinimumCollideCallRelevance = 4
@@ -29,11 +38,31 @@ func applyWindowsTargetProfile(target *prog.Target, profile string) (*prog.Targe
 		clone.SelectCollideCallIndices = func(calls []*prog.Call) ([]int, bool) {
 			return prog.SelectResourceLineageCollideCallIndices(clone, calls)
 		}
+		clone.SemanticStateModel = windowsAFDSemanticStateModel
 		clone.RuntimePolicy = windowsRuntimePolicy(
 			prog.FocusedResourceRuntimePolicy(clone, clone.MinimumCollideCallRelevance))
 		return clone, nil
 	default:
 		return nil, fmt.Errorf("unknown windows target profile %q", profile)
+	}
+}
+
+func windowsAFDAllowProfileGenerationPrefix(target *prog.Target, prefix string) {
+	for _, call := range target.Syscalls {
+		if call != nil && strings.HasPrefix(call.Name, prefix) {
+			windowsAFDAllowProfileGeneration(target, call.Name)
+		}
+	}
+}
+
+func windowsAFDAllowProfileGeneration(target *prog.Target, names ...string) {
+	for _, name := range names {
+		if call := target.SyscallMap[name]; call != nil {
+			if target.GenerateNoGenerateCalls == nil {
+				target.GenerateNoGenerateCalls = make(map[int]bool)
+			}
+			target.GenerateNoGenerateCalls[call.ID] = true
+		}
 	}
 }
 
@@ -79,12 +108,120 @@ func windowsRuntimePolicy(base prog.RuntimePolicy) prog.RuntimePolicy {
 		if !windowsHasValidWinsockStartupOrder(p) {
 			return false
 		}
+		if !windowsHasCompatibleSocketResourceFamilies(p) {
+			return false
+		}
+		if !windowsHasValidAFDNonblockState(p) {
+			return false
+		}
+		st := prog.BuildSemanticState(p, len(p.Calls))
+		if !st.Valid() {
+			return false
+		}
+		if windowsSemanticHasCompletedConnectEx(st) {
+			return true
+		}
+		if windowsSemanticHasResolvedAcceptEx(st) {
+			return true
+		}
+		if windowsSemanticHasResolvedSendRecvPending(st) {
+			return true
+		}
 		if prev != nil {
 			return prev(origin, p)
 		}
 		return true
 	}
 	return base
+}
+
+func windowsHasValidAFDNonblockState(p *prog.Prog) bool {
+	if p == nil {
+		return true
+	}
+	for idx, call := range p.Calls {
+		if call == nil || call.Meta == nil || !windowsCallNeedsUDPBoundNonblock(call.Meta.Name) {
+			continue
+		}
+		if len(call.Args) == 0 {
+			return false
+		}
+		sock, ok := call.Args[0].(*prog.ResultArg)
+		if !ok || sock.Res == nil {
+			return false
+		}
+		producer := prog.ResourceProducer(sock.Res, p, idx)
+		if producer == nil || producer.Name != "ioctlsocket$fionbio_udp_bound" {
+			return false
+		}
+	}
+	return true
+}
+
+func windowsHasCompatibleSocketResourceFamilies(p *prog.Prog) bool {
+	if p == nil {
+		return true
+	}
+	for _, call := range p.Calls {
+		if call == nil {
+			continue
+		}
+		compatible := true
+		prog.ForeachArg(call, func(arg prog.Arg, ctx *prog.ArgCtx) {
+			if !compatible || arg.Dir() == prog.DirOut {
+				return
+			}
+			res, ok := arg.(*prog.ResultArg)
+			if !ok || res.Res == nil {
+				return
+			}
+			wantType, ok := res.Type().(*prog.ResourceType)
+			if !ok || wantType.Desc == nil {
+				return
+			}
+			gotType, ok := res.Res.Type().(*prog.ResourceType)
+			if !ok || gotType.Desc == nil {
+				return
+			}
+			wantFamily := windowsSocketResourceFamily(wantType.Desc.Name)
+			gotFamily := windowsSocketResourceFamily(gotType.Desc.Name)
+			if wantFamily == "" || gotFamily == "" || wantFamily == gotFamily {
+				return
+			}
+			compatible = false
+			ctx.Stop = true
+		})
+		if !compatible {
+			return false
+		}
+	}
+	return true
+}
+
+func windowsSocketResourceFamily(name string) string {
+	switch {
+	case strings.HasPrefix(name, "SOCKET_TCP"),
+		name == "SOCKET_LISTENER",
+		name == "SOCKET_CONNECTED",
+		name == "SOCKET_ACCEPT":
+		return "tcp"
+	case strings.HasPrefix(name, "SOCKET_UDP"):
+		return "udp"
+	default:
+		return ""
+	}
+}
+
+func windowsCallNeedsUDPBoundNonblock(name string) bool {
+	switch name {
+	case "recv$inet_udp_nonblock",
+		"recvfrom$udp_bound_nonblock",
+		"WSARecvFrom$udp_nonblock",
+		"WSARecvMsg$udp_nonblock":
+		return true
+	default:
+		return false
+	}
 }
 
 func windowsProgramNeedsWSAStartup(calls map[*prog.Syscall]bool) bool {

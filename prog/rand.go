@@ -33,7 +33,16 @@ const (
 	// Limits for recursion pruning during program generation.
 	arrayRecursionLimit             = 2
 	pointerRecursionLimit           = 3
+	resourceRecursionLimit          = 12
 	resourceCentricMissDisableLimit = 64
+)
+
+type resourceGenerationMode uint8
+
+const (
+	resourceGenerationDefault resourceGenerationMode = iota
+	resourceGenerationConstruct
+	resourceGenerationReuse
 )
 
 type randGen struct {
@@ -44,6 +53,7 @@ type randGen struct {
 	currentInsertionPoint int
 	generationContext     string
 	inGenerateResource    bool
+	resourceMode          resourceGenerationMode
 	patchConditionalDepth int
 	genKFuzzTest          bool
 	recDepth              map[Type]int
@@ -464,7 +474,9 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 		meta = r.target.SelectResourceCtor(r.currentMeta, kind, ctors)
 	}
 	if meta == nil {
-		meta = SelectResourceCtorByDepth(r.currentMeta, kind, ctors)
+		// enabledCtors already filters through the choice table, so no_generate
+		// ctors left here were explicitly enabled by a target profile.
+		meta = selectResourceCtorByDepth(r.currentMeta, kind, ctors, true)
 	}
 	// Prefer precise constructors.
 	var precise []*Syscall
@@ -506,7 +518,11 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 
 func (r *randGen) enabledCtors(s *state, kind string) []ResourceCtor {
 	var ret []ResourceCtor
-	for _, info := range r.target.resourceCtors[kind] {
+	ctors := append([]ResourceCtor{}, r.target.resourceCtors[kind]...)
+	if res := r.target.resourceMap[kind]; res != nil {
+		ctors = append(ctors, res.seedCtors...)
+	}
+	for _, info := range ctors {
 		if s.ct.Generatable(info.Call.ID) {
 			ret = append(ret, info)
 		}
@@ -655,7 +671,7 @@ func (r *randGen) generateCall(s *state, p *Prog, insertionPoint int) []*Call {
 		}
 		if biasIdx != NoGenerationBiasCall {
 			insertionCall := p.Calls[biasIdx].Meta
-			if !insertionCall.Attrs.NoGenerate {
+			if !r.target.CallNoGenerate(insertionCall) {
 				// We must be careful not to bias towards a non-generatable call.
 				biasCall = insertionCall.ID
 				if r.target.Helpers.AvoidAutomaticHelperBias && r.target.CallIsAutomaticHelper(insertionCall) {
@@ -679,7 +695,7 @@ func (r *randGen) generateParticularCall(s *state, meta *Syscall) (calls []*Call
 	if meta.Attrs.Disabled {
 		panic(fmt.Sprintf("generating disabled call %v", meta.Name))
 	}
-	if meta.Attrs.NoGenerate {
+	if r.target.CallNoGenerate(meta) {
 		panic(fmt.Sprintf("generating no_generate call: %v", meta.Name))
 	}
 	return r.generateParticularCallUnsafe(s, meta)
@@ -804,7 +820,7 @@ func (r *randGen) generateArgImpl(s *state, typ Type, dir Dir, ignoreSpecial boo
 		}
 	}
 
-	if typ.Optional() && r.oneOf(5) {
+	if typ.Optional() && r.resourceMode == resourceGenerationDefault && r.oneOf(5) {
 		if res, ok := typ.(*ResourceType); ok {
 			v := res.Desc.Values[r.Intn(len(res.Desc.Values))]
 			return MakeResultArg(typ, dir, nil, v), nil
@@ -833,6 +849,29 @@ func (a *ResourceType) generate(r *randGen, s *state, dir Dir) (arg Arg, calls [
 		r.inGenerateResource = true
 		defer func() { r.inGenerateResource = false }()
 		canRecurse = true
+	}
+	if r.resourceMode == resourceGenerationConstruct && !r.genDefaultResource {
+		ok, release := r.pruneRecursion(a, resourceRecursionLimit)
+		if ok {
+			defer release()
+			wasInGenerateResource := r.inGenerateResource
+			r.inGenerateResource = true
+			arg, calls = r.createResource(s, a, dir)
+			r.inGenerateResource = wasInGenerateResource
+			if arg != nil {
+				return
+			}
+		}
+		special := a.SpecialValues()
+		return MakeResultArg(a, dir, nil, special[0]), nil
+	}
+	if r.resourceMode == resourceGenerationReuse && !r.genDefaultResource {
+		arg = r.existingResource(s, a, dir)
+		if arg != nil {
+			return
+		}
+		special := a.SpecialValues()
+		return MakeResultArg(a, dir, nil, special[0]), nil
 	}
 	if (canRecurse && r.nOutOf(8, 10) ||
 		!canRecurse && r.nOutOf(19, 20)) && !r.genDefaultResource {
@@ -1015,7 +1054,7 @@ func (a *PtrType) generate(r *randGen, s *state, dir Dir) (arg Arg, calls []*Cal
 	}
 	// The resource we are trying to generate may be in the pointer,
 	// so don't try to create an empty special pointer during resource generation.
-	if !r.inGenerateResource && r.oneOf(1000) {
+	if r.resourceMode == resourceGenerationDefault && !r.inGenerateResource && r.oneOf(1000) {
 		index := r.rand(len(r.target.SpecialPointers))
 		return MakeSpecialPointerArg(a, dir, index), nil
 	}

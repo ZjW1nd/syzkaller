@@ -9,16 +9,17 @@ import (
 )
 
 const (
-	resourceUseDepthScale        = 10
-	resourceReuseProducerBonus   = 20
-	resourceReuseConsumerBonus   = 5
-	resourceReuseExactBonus      = 40
-	resourceCtorInputPenalty     = 4
-	resourceCtorImprecisePenalty = 8
-	resourceCtorSubtypePenalty   = 16
-	resourceCtorTransitionBonus  = 16
-	resourceCtorHelperBonus      = 4
-	resourceCtorStateDepth       = 3
+	resourceUseDepthScale         = 10
+	resourceReuseProducerBonus    = 20
+	resourceReuseConsumerBonus    = 5
+	resourceReuseExactBonus       = 40
+	resourceCtorInputPenalty      = 4
+	resourceCtorImprecisePenalty  = 8
+	resourceCtorSubtypePenalty    = 16
+	resourceCtorTransitionBonus   = 16
+	resourceCtorHelperBonus       = 4
+	resourceCtorNoGeneratePenalty = 32
+	resourceCtorStateDepth        = 3
 )
 
 // ExpandEnabledResourceCtors closes an enabled syscall set over precise resource
@@ -150,6 +151,9 @@ func selectResourceCtorByDepth(current *Syscall, resourceType string, ctors []Re
 		}
 		if ctor.Call.Attrs.AutomaticHelper {
 			score -= resourceCtorHelperBonus
+		}
+		if ctor.Call.Attrs.NoGenerate {
+			score += resourceCtorNoGeneratePenalty
 		}
 		if best == nil || score < bestScore {
 			best = ctor.Call
@@ -575,7 +579,7 @@ func ProgramHasValidResourceLineage(target *Target, p *Prog) bool {
 		if call == nil || call.Meta == nil || len(call.Meta.inputResources) == 0 {
 			continue
 		}
-		if call.Meta.Attrs.NoGenerate || target != nil && target.CallIsAutomaticHelper(call.Meta) {
+		if target.CallNoGenerate(call.Meta) || target != nil && target.CallIsAutomaticHelper(call.Meta) {
 			continue
 		}
 		if !callHasFocusedResourceLineage(p.Calls, idx, nil) {
@@ -628,7 +632,7 @@ func focusedResourceOwnerScore(target *Target, call *Syscall) int {
 }
 
 func callCanOwnResourcePolicy(target *Target, call *Syscall) bool {
-	if call == nil || call.Attrs.NoGenerate {
+	if call == nil || target.CallNoGenerate(call) {
 		return false
 	}
 	if target != nil && target.CallIsAutomaticHelper(call) {
@@ -653,7 +657,7 @@ func ShouldSkipFocusedResourceProgram(target *Target, p *Prog, minOwnerScore int
 		if CallIndexHasResourceOwner(target, p, idx, minOwnerScore) {
 			return false
 		}
-		if call.Meta.Attrs.NoGenerate {
+		if target.CallNoGenerate(call.Meta) {
 			containsNoGenerate = true
 		}
 		if callCanOwnResourcePolicy(target, call.Meta) &&

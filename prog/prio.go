@@ -85,7 +85,7 @@ func (target *Target) prepareEnabledSyscalls(corpus []*Prog, enabled map[*Syscal
 	noGenerateCalls := make(map[int]bool)
 	enabledCalls := make(map[*Syscall]bool)
 	for call := range enabled {
-		if call.Attrs.NoGenerate {
+		if target.CallNoGenerate(call) {
 			noGenerateCalls[call.ID] = true
 		} else if !call.Attrs.Disabled {
 			enabledCalls[call] = true

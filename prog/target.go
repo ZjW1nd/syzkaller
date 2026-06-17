@@ -67,6 +67,9 @@ type Target struct {
 	// RuntimePolicy groups runtime pipeline steering hooks that are consumed outside
 	// pure prog semantics (triage/corpus/collide scheduling).
 	RuntimePolicy RuntimePolicy
+	// SemanticStateModel optionally analyzes a program prefix into target-specific
+	// semantic facts. Generic targets leave this unset.
+	SemanticStateModel SemanticStateModel
 	// ApplyTargetProfile returns a target instance with named target-specific policy
 	// knobs applied. Implementations should clone before mutating profile state.
 	ApplyTargetProfile func(target *Target, profile string) (*Target, error)
@@ -100,6 +103,9 @@ type Target struct {
 	// ExpandEnabledCalls can automatically add helper/constructor syscalls to the enabled set
 	// before choice-table building and transitive resource checks.
 	ExpandEnabledCalls func(target *Target, enabled map[*Syscall]bool) map[*Syscall]bool
+	// GenerateNoGenerateCalls lets target profiles generate selected no_generate calls without
+	// mutating the shared syscall metadata.
+	GenerateNoGenerateCalls map[int]bool
 	// MinimumHintsCallRelevance skips comparison-driven hints jobs for calls below the
 	// configured relevance threshold when CallRelevanceScore is available.
 	MinimumHintsCallRelevance int
@@ -313,13 +319,20 @@ func (target *Target) CallEligibleForGenerationBias(call *Syscall) bool {
 	if target == nil || call == nil {
 		return false
 	}
-	if call.Attrs.NoGenerate {
+	if target.CallNoGenerate(call) {
 		return false
 	}
 	if target.Helpers.AvoidAutomaticHelperBias && target.CallIsAutomaticHelper(call) {
 		return false
 	}
 	return target.CallPassesRelevanceThreshold(call, target.Bias.MinimumGenerationBiasCallRelevance)
+}
+
+func (target *Target) CallNoGenerate(call *Syscall) bool {
+	if call == nil {
+		return false
+	}
+	return call.Attrs.NoGenerate && (target == nil || !target.GenerateNoGenerateCalls[call.ID])
 }
 
 func (target *Target) CallEligibleForCollide(call *Syscall) bool {
@@ -698,6 +711,7 @@ func (target *Target) Clone() *Target {
 		Bias:                           target.Bias,
 		SelectCollideCallIndices:       target.SelectCollideCallIndices,
 		RuntimePolicy:                  target.RuntimePolicy,
+		SemanticStateModel:             target.SemanticStateModel,
 		ApplyTargetProfile:             target.ApplyTargetProfile,
 		ResourceUseScore:               target.ResourceUseScore,
 		ResourceReuseScore:             target.ResourceReuseScore,
@@ -707,6 +721,7 @@ func (target *Target) Clone() *Target {
 		CallRelevanceScore:             target.CallRelevanceScore,
 		TriageCallScore:                target.TriageCallScore,
 		ExpandEnabledCalls:             target.ExpandEnabledCalls,
+		GenerateNoGenerateCalls:        cloneBoolMap(target.GenerateNoGenerateCalls),
 		MinimumHintsCallRelevance:      target.MinimumHintsCallRelevance,
 		MinimumTriageCallRelevance:     target.MinimumTriageCallRelevance,
 		MinimumCollideCallRelevance:    target.MinimumCollideCallRelevance,
@@ -725,6 +740,17 @@ func (target *Target) Clone() *Target {
 		kFuzzTestID:                    target.kFuzzTestID,
 	}
 	return clone
+}
+
+func cloneBoolMap(src map[int]bool) map[int]bool {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make(map[int]bool, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
 }
 
 func (target *Target) NoAutoChoiceTable() *ChoiceTable {

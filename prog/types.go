@@ -70,7 +70,7 @@ type SyscallAttrs struct {
 
 // MaxArgs is maximum number of syscall arguments.
 // Executor also knows about this value.
-const MaxArgs = 10
+const MaxArgs = 11
 
 type Dir uint8
 

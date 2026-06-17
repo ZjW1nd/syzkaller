@@ -508,7 +508,8 @@ func (fuzzer *Fuzzer) programUsesEnabledCalls(p *prog.Prog) bool {
 		if call == nil || call.Meta == nil || fuzzer.Config.EnabledCalls[call.Meta] {
 			continue
 		}
-		if call.Meta.Attrs.NoGenerate || fuzzer.target != nil && fuzzer.target.CallIsAutomaticHelper(call.Meta) {
+		if fuzzer.target.CallNoGenerate(call.Meta) ||
+			fuzzer.target != nil && fuzzer.target.CallIsAutomaticHelper(call.Meta) {
 			continue
 		}
 		return false

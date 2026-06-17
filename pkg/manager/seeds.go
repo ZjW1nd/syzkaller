@@ -135,7 +135,7 @@ func LoadBorrowingSeeds(cfg *mgrconfig.Config) []*prog.Prog {
 			log.Logf(0, "failed to parse borrowing seed %s: %v", seed.Path, err)
 			continue
 		}
-		if progContainsNoGenerate(p, cfg.NoGenerateCalls) {
+		if progContainsNoGenerate(p, cfg.Target, cfg.NoGenerateCalls) {
 			skippedNoGenerate++
 			log.Logf(1, "borrowing seed %s is skipped: contains no_generate calls", seed.Path)
 			continue
@@ -196,7 +196,7 @@ func disabledCallIDs(cfg *mgrconfig.Config) map[int]bool {
 	return disabled
 }
 
-func progContainsNoGenerate(p *prog.Prog, noGenerate map[int]bool) bool {
+func progContainsNoGenerate(p *prog.Prog, target *prog.Target, noGenerate map[int]bool) bool {
 	if p == nil {
 		return false
 	}
@@ -204,7 +204,7 @@ func progContainsNoGenerate(p *prog.Prog, noGenerate map[int]bool) bool {
 		if call == nil || call.Meta == nil {
 			continue
 		}
-		if call.Meta.Attrs.NoGenerate || noGenerate[call.Meta.ID] {
+		if target.CallNoGenerate(call.Meta) || noGenerate[call.Meta.ID] {
 			return true
 		}
 	}
