@@ -8,7 +8,9 @@ import datetime
 import hashlib
 import json
 import os
+import shutil
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -46,6 +48,8 @@ def upload_snapshot(manager_url, snapshot):
 
 
 def parse_hex_list(values):
+    if values is None:
+        return []
     return sorted({int(value, 16) for value in values})
 
 
@@ -226,7 +230,23 @@ def analyze_with_ida(idb_path, raw, offsets, lighthouse, decompile, idalib_pytho
         return snapshot
     finally:
         if hasattr(idapro, "close_database"):
-            idapro.close_database()
+            idapro.close_database(False)
+
+
+def copy_idb_to_scratch(idb_path, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    suffix = os.path.splitext(idb_path)[1] or ".i64"
+    fd, scratch_path = tempfile.mkstemp(prefix="ntcover-idb-", suffix=suffix, dir=output_dir)
+    os.close(fd)
+    try:
+        shutil.copy2(idb_path, scratch_path)
+    except Exception:
+        try:
+            os.remove(scratch_path)
+        except OSError:
+            pass
+        raise
+    return scratch_path
 
 
 def block_has_offset(offsets, start, end):
@@ -398,15 +418,21 @@ def build_snapshot(args, raw=None):
     offsets = parse_hex_list(raw.get("offsets", []))
     lighthouse = []
     if args.idb:
+        idb_path = copy_idb_to_scratch(args.idb, args.output_dir)
         try:
             snapshot = analyze_with_ida(
-                args.idb, raw, offsets, lighthouse, not args.no_decompile, args.idalib_python
+                idb_path, raw, offsets, lighthouse, not args.no_decompile, args.idalib_python
             )
         except Exception as err:
             if not args.raw_only_on_ida_error:
                 raise
             print(f"IDA analysis failed, uploading raw-only snapshot: {err}", file=sys.stderr)
             snapshot = raw_snapshot(raw, offsets, lighthouse)
+        finally:
+            try:
+                os.remove(idb_path)
+            except OSError:
+                pass
     else:
         snapshot = raw_snapshot(raw, offsets, lighthouse)
     exported_offsets = snapshot.get("covered_offsets") or offsets

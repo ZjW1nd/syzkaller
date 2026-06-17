@@ -70,6 +70,20 @@ class NtCoverIdalibTest(unittest.TestCase):
 
         self.assertEqual(ntcover.raw_cover_hash(raw_a), ntcover.raw_cover_hash(raw_b))
 
+    def test_raw_cover_hash_treats_null_offsets_as_empty(self):
+        raw_a = {
+            "module": {"name": "afd.sys", "base": "0x1000", "size": "0x2000"},
+            "offsets": None,
+            "raw_cover_complete": False,
+        }
+        raw_b = {
+            "module": {"name": "afd.sys", "base": "0x1000", "size": "0x2000"},
+            "offsets": [],
+            "raw_cover_complete": False,
+        }
+
+        self.assertEqual(ntcover.raw_cover_hash(raw_a), ntcover.raw_cover_hash(raw_b))
+
     def test_open_database_result_requires_zero(self):
         ntcover.check_open_database_result(0, "afd.sys.i64")
 
@@ -105,6 +119,46 @@ class NtCoverIdalibTest(unittest.TestCase):
             path = os.path.join(output_dir, "afd.sys_coverage_modoff.txt")
             with open(path, encoding="utf-8") as f:
                 self.assertEqual(f.read(), "afd.sys+10\nafd.sys+20\n")
+
+    def test_ida_analysis_uses_temporary_idb_copy(self):
+        raw = {
+            "module": {"name": "afd.sys", "base": "0x1000", "size": "0x2000"},
+            "offsets": ["0x10"],
+        }
+        with tempfile.TemporaryDirectory() as output_dir:
+            idb_path = os.path.join(output_dir, "source.i64")
+            with open(idb_path, "wb") as f:
+                f.write(b"idb")
+            args = types.SimpleNamespace(
+                manager="",
+                module="afd.sys",
+                idb=idb_path,
+                output_dir=output_dir,
+                no_decompile=True,
+                raw_only_on_ida_error=False,
+                idalib_python="",
+            )
+            seen = {}
+            original = ntcover.analyze_with_ida
+
+            def fake_analyze(path, got_raw, offsets, lighthouse, decompile, idalib_python):
+                seen["path"] = path
+                self.assertNotEqual(path, idb_path)
+                self.assertTrue(path.startswith(output_dir + os.sep))
+                self.assertTrue(os.path.exists(path))
+                with open(path, "rb") as f:
+                    self.assertEqual(f.read(), b"idb")
+                return ntcover.raw_snapshot(got_raw, offsets, lighthouse)
+
+            ntcover.analyze_with_ida = fake_analyze
+            try:
+                snapshot = ntcover.build_snapshot(args, raw)
+            finally:
+                ntcover.analyze_with_ida = original
+
+            self.assertEqual(snapshot["covered_offsets"], [0x10])
+            self.assertIn("path", seen)
+            self.assertFalse(os.path.exists(seen["path"]))
 
 
 if __name__ == "__main__":

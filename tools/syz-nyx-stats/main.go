@@ -2979,7 +2979,7 @@ func afdCallCategory(name string) string {
 		"WSAGetOverlappedResult$tcp_send_pending", "CancelIoEx$tcp_send_pending", "CancelIo$tcp_send_pending",
 		"CreateIoCompletionPort$tcp_send_pending", "closesocket$tcp_send_pending",
 		"WSAGetOverlappedResult$connect_pending", "CancelIoEx$connect_pending", "CancelIo$connect_pending",
-		"CreateIoCompletionPort$connect_pending", "closesocket$connect_pending",
+		"CreateIoCompletionPort$connect_pending", "setsockopt$update_connect_context", "closesocket$connect_pending",
 		"WSAEventSelect$tcp", "WSAEventSelect$accept",
 		"WSAEnumNetworkEvents$tcp", "WSAEnumNetworkEvents$accept",
 		"WSAEventSelect$tcp_nonblock", "WSAEventSelect$accept_nonblock",

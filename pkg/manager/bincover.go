@@ -349,14 +349,14 @@ func (serv *HTTPServer) httpBinCoverRaw(w http.ResponseWriter, r *http.Request) 
 			}
 			sourceUpdates++
 			usedRaw = true
-			binCoverAddPCs(raw, module.Addr, module.Size, pcs, unmapped)
+			binCoverAddPCs(CoverToPCs(serv.Cfg, raw), module.Addr, module.Size, pcs, unmapped)
 		}
 		if !usedRaw {
 			rawComplete = false
 			if len(item.Cover) != 0 {
 				sourceUpdates++
 			}
-			binCoverAddPCs(item.Cover, module.Addr, module.Size, pcs, unmapped)
+			binCoverAddPCs(CoverToPCs(serv.Cfg, item.Cover), module.Addr, module.Size, pcs, unmapped)
 		}
 	}
 

@@ -138,6 +138,7 @@ func TestAFDCallCategoryClassifiesAcceptRecvSendPending(t *testing.T) {
 		"WSAGetOverlappedResult$connect_pending",
 		"CancelIoEx$connect_pending",
 		"CancelIo$connect_pending",
+		"setsockopt$update_connect_context",
 		"closesocket$connect_pending",
 		"WSAEventSelect$tcp",
 		"WSAEnumNetworkEvents$tcp",

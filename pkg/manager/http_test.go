@@ -70,6 +70,37 @@ func TestBinCoverRaw(t *testing.T) {
 	}
 }
 
+func TestBinCoverRawNormalizesRawCoverPCs(t *testing.T) {
+	base := uint64(0xfffff80010000000)
+	serv := newBinCoverTestServer(t, base, 0x100)
+	serv.Cfg.SysTarget = targets.Get(targets.Linux, targets.AMD64)
+	corp := corpus.NewCorpus(context.Background())
+	corp.Save(corpus.NewInput{
+		Prog:     testProg(t),
+		Call:     0,
+		Signal:   signal.FromRaw([]uint64{1}, 0),
+		RawCover: []uint64{base + 0x15, base + 0x25, base + 0x205},
+	})
+	serv.Corpus.Store(corp)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/bincover/raw?module=afd.sys", nil)
+	serv.httpBinCoverRaw(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("httpBinCoverRaw status=%d body=%s", w.Code, w.Body.String())
+	}
+	var resp binCoverRawResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Join(resp.Offsets, ","), "0x10,0x20"; got != want {
+		t.Fatalf("offsets=%v want %v", got, want)
+	}
+	if got, want := len(resp.Unmapped), 1; got != want {
+		t.Fatalf("unmapped=%d want %d", got, want)
+	}
+}
+
 func TestBinCoverRawFallsBackToCover(t *testing.T) {
 	base := uint64(0xfffff80010000000)
 	serv := newBinCoverTestServer(t, base, 0x100)
@@ -319,7 +350,10 @@ func TestBareCoverRedirectsToBinaryModule(t *testing.T) {
 
 func newBinCoverTestServer(t *testing.T, base, size uint64) *HTTPServer {
 	t.Helper()
-	serv := &HTTPServer{Cfg: &mgrconfig.Config{Name: "test", RawCover: true}}
+	target := targets.Get(targets.TestOS, targets.TestArch64)
+	cfg := &mgrconfig.Config{Name: "test", RawCover: true}
+	cfg.SysTarget = target
+	serv := &HTTPServer{Cfg: cfg}
 	serv.Cover.Store(&CoverageInfo{Modules: []*vminfo.KernelModule{{
 		Name: "afd.sys",
 		Addr: base,
