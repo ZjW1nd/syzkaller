@@ -2161,6 +2161,7 @@ func isDeepAFDCallName(name string) bool {
 		strings.HasPrefix(name, "WSARecvMsg$") ||
 		strings.HasPrefix(name, "GetAcceptExSockaddrs$") ||
 		strings.HasPrefix(name, "setsockopt$update_accept_context") ||
+		strings.HasPrefix(name, "setsockopt$update_connect_context") ||
 		strings.HasPrefix(name, "setsockopt$int_") ||
 		strings.HasPrefix(name, "getsockopt$int_") ||
 		strings.HasPrefix(name, "ioctlsocket$fionbio_") ||
@@ -2209,6 +2210,7 @@ type runner struct {
 	keepState         bool
 	coverageDebugPath string
 	slowTrace         *slowTraceConfig
+	lastCompletedReq  *flatrpc.ExecRequest
 }
 
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
@@ -2222,26 +2224,82 @@ type slowTraceConfig struct {
 }
 
 type slowTraceMetadata struct {
-	GeneratedAt    time.Time         `json:"generated_at"`
-	Reason         string            `json:"reason"`
-	Label          string            `json:"label"`
-	RunnerID       int               `json:"runner_id"`
-	RequestID      int64             `json:"request_id"`
-	DurationMS     int64             `json:"duration_ms"`
-	ThresholdMS    int64             `json:"threshold_ms"`
-	KeepState      bool              `json:"keep_state"`
-	QEMUPID        int               `json:"qemu_pid,omitempty"`
-	Workdir        string            `json:"workdir"`
-	ProgramSHA1    string            `json:"program_sha1"`
-	ProgramSHA256  string            `json:"program_sha256"`
-	ProgramSummary string            `json:"program_summary"`
-	CallCount      int               `json:"call_count"`
-	CallNames      []string          `json:"call_names,omitempty"`
-	Request        map[string]any    `json:"request"`
-	Result         map[string]any    `json:"result,omitempty"`
-	Aux            map[string]any    `json:"aux,omitempty"`
-	Diagnosis      map[string]any    `json:"diagnosis,omitempty"`
-	ArtifactFiles  map[string]string `json:"artifact_files"`
+	GeneratedAt     time.Time                `json:"generated_at"`
+	Reason          string                   `json:"reason"`
+	Label           string                   `json:"label"`
+	RunnerID        int                      `json:"runner_id"`
+	RequestID       int64                    `json:"request_id"`
+	DurationMS      int64                    `json:"duration_ms"`
+	ThresholdMS     int64                    `json:"threshold_ms"`
+	KeepState       bool                     `json:"keep_state"`
+	QEMUPID         int                      `json:"qemu_pid,omitempty"`
+	Workdir         string                   `json:"workdir"`
+	ProgramSHA1     string                   `json:"program_sha1"`
+	ProgramSHA256   string                   `json:"program_sha256"`
+	ProgramSummary  string                   `json:"program_summary"`
+	CallCount       int                      `json:"call_count"`
+	CallNames       []string                 `json:"call_names,omitempty"`
+	Request         map[string]any           `json:"request"`
+	PreviousRequest *slowTraceProgramContext `json:"previous_request,omitempty"`
+	Result          map[string]any           `json:"result,omitempty"`
+	Aux             map[string]any           `json:"aux,omitempty"`
+	Diagnosis       map[string]any           `json:"diagnosis,omitempty"`
+	ArtifactFiles   map[string]string        `json:"artifact_files"`
+}
+
+type slowTraceProgramContext struct {
+	RequestID      int64          `json:"request_id"`
+	ProgramSHA1    string         `json:"program_sha1"`
+	ProgramSHA256  string         `json:"program_sha256"`
+	ProgramSummary string         `json:"program_summary"`
+	CallCount      int            `json:"call_count"`
+	CallNames      []string       `json:"call_names,omitempty"`
+	Request        map[string]any `json:"request"`
+}
+
+func slowTraceProgramContextForRequest(req *flatrpc.ExecRequest) *slowTraceProgramContext {
+	if req == nil {
+		return nil
+	}
+	sum1 := sha1.Sum(req.Data)
+	sum256 := sha256.Sum256(req.Data)
+	return &slowTraceProgramContext{
+		RequestID:      req.Id,
+		ProgramSHA1:    fmt.Sprintf("%x", sum1),
+		ProgramSHA256:  fmt.Sprintf("%x", sum256),
+		ProgramSummary: describeExecProgram(req.Data),
+		CallCount:      progExecCallCountOrPanic(req.Data),
+		CallNames:      execCallNames(req.Data),
+		Request:        slowTraceRequestSummary(req, nil),
+	}
+}
+
+func slowTraceRequestSummary(req *flatrpc.ExecRequest, started *time.Time) map[string]any {
+	if req == nil {
+		return nil
+	}
+	ret := map[string]any{
+		"type":        req.Type.String(),
+		"flags":       uint64(req.Flags),
+		"exec_flags":  uint64(req.ExecOpts.ExecFlags),
+		"env_flags":   uint64(req.ExecOpts.EnvFlags),
+		"sandbox_arg": req.ExecOpts.SandboxArg,
+		"all_signal":  req.AllSignal,
+	}
+	if started != nil {
+		ret["started_at"] = started.UTC()
+	}
+	return ret
+}
+
+func cloneExecRequestForArtifact(req *flatrpc.ExecRequest) *flatrpc.ExecRequest {
+	if req == nil {
+		return nil
+	}
+	cp := *req
+	cp.Data = append([]byte(nil), req.Data...)
+	cp.AllSignal = append([]int32(nil), req.AllSignal...)
+	return &cp
 }
 
 func (r *runner) maybeDumpSlowTrace(req *flatrpc.ExecRequest, label string, started time.Time,
@@ -2303,6 +2361,16 @@ func (r *runner) writeSlowTraceArtifact(req *flatrpc.ExecRequest, label, reason 
 	if err := writeFile("program.txt", []byte(formatExecProgramForArtifact(req.Data))); err != nil {
 		return "", err
 	}
+	var previous *slowTraceProgramContext
+	if strings.Contains(label, "handshake") && r.lastCompletedReq != nil {
+		previous = slowTraceProgramContextForRequest(r.lastCompletedReq)
+		if err := writeFile("previous-program.exec.bin", r.lastCompletedReq.Data); err != nil {
+			return "", err
+		}
+		if err := writeFile("previous-program.txt", []byte(formatExecProgramForArtifact(r.lastCompletedReq.Data))); err != nil {
+			return "", err
+		}
+	}
 	if execMsg != nil {
 		if data, err := json.MarshalIndent(execMsg, "", "\t"); err == nil {
 			if err := writeFile("result.json", data); err != nil {
@@ -2337,34 +2405,37 @@ func (r *runner) writeSlowTraceArtifact(req *flatrpc.ExecRequest, label, reason 
 			return "", err
 		}
 	}
+	diagnosis := slowTraceDiagnosis(events, r.keepState)
+	if previous != nil {
+		if diagnosis == nil {
+			diagnosis = map[string]any{}
+		}
+		diagnosis["phase"] = "pre_request_handshake"
+		diagnosis["previous_request_id"] = previous.RequestID
+		diagnosis["previous_program_summary"] = previous.ProgramSummary
+		diagnosis["previous_call_names"] = previous.CallNames
+	}
 	meta := slowTraceMetadata{
-		GeneratedAt:    time.Now().UTC(),
-		Reason:         reason,
-		Label:          label,
-		RunnerID:       r.id,
-		RequestID:      req.Id,
-		DurationMS:     duration.Milliseconds(),
-		ThresholdMS:    r.slowTrace.threshold.Milliseconds(),
-		KeepState:      r.keepState,
-		Workdir:        r.vm.workdir,
-		ProgramSHA1:    fmt.Sprintf("%x", sum1),
-		ProgramSHA256:  fmt.Sprintf("%x", sum256),
-		ProgramSummary: describeExecProgram(req.Data),
-		CallCount:      progExecCallCountOrPanic(req.Data),
-		CallNames:      execCallNames(req.Data),
-		Request: map[string]any{
-			"type":        req.Type.String(),
-			"flags":       uint64(req.Flags),
-			"exec_flags":  uint64(req.ExecOpts.ExecFlags),
-			"env_flags":   uint64(req.ExecOpts.EnvFlags),
-			"sandbox_arg": req.ExecOpts.SandboxArg,
-			"all_signal":  req.AllSignal,
-			"started_at":  started.UTC(),
-		},
-		Result:        execResultArtifactSummary(execMsg, execErr),
-		Aux:           r.vm.auxArtifactSummary(),
-		Diagnosis:     slowTraceDiagnosis(events, r.keepState),
-		ArtifactFiles: files,
+		GeneratedAt:     time.Now().UTC(),
+		Reason:          reason,
+		Label:           label,
+		RunnerID:        r.id,
+		RequestID:       req.Id,
+		DurationMS:      duration.Milliseconds(),
+		ThresholdMS:     r.slowTrace.threshold.Milliseconds(),
+		KeepState:       r.keepState,
+		Workdir:         r.vm.workdir,
+		ProgramSHA1:     fmt.Sprintf("%x", sum1),
+		ProgramSHA256:   fmt.Sprintf("%x", sum256),
+		ProgramSummary:  describeExecProgram(req.Data),
+		CallCount:       progExecCallCountOrPanic(req.Data),
+		CallNames:       execCallNames(req.Data),
+		Request:         slowTraceRequestSummary(req, &started),
+		PreviousRequest: previous,
+		Result:          execResultArtifactSummary(execMsg, execErr),
+		Aux:             r.vm.auxArtifactSummary(),
+		Diagnosis:       diagnosis,
+		ArtifactFiles:   files,
 	}
 	if r.vm.process != nil && r.vm.process.Process != nil {
 		meta.QEMUPID = r.vm.process.Process.Pid
@@ -2614,6 +2685,7 @@ func (r *runner) resetForReconnect() {
 	r.coveragePrimed = false
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
+	r.lastCompletedReq = nil
 }
 
 func (r *runner) connect() error {
@@ -2737,6 +2809,7 @@ func (r *runner) restartVM(reason string) error {
 	r.coveragePrimed = false
 	r.lastEnvFlags = 0
 	r.lastSandboxArg = 0
+	r.lastCompletedReq = nil
 	r.needRestart = false
 	return nil
 }
@@ -2868,6 +2941,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		"hanged", execResultHanged(execMsg),
 	))
 	r.maybeDumpSlowTrace(req, requestLabel, started, duration, execMsg, nil)
+	r.lastCompletedReq = cloneExecRequestForArtifact(req)
 	if res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult); ok && res.Info != nil {
 		if r.vm.debug {
 			logCallFeedback(req.Id, req.Data, res.Info.Calls)
@@ -3860,7 +3934,8 @@ func standaloneNeedsFileHandleProgram(meta *prog.Syscall) bool {
 		"ConnectEx$inet_tcp", "DisconnectEx$inet_tcp", "GetAcceptExSockaddrs$inet_tcp",
 		"ConnectEx$inet_tcp_pending", "CreateIoCompletionPort$connect_pending",
 		"WSAGetOverlappedResult$connect_pending", "CancelIoEx$connect_pending",
-		"CancelIo$connect_pending", "closesocket$connect_pending",
+		"CancelIo$connect_pending", "setsockopt$update_connect_context",
+		"closesocket$connect_pending",
 		"DisconnectEx$inet_tcp_reuse", "ConnectEx$inet_tcp_reuse",
 		"TransmitPackets$inet_accept", "WSARecvMsg$udp",
 		"WSAEventSelect$tcp", "WSAEnumNetworkEvents$tcp",
@@ -3987,8 +4062,7 @@ func standaloneFileHandleProgram(name string) ([]byte, error) {
 				"closesocket$any(r1)\n" +
 				"closesocket$any(r0)\n"), nil
 	case "ConnectEx$inet_tcp_pending", "CreateIoCompletionPort$connect_pending",
-		"WSAGetOverlappedResult$connect_pending", "CancelIoEx$connect_pending",
-		"CancelIo$connect_pending", "closesocket$connect_pending":
+		"WSAGetOverlappedResult$connect_pending":
 		return []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
 				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
@@ -3998,12 +4072,38 @@ func standaloneFileHandleProgram(name string) ([]byte, error) {
 				"bind$connectex_tcp(r1, &(0x7f0000000120)={0x2, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
 				"r2 = ConnectEx$inet_tcp_pending(r1, &(0x7f0000000140)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000180)='cx', 0x2, &(0x7f00000001c0), &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
 				"r3 = CreateIoCompletionPort$connect_pending(r2, 0x0, 0xafd, 0x0)\n" +
-				"CancelIoEx$connect_pending(r2, &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
 				"WSAGetOverlappedResult$connect_pending(r2, &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000300), 0x0, &(0x7f0000000340)=0x0)\n" +
-				"CancelIo$connect_pending(r2)\n" +
 				"GetQueuedCompletionStatus$socket(r3, &(0x7f0000000380), &(0x7f00000003c0), &(0x7f0000000400), 0x0)\n" +
 				"closesocket$connect_pending(r2)\n" +
 				"closesocket$any(r0)\n"), nil
+	case "CancelIoEx$connect_pending", "CancelIo$connect_pending", "closesocket$connect_pending":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r0, 0x1)\n" +
+				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
+				"bind$connectex_tcp(r1, &(0x7f0000000120)={0x2, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = ConnectEx$inet_tcp_pending(r1, &(0x7f0000000140)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000180)='cx', 0x2, &(0x7f00000001c0), &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+				"CreateIoCompletionPort$connect_pending(r2, 0x0, 0xafd, 0x0)\n" +
+				"CancelIoEx$connect_pending(r2, &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+				"CancelIo$connect_pending(r2)\n" +
+				"closesocket$connect_pending(r2)\n" +
+				"closesocket$any(r0)\n"), nil
+	case "setsockopt$update_connect_context":
+		return []byte(
+			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"r1 = bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"listen$inet_tcp(r1, 0x1)\n" +
+				"r2 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"r3 = bind$connectex_tcp(r2, &(0x7f0000000120)={0x2, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r4 = ConnectEx$inet_tcp_pending(r3, &(0x7f0000000140)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000180)='cx', 0x2, &(0x7f00000001c0), &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+				"r5 = CreateIoCompletionPort$connect_pending(r4, 0x0, 0xafd, 0x0)\n" +
+				"WSAGetOverlappedResult$connect_pending(r4, &(0x7f0000000200)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000300), 0x0, &(0x7f0000000340)=0x0)\n" +
+				"GetQueuedCompletionStatus$socket(r5, &(0x7f0000000380), &(0x7f00000003c0), &(0x7f0000000400), 0x0)\n" +
+				"setsockopt$update_connect_context(r4, 0xffff, 0x7010, 0x0, 0x0)\n" +
+				"closesocket$any(r1)\n"), nil
 	case "DisconnectEx$inet_tcp":
 		return []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
@@ -4020,34 +4120,43 @@ func standaloneFileHandleProgram(name string) ([]byte, error) {
 	case "DisconnectEx$inet_tcp_reuse":
 		return []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet_tcp(r0, 0x1)\n" +
-				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
-				"r3 = DisconnectEx$inet_tcp_reuse(r1, 0x0, 0x2, 0x0)\n" +
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"r1 = bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = listen$inet_tcp(r1, 0x1)\n" +
+				"r3 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"r4 = connect$inet_tcp(r3, &(0x7f0000000140)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r5 = accept$inet_tcp(r2, 0x0, 0x0)\n" +
+				"closesocket$any(r5)\n" +
+				"r6 = DisconnectEx$inet_tcp_reuse(r4, &(0x7f0000000180)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x2, 0x0)\n" +
+				"r7 = CreateIoCompletionPort$disconnect_reuse_pending(r6, 0x0, 0xafd, 0x0)\n" +
+				"GetQueuedCompletionStatus$socket(r7, &(0x7f0000000280), &(0x7f00000002c0), &(0x7f0000000300), 0x0)\n" +
+				"r8 = WSAGetOverlappedResult$disconnect_reuse_pending(r6, &(0x7f0000000180)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000340), 0x0, &(0x7f0000000380)=0x0)\n" +
 				"closesocket$any(r2)\n" +
-				"closesocket$any(r3)\n" +
-				"closesocket$any(r0)\n"), nil
+				"closesocket$any(r8)\n"), nil
 	case "ConnectEx$inet_tcp_reuse":
 		return []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"r0 = socket$listener_tcp(0x2, 0x1, 0x6)\n" +
-				"bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"listen$inet_tcp(r0, 0x1)\n" +
-				"r1 = socket$connected_tcp(0x2, 0x1, 0x6)\n" +
-				"connect$inet_tcp(r1, &(0x7f0000000120)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
-				"r2 = accept$inet_tcp(r0, &(0x7f0000000140)={0x0, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}, &(0x7f0000000180)=0x10)\n" +
-				"r3 = DisconnectEx$inet_tcp_reuse(r1, 0x0, 0x2, 0x0)\n" +
-				"ConnectEx$inet_tcp_reuse(r3, &(0x7f00000001c0)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000200)='cx', 0x2, &(0x7f0000000240), 0x0)\n" +
-				"closesocket$any(r2)\n" +
-				"closesocket$any(r3)\n" +
-				"closesocket$any(r0)\n"), nil
+				"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"r1 = bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r2 = listen$inet_tcp(r1, 0x1)\n" +
+				"r3 = socket$inet_tcp(0x2, 0x1, 0x6)\n" +
+				"r4 = connect$inet_tcp(r3, &(0x7f0000000140)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n" +
+				"r5 = accept$inet_tcp(r2, 0x0, 0x0)\n" +
+				"closesocket$any(r5)\n" +
+				"r6 = DisconnectEx$inet_tcp_reuse(r4, &(0x7f0000000180)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, 0x2, 0x0)\n" +
+				"r7 = CreateIoCompletionPort$disconnect_reuse_pending(r6, 0x0, 0xafd, 0x0)\n" +
+				"GetQueuedCompletionStatus$socket(r7, &(0x7f0000000280), &(0x7f00000002c0), &(0x7f0000000300), 0x0)\n" +
+				"r8 = WSAGetOverlappedResult$disconnect_reuse_pending(r6, &(0x7f0000000180)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000340), 0x0, &(0x7f0000000380)=0x0)\n" +
+				"r9 = ConnectEx$inet_tcp_reuse(r8, &(0x7f00000003c0)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000400)='cx', 0x2, &(0x7f0000000440), &(0x7f0000000480)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0})\n" +
+				"r10 = CreateIoCompletionPort$connect_pending(r9, 0x0, 0xafd, 0x0)\n" +
+				"WSAGetOverlappedResult$connect_pending(r9, &(0x7f0000000480)={0x0, 0x0, @Parts={0x0, 0x0}, 0x0}, &(0x7f0000000580), 0x0, &(0x7f00000005c0)=0x0)\n" +
+				"GetQueuedCompletionStatus$socket(r10, &(0x7f0000000600), &(0x7f0000000640), &(0x7f0000000680), 0x0)\n" +
+				"setsockopt$update_connect_context(r9, 0xffff, 0x7010, 0x0, 0x0)\n" +
+				"closesocket$any(r2)\n"), nil
 	case "GetAcceptExSockaddrs$inet_tcp":
 		return []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +
-				"GetAcceptExSockaddrs$inet_tcp(&(0x7f0000000100)='\\x00'/96, 0x0, 0x20, 0x20, &(0x7f0000000200), &(0x7f0000000240), &(0x7f0000000280), &(0x7f00000002c0))\n"), nil
+				"GetAcceptExSockaddrs$inet_tcp(&(0x7f0000000100), 0x0, 0x20, 0x20, &(0x7f0000000200), &(0x7f0000000240), &(0x7f0000000280), &(0x7f00000002c0))\n"), nil
 	case "TransmitPackets$inet_accept":
 		return []byte(
 			"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n" +

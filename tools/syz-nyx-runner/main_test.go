@@ -89,6 +89,7 @@ func TestTraceRecorderTail(t *testing.T) {
 }
 
 func TestWriteSlowTraceArtifact(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	execData := serializeWindowsTestProgramForExec(t,
 		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_query_readonly.txt"))
 	auxData := make([]byte, 4096)
@@ -168,6 +169,9 @@ func TestWriteSlowTraceArtifact(t *testing.T) {
 	if meta.Reason != "hang" || meta.RequestID != 42 || !meta.KeepState || meta.DurationMS != 2000 {
 		t.Fatalf("bad metadata: %#v", meta)
 	}
+	if meta.PreviousRequest != nil {
+		t.Fatalf("exec artifact unexpectedly has previous request context: %#v", meta.PreviousRequest)
+	}
 	if meta.Aux["exec_code_name"] != nyxExitReason(nyxRCTimeout) {
 		t.Fatalf("bad aux metadata: %#v", meta.Aux)
 	}
@@ -182,6 +186,36 @@ func TestWriteSlowTraceArtifact(t *testing.T) {
 	}
 	if !strings.Contains(string(executorTrace), "execute_call_pre_acquire") {
 		t.Fatalf("executor trace missing stage: %s", executorTrace)
+	}
+
+	prevReq := cloneExecRequestForArtifact(req)
+	prevReq.Id = 41
+	r.lastCompletedReq = prevReq
+	handshakeReq := cloneExecRequestForArtifact(req)
+	handshakeReq.Id = 43
+	handshakeDir, err := r.writeSlowTraceArtifact(handshakeReq, "runner handshake", "slow",
+		time.Now().Add(-3*time.Second), 3*time.Second, nil, nil)
+	if err != nil {
+		t.Fatalf("write handshake slow trace artifact: %v", err)
+	}
+	for _, name := range []string{"previous-program.exec.bin", "previous-program.txt"} {
+		if _, err := os.Stat(filepath.Join(handshakeDir, name)); err != nil {
+			t.Fatalf("missing handshake related artifact %s: %v", name, err)
+		}
+	}
+	metaData, err = os.ReadFile(filepath.Join(handshakeDir, "metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(metaData, &meta); err != nil {
+		t.Fatalf("handshake metadata json: %v", err)
+	}
+	if meta.PreviousRequest == nil || meta.PreviousRequest.RequestID != 41 {
+		t.Fatalf("handshake artifact missing previous request context: %#v", meta.PreviousRequest)
+	}
+	if meta.Diagnosis["phase"] != "pre_request_handshake" ||
+		meta.Diagnosis["previous_request_id"] != float64(41) {
+		t.Fatalf("handshake diagnosis missing previous request attribution: %#v", meta.Diagnosis)
 	}
 }
 
@@ -207,6 +241,7 @@ func serializeWindowsTestProgramForExec(t *testing.T, path string) []byte {
 }
 
 func TestStandaloneExecProgramLoadsSerializedExec(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	execData := serializeWindowsTestProgramForExec(t,
 		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_query_readonly.txt"))
 	path := filepath.Join(t.TempDir(), "program.exec.bin")
@@ -691,6 +726,7 @@ func TestRequestNeedsCoveragePriming(t *testing.T) {
 }
 
 func TestExecProgramIsMultiCallWindowsVNet(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
 	vnet := serializeWindowsTestProgramForExec(t,
 		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_accept_vnet_recv.txt"))
 	if !execProgramIsMultiCallWindowsVNet(vnet) {
