@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/google/syzkaller/pkg/config"
 	"github.com/google/syzkaller/pkg/osutil"
@@ -208,7 +209,9 @@ func Complete(cfg *Config) error {
 	if err := cfg.completeFocusAreas(); err != nil {
 		return err
 	}
-	cfg.initTimeouts()
+	if err := cfg.initTimeouts(); err != nil {
+		return err
+	}
 	cfg.VMLess = cfg.Type == "none"
 
 	if cfg.VMLess && cfg.Reproduce {
@@ -283,7 +286,7 @@ func (cfg *Config) applyTargetProfile() error {
 	return nil
 }
 
-func (cfg *Config) initTimeouts() {
+func (cfg *Config) initTimeouts() error {
 	slowdown := 1
 	switch {
 	case cfg.Type == "qemu" && (runtime.GOARCH == cfg.SysTarget.Arch || runtime.GOARCH == cfg.SysTarget.VMArch):
@@ -303,6 +306,17 @@ func (cfg *Config) initTimeouts() {
 	}
 	// Note: we could also consider heavy debug tools (KASAN/KMSAN/KCSAN/KMEMLEAK) if necessary.
 	cfg.Timeouts = cfg.SysTarget.Timeouts(slowdown)
+	if cfg.VMRunningTime != "" {
+		vmRunningTime, err := time.ParseDuration(cfg.VMRunningTime)
+		if err != nil {
+			return fmt.Errorf("bad config param vm_running_time: %w", err)
+		}
+		if vmRunningTime <= 0 {
+			return fmt.Errorf("bad config param vm_running_time: must be positive")
+		}
+		cfg.Timeouts.VMRunningTime = vmRunningTime
+	}
+	return nil
 }
 
 func checkNonEmpty(fields ...string) error {

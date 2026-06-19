@@ -845,6 +845,7 @@ func TestReorderArgsForFlags(t *testing.T) {
 		"--qemu-arg=-display",
 		"--qemu-arg", "none",
 		"--module-ranges", "ntoskrnl.exe:required,ntfs.sys",
+		"--coverage-debug-stream", "/tmp/coverage.jsonl",
 	}
 	got := reorderArgsForFlags(in)
 	want := []string{
@@ -853,6 +854,7 @@ func TestReorderArgsForFlags(t *testing.T) {
 		"--qemu-arg=-display",
 		"--qemu-arg", "none",
 		"--module-ranges", "ntoskrnl.exe:required,ntfs.sys",
+		"--coverage-debug-stream", "/tmp/coverage.jsonl",
 		"0",
 		"127.0.0.1",
 		"56555",

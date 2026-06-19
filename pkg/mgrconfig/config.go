@@ -211,6 +211,9 @@ type Config struct {
 
 	// Type of virtual machine to use, e.g. "qemu", "gce", "android", "isolated", etc.
 	Type string `json:"type"`
+	// VMRunningTime overrides the target default for how long syz-manager lets
+	// one VM runner process live before recreating the VM. Empty keeps the target default.
+	VMRunningTime string `json:"vm_running_time,omitempty"`
 	// VM-type-specific parameters.
 	// Parameters for concrete types are in Config type in vm/TYPE/TYPE.go, e.g. vm/qemu/qemu.go.
 	VM json.RawMessage `json:"vm"`

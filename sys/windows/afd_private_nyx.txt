@@ -183,7 +183,8 @@ AFD_OPEN_PACKET_TCP {
 	SocketType			const[1, int32]
 	Protocol			const[6, int32]
 	TransportDeviceNameLength	const[0, int32]
-} [size[24]]
+	TransportDeviceNameTerminator	const[0, int32]
+} [size[28]]
 
 AFD_OPEN_PACKET_UDP {
 	EndpointFlags			const[1, int32]
@@ -192,7 +193,8 @@ AFD_OPEN_PACKET_UDP {
 	SocketType			const[2, int32]
 	Protocol			const[17, int32]
 	TransportDeviceNameLength	const[0, int32]
-} [size[24]]
+	TransportDeviceNameTerminator	const[0, int32]
+} [size[28]]
 
 AFD_OPEN_PACKET_RIO_TCP {
 	EndpointFlags			const[0x10000000, int32]
@@ -201,7 +203,8 @@ AFD_OPEN_PACKET_RIO_TCP {
 	SocketType			const[1, int32]
 	Protocol			const[6, int32]
 	TransportDeviceNameLength	const[0, int32]
-} [size[24]]
+	TransportDeviceNameTerminator	const[0, int32]
+} [size[28]]
 
 AFD_OPEN_PACKET_DIRECT_TL_TCP {
 	EndpointFlags			const[0x10000000, int32]
@@ -210,43 +213,44 @@ AFD_OPEN_PACKET_DIRECT_TL_TCP {
 	SocketType			const[1, int32]
 	Protocol			const[6, int32]
 	TransportDeviceNameLength	const[0, int32]
-} [size[24]]
+	TransportDeviceNameTerminator	const[0, int32]
+} [size[28]]
 
 FILE_FULL_EA_INFORMATION_AFD_OPEN_TCP {
 	NextEntryOffset	const[0, int32]
 	Flags		const[0, int8]
 	EaNameLength	const[15, int8]
-	EaValueLength	const[24, int16]
+	EaValueLength	const[28, int16]
 	EaName		AFD_OPEN_PACKET_EA_NAME
 	EaValue		AFD_OPEN_PACKET_TCP
-} [size[48]]
+} [size[52]]
 
 FILE_FULL_EA_INFORMATION_AFD_OPEN_UDP {
 	NextEntryOffset	const[0, int32]
 	Flags		const[0, int8]
 	EaNameLength	const[15, int8]
-	EaValueLength	const[24, int16]
+	EaValueLength	const[28, int16]
 	EaName		AFD_OPEN_PACKET_EA_NAME
 	EaValue		AFD_OPEN_PACKET_UDP
-} [size[48]]
+} [size[52]]
 
 FILE_FULL_EA_INFORMATION_AFD_OPEN_RIO_TCP {
 	NextEntryOffset	const[0, int32]
 	Flags		const[0, int8]
 	EaNameLength	const[15, int8]
-	EaValueLength	const[24, int16]
+	EaValueLength	const[28, int16]
 	EaName		AFD_OPEN_PACKET_EA_NAME
 	EaValue		AFD_OPEN_PACKET_RIO_TCP
-} [size[48]]
+} [size[52]]
 
 FILE_FULL_EA_INFORMATION_AFD_OPEN_TLI_TCP {
 	NextEntryOffset	const[0, int32]
 	Flags		const[0, int8]
 	EaNameLength	const[15, int8]
-	EaValueLength	const[24, int16]
+	EaValueLength	const[28, int16]
 	EaName		AFD_OPEN_PACKET_EA_NAME
 	EaValue		AFD_OPEN_PACKET_DIRECT_TL_TCP
-} [size[48]]
+} [size[52]]
 
 AFD_SW_OPEN_PACKET_EA_NAME {
 	C0	const['A', int8]

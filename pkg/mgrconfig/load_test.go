@@ -5,6 +5,7 @@ package mgrconfig
 
 import (
 	"testing"
+	"time"
 
 	"github.com/google/syzkaller/prog"
 	_ "github.com/google/syzkaller/sys"
@@ -103,16 +104,20 @@ func TestParseEnabledSyscallsExpandsWindowsHelpers(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	require.NoError(t, err)
 
-	ids, err := ParseEnabledSyscalls(target, []string{"TransmitFile$inet_accept"}, nil, ManualDescriptions)
+	ids, err := ParseEnabledSyscalls(target,
+		[]string{"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock"}, nil, ManualDescriptions)
 	require.NoError(t, err)
 
 	want := []string{
-		"TransmitFile$inet_accept",
-		"socket$inet_tcp",
-		"bind$inet_tcp",
-		"listen$inet_tcp",
-		"accept$inet_tcp",
-		"CreateFileA",
+		"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock",
+		"NtCreateFile$afd_tcp_endpoint",
+		"NtDeviceIoControlFile$afd_bind_tcp",
+		"NtDeviceIoControlFile$afd_start_listen_tcp",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_accept_tcp",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted",
+		"CreateFileA$afd_transmit",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -124,14 +129,14 @@ func TestParseEnabledSyscallsDisabledOverridesExpansion(t *testing.T) {
 	require.NoError(t, err)
 
 	ids, err := ParseEnabledSyscalls(target,
-		[]string{"TransmitFile$inet_accept"},
-		[]string{"CreateFileA", "WSAStartup"},
+		[]string{"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock"},
+		[]string{"CreateFileA$afd_transmit", "NtCreateFile$afd_tcp_endpoint"},
 		ManualDescriptions)
 	require.NoError(t, err)
 
-	assert.NotContains(t, ids, target.SyscallMap["CreateFileA"].ID)
-	assert.NotContains(t, ids, target.SyscallMap["WSAStartup"].ID)
-	assert.Contains(t, ids, target.SyscallMap["TransmitFile$inet_accept"].ID)
+	assert.NotContains(t, ids, target.SyscallMap["CreateFileA$afd_transmit"].ID)
+	assert.NotContains(t, ids, target.SyscallMap["NtCreateFile$afd_tcp_endpoint"].ID)
+	assert.Contains(t, ids, target.SyscallMap["NtDeviceIoControlFile$afd_transmit_file_accept_nonblock"].ID)
 }
 
 func TestParseEnabledSyscallsExpandsWindowsAcceptAndUDPScaffold(t *testing.T) {
@@ -139,16 +144,24 @@ func TestParseEnabledSyscallsExpandsWindowsAcceptAndUDPScaffold(t *testing.T) {
 	require.NoError(t, err)
 
 	ids, err := ParseEnabledSyscalls(target,
-		[]string{"WSARecvEx$inet_accept", "send$inet_udp"},
+		[]string{"NtDeviceIoControlFile$afd_receive_accept_nonblock", "NtDeviceIoControlFile$afd_send_udp_peer_nonblock"},
 		nil, ManualDescriptions)
 	require.NoError(t, err)
 
 	want := []string{
-		"WSARecvEx$inet_accept",
-		"send$inet_udp",
-		"socket$inet_tcp",
-		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
-		"socket$inet_udp", "connect$inet_udp",
+		"NtDeviceIoControlFile$afd_receive_accept_nonblock",
+		"NtDeviceIoControlFile$afd_send_udp_peer_nonblock",
+		"NtCreateFile$afd_tcp_endpoint",
+		"NtDeviceIoControlFile$afd_bind_tcp",
+		"NtDeviceIoControlFile$afd_start_listen_tcp",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_accept_tcp",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted",
+		"NtCreateFile$afd_udp_endpoint",
+		"NtDeviceIoControlFile$afd_bind_udp",
+		"NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound",
+		"NtDeviceIoControlFile$afd_connect_udp_nonblock",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -160,15 +173,19 @@ func TestParseEnabledSyscallsExpandsWindowsAfdFocusedTargets(t *testing.T) {
 	require.NoError(t, err)
 
 	ids, err := ParseEnabledSyscalls(target,
-		[]string{"TransmitFile$inet_accept"},
+		[]string{"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock"},
 		nil, ManualDescriptions)
 	require.NoError(t, err)
 
 	want := []string{
-		"TransmitFile$inet_accept",
-		"socket$inet_tcp",
-		"bind$inet_tcp", "listen$inet_tcp", "accept$inet_tcp",
-		"CreateFileA",
+		"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock",
+		"NtCreateFile$afd_tcp_endpoint",
+		"NtDeviceIoControlFile$afd_bind_tcp",
+		"NtDeviceIoControlFile$afd_start_listen_tcp",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_accept_tcp",
+		"CreateFileA$afd_transmit",
 	}
 	for _, name := range want {
 		assert.Contains(t, ids, target.SyscallMap[name].ID, "expected %s to be auto-enabled", name)
@@ -228,13 +245,16 @@ func TestExperimentalNoGenerateSyscallsAreValidated(t *testing.T) {
 	cfg.Workdir = t.TempDir()
 	cfg.Syzkaller = "."
 	cfg.Type = "none"
-	cfg.Experimental.NoGenerateSyscalls = []string{"WSARecvMsg$udp_nonblock", "accept$inet_tcp_nonblock"}
+	cfg.Experimental.NoGenerateSyscalls = []string{
+		"NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock",
+		"NtDeviceIoControlFile$afd_accept_tcp_nonblock",
+	}
 
 	require.NoError(t, SetTargets(cfg))
 	noGenerate, err := ParseNoGenerateSyscalls(cfg.Target, cfg.Experimental.NoGenerateSyscalls)
 	require.NoError(t, err)
-	assert.True(t, noGenerate[cfg.Target.SyscallMap["WSARecvMsg$udp_nonblock"].ID])
-	assert.True(t, noGenerate[cfg.Target.SyscallMap["accept$inet_tcp_nonblock"].ID])
+	assert.True(t, noGenerate[cfg.Target.SyscallMap["NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock"].ID])
+	assert.True(t, noGenerate[cfg.Target.SyscallMap["NtDeviceIoControlFile$afd_accept_tcp_nonblock"].ID])
 
 	cfg = DefaultValues()
 	cfg.RawTarget = "windows/amd64"
@@ -335,4 +355,52 @@ func TestLoadDataRejectsUnknownWindowsTargetProfile(t *testing.T) {
 	_, err := LoadData(data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown windows target profile")
+}
+
+func TestLoadDataOverridesVMRunningTime(t *testing.T) {
+	data := []byte(`{
+		"name": "windows-timeout-override",
+		"target": "windows/amd64",
+		"http": "127.0.0.1:0",
+		"workdir": "` + t.TempDir() + `",
+		"syzkaller": ".",
+		"type": "none",
+		"reproduce": false,
+		"vm_running_time": "720h",
+		"execprog_bin_on_target": "C:\\syzkaller\\syz-execprog.exe",
+		"executor_bin_on_target": "C:\\syzkaller\\syz-executor.exe"
+	}`)
+	cfg, err := LoadData(data)
+	require.NoError(t, err)
+	assert.Equal(t, 720*time.Hour, cfg.Timeouts.VMRunningTime)
+}
+
+func TestLoadDataRejectsBadVMRunningTime(t *testing.T) {
+	data := []byte(`{
+		"name": "windows-timeout-override",
+		"target": "windows/amd64",
+		"http": "127.0.0.1:0",
+		"workdir": "` + t.TempDir() + `",
+		"syzkaller": ".",
+		"type": "none",
+		"reproduce": false,
+		"vm_running_time": "0s",
+		"execprog_bin_on_target": "C:\\syzkaller\\syz-execprog.exe",
+		"executor_bin_on_target": "C:\\syzkaller\\syz-executor.exe"
+	}`)
+	_, err := LoadData(data)
+	require.ErrorContains(t, err, "vm_running_time")
+}
+
+func TestLoadWindowsNyxAFDPrivateConfig(t *testing.T) {
+	cfg, err := LoadFile("../../tools/syz-nyx-runner/windows-nyx-afd-private.cfg")
+	require.NoError(t, err)
+	assert.Equal(t, 720*time.Hour, cfg.Timeouts.VMRunningTime)
+	assert.True(t, cfg.Experimental.DisableCollide)
+	require.NotEmpty(t, cfg.Experimental.NoGenerateSyscalls)
+	require.NotEmpty(t, cfg.NoGenerateCalls)
+	require.NotEmpty(t, cfg.Experimental.CorpusFuzzWeightRules)
+	for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
+		assert.Zero(t, rule.Weight)
+	}
 }

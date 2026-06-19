@@ -214,6 +214,7 @@ func reorderArgsForFlags(args []string) []string {
 		"-standalone-program-timeout-ms":   true,
 		"-standalone-keep-state":           true,
 		"-module-ranges":                   true,
+		"-coverage-debug-stream":           true,
 		"-slow-trace-dir":                  true,
 		"-slow-trace-threshold-ms":         true,
 		"-slow-trace-max-events":           true,
@@ -241,6 +242,7 @@ func reorderArgsForFlags(args []string) []string {
 		"--standalone-program-timeout-ms":  true,
 		"--standalone-keep-state":          true,
 		"--module-ranges":                  true,
+		"--coverage-debug-stream":          true,
 		"--slow-trace-dir":                 true,
 		"--slow-trace-threshold-ms":        true,
 		"--slow-trace-max-events":          true,
@@ -3383,7 +3385,7 @@ func connectWithRetry(r *runner, retryFor time.Duration) error {
 }
 
 func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, programPath, targetProfile string, threaded, keepState bool,
-	collectCover, fixedRepeat bool, syscallTimeoutMs, programTimeoutMs, rounds int) error {
+	collectCover, fixedRepeat bool, syscallTimeoutMs, programTimeoutMs, rounds int, coverageDebugPath string) error {
 	target, err := standaloneTarget(targetProfile)
 	if err != nil {
 		return err
@@ -3412,10 +3414,11 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 		},
 	}
 	r := &runner{
-		id:           index,
-		vm:           vm,
-		connectReply: connectReply,
-		keepState:    keepState,
+		id:                index,
+		vm:                vm,
+		connectReply:      connectReply,
+		keepState:         keepState,
+		coverageDebugPath: coverageDebugPath,
 	}
 	if rounds <= 0 {
 		rounds = 1
@@ -3490,7 +3493,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 }
 
 func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepState bool,
-	collectCover bool, syscallTimeoutMs, programTimeoutMs, rounds int) error {
+	collectCover bool, syscallTimeoutMs, programTimeoutMs, rounds int, coverageDebugPath string) error {
 	execData, label, err := standaloneExecProgram(programPath)
 	if err != nil {
 		return err
@@ -3507,10 +3510,11 @@ func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepS
 		Data: execData,
 	}
 	r := &runner{
-		id:           index,
-		vm:           vm,
-		connectReply: connectReply,
-		keepState:    keepState,
+		id:                index,
+		vm:                vm,
+		connectReply:      connectReply,
+		keepState:         keepState,
+		coverageDebugPath: coverageDebugPath,
 	}
 	if rounds <= 0 {
 		rounds = 1
@@ -3544,7 +3548,7 @@ func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepS
 }
 
 func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath, targetProfile string, threaded, keepState bool,
-	collectCover bool, syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int) error {
+	collectCover bool, syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int, coverageDebugPath string) error {
 	target, err := standaloneTarget(targetProfile)
 	if err != nil {
 		return err
@@ -3560,10 +3564,11 @@ func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPa
 	connectReply := standaloneConnectReply(syscallTimeoutMs, programTimeoutMs, collectCover)
 	execFlags := standaloneExecFlags(threaded, collectCover)
 	r := &runner{
-		id:           index,
-		vm:           vm,
-		connectReply: connectReply,
-		keepState:    keepState,
+		id:                index,
+		vm:                vm,
+		connectReply:      connectReply,
+		keepState:         keepState,
+		coverageDebugPath: coverageDebugPath,
 	}
 	stages := []struct {
 		id    int64
@@ -3641,7 +3646,7 @@ func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPa
 }
 
 func runStandaloneExecStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPath string, threaded, keepState bool,
-	collectCover bool, syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int) error {
+	collectCover bool, syscallTimeoutMs, programTimeoutMs, stageDelayMs, stageIdleMs int, coverageDebugPath string) error {
 	first, firstLabel, err := standaloneExecProgram(firstProgramPath)
 	if err != nil {
 		return fmt.Errorf("load standalone stage1 exec program: %w", err)
@@ -3653,10 +3658,11 @@ func runStandaloneExecStaged(index int, vm *nyxVM, firstProgramPath, secondProgr
 	connectReply := standaloneConnectReply(syscallTimeoutMs, programTimeoutMs, collectCover)
 	execFlags := standaloneExecFlags(threaded, collectCover)
 	r := &runner{
-		id:           index,
-		vm:           vm,
-		connectReply: connectReply,
-		keepState:    keepState,
+		id:                index,
+		vm:                vm,
+		connectReply:      connectReply,
+		keepState:         keepState,
+		coverageDebugPath: coverageDebugPath,
 	}
 	stages := []struct {
 		id    int64
@@ -4432,27 +4438,27 @@ func main() {
 	if *standalone {
 		if *standaloneStagedExecProgram != "" {
 			if err := runStandaloneExecStaged(index, vm, *standaloneExecProgramPath, *standaloneStagedExecProgram, *standaloneThreaded,
-				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
+				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs, *coverageDebugStream); err != nil {
 				log.Fatalf("standalone staged Nyx exec request failed: %v", err)
 			}
 			return
 		}
 		if *standaloneStagedProgram != "" {
 			if err := runStandaloneStaged(index, vm, *standaloneProgramPath, *standaloneStagedProgram, *standaloneTargetProfile, *standaloneThreaded,
-				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs); err != nil {
+				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs, *coverageDebugStream); err != nil {
 				log.Fatalf("standalone staged Nyx request failed: %v", err)
 			}
 			return
 		}
 		if *standaloneExecProgramPath != "" {
 			if err := runStandaloneExec(index, vm, *standaloneExecProgramPath, *standaloneThreaded,
-				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
+				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds, *coverageDebugStream); err != nil {
 				log.Fatalf("standalone Nyx exec request failed: %v", err)
 			}
 			return
 		}
 		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneProgramPath, *standaloneTargetProfile, *standaloneThreaded,
-			*standaloneKeepState, standaloneCollectCover, *standaloneFixedRepeat, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds); err != nil {
+			*standaloneKeepState, standaloneCollectCover, *standaloneFixedRepeat, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds, *coverageDebugStream); err != nil {
 			log.Fatalf("standalone Nyx request failed: %v", err)
 		}
 		return

@@ -98,8 +98,32 @@ static void nyx_finish_syscall(const call_t* c, intptr_t a[kMaxArgs])
 	memset(&nyx_ntqsi_state, 0, sizeof(nyx_ntqsi_state));
 }
 
+static bool windows_is_nt_create_file_call(const call_t* c)
+{
+	return c->name && strncmp(c->name, "NtCreateFile", 12) == 0 &&
+	       (c->name[12] == '\0' || c->name[12] == '$');
+}
+
+static intptr_t windows_nt_create_file_syscall(intptr_t a[kMaxArgs])
+{
+	return NtCreateFile(reinterpret_cast<PHANDLE>(a[0]),
+			    static_cast<ACCESS_MASK>(a[1]),
+			    reinterpret_cast<POBJECT_ATTRIBUTES>(a[2]),
+			    reinterpret_cast<PIO_STATUS_BLOCK>(a[3]),
+			    reinterpret_cast<PLARGE_INTEGER>(a[4]),
+			    static_cast<ULONG>(a[5]),
+			    static_cast<ULONG>(a[6]),
+			    static_cast<ULONG>(a[7]),
+			    static_cast<ULONG>(a[8]),
+			    reinterpret_cast<PVOID>(a[9]),
+			    static_cast<ULONG>(a[10]));
+}
+
 static intptr_t execute_nyx_syscall(const call_t* c, intptr_t a[kMaxArgs])
 {
+	if (windows_is_nt_create_file_call(c))
+		return windows_nt_create_file_syscall(a);
+
 	if (c->name && strcmp(c->name, "NtQuerySystemInformation") == 0) {
 		return NtQuerySystemInformation(static_cast<SYSTEM_INFORMATION_CLASS>(a[0]),
 						reinterpret_cast<void*>(a[1]),
@@ -116,9 +140,13 @@ static intptr_t execute_syscall(const call_t* c, intptr_t a[kMaxArgs])
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE
 	return execute_nyx_syscall(c, a);
 #elif defined(__GNUC__)
+	if (windows_is_nt_create_file_call(c))
+		return windows_nt_create_file_syscall(a);
 	return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
 #else
 	__try {
+		if (windows_is_nt_create_file_call(c))
+			return windows_nt_create_file_syscall(a);
 		return c->call(a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
 	} __except (EXCEPTION_EXECUTE_HANDLER) {
 		return -1;

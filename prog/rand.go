@@ -492,7 +492,21 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 	}
 	if meta == nil || r.oneOf(3) {
 		// Sometimes just take a random one.
-		meta = ctors[r.Intn(len(ctors))].Call
+		// Prefer ordinary constructors over seed-only/no_generate state
+		// transitions when both can synthesize the same resource. Those
+		// seed-only constructors remain available as a fallback for resources
+		// that have no ordinary constructor.
+		randomCtors := ctors
+		var ordinaryCtors []ResourceCtor
+		for _, info := range ctors {
+			if info.Call != nil && !info.Call.Attrs.NoGenerate {
+				ordinaryCtors = append(ordinaryCtors, info)
+			}
+		}
+		if len(ordinaryCtors) != 0 {
+			randomCtors = ordinaryCtors
+		}
+		meta = randomCtors[r.Intn(len(randomCtors))].Call
 	}
 
 	calls := r.generateParticularCall(s, meta)
