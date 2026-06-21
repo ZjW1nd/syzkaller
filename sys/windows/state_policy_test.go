@@ -143,6 +143,15 @@ func TestWindowsAFDTargetProfileKeepsDefaultTargetClean(t *testing.T) {
 	if profiled.CallEligibleForTriage(profiled.SyscallMap["Sleep"]) {
 		t.Fatal("AFD profile should not triage shallow calls")
 	}
+	if !profiled.CallEligibleForTriage(profiled.SyscallMap["NtDeviceIoControlFile$afd_bind_tcp"]) {
+		t.Fatal("AFD profile should triage direct AFD endpoint state transitions")
+	}
+	bind := profiled.SyscallMap["NtDeviceIoControlFile$afd_bind_tcp"]
+	getAddr := profiled.SyscallMap["NtDeviceIoControlFile$afd_get_address_tcp"]
+	if profiled.TriageRelevance(bind) != profiled.TriageRelevance(getAddr) {
+		t.Fatalf("AFD direct surface should use flat triage relevance: bind=%d get_address=%d",
+			profiled.TriageRelevance(bind), profiled.TriageRelevance(getAddr))
+	}
 	if !profiled.CallEligibleForTriage(profiled.SyscallMap["WSARecv$accept"]) {
 		t.Fatal("AFD profile should triage deep resource consumers")
 	}
@@ -383,6 +392,7 @@ func TestWindowsAFDPrivateNonIoctlResourceSimulation(t *testing.T) {
 		if strings.HasPrefix(call.Name, "NtCreateFile$afd_") ||
 			strings.HasPrefix(call.Name, "NtReadFile$afd_") ||
 			strings.HasPrefix(call.Name, "NtWriteFile$afd_") ||
+			strings.HasPrefix(call.Name, "NtCancelIoFileEx$afd_") ||
 			strings.HasPrefix(call.Name, "GetKernelObjectSecurity$afd_") ||
 			strings.HasPrefix(call.Name, "SetKernelObjectSecurity$afd_") ||
 			strings.HasPrefix(call.Name, "CloseHandle$afd_") {
@@ -650,6 +660,61 @@ func TestWindowsAFDTargetProfileRejectsMixedSocketFamilies(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDTargetProfileRejectsMixedAFDEndpointFamilies(t *testing.T) {
+	profiled := windowsPolicyTestAFDTarget(t)
+	broken := windowsPolicyTestDeserialize(t, profiled,
+		"NtCreateFile$afd_tcp_endpoint(&(0x7f0000000000)=<r0=>0xffffffffffffffff, 0xc0100000, &(0x7f00000000c0)={0x30, 0x0, 0x0, &(0x7f0000000080)={0x16, 0x18, 0x0, &(0x7f0000000040)}}, &(0x7f0000000100)={@Status=0x7f, 0x75f}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000000140), 0x34)\n"+
+			"r1 = NtDeviceIoControlFile$afd_bind_tcp_listener(r0, 0x0, 0x0, 0x0, &(0x7f0000000180)={@Status=0x8001, 0x80000000}, 0x12003, &(0x7f00000001c0), 0x14, &(0x7f0000000200), 0x10)\n"+
+			"r2 = NtDeviceIoControlFile$afd_start_listen_tcp(r1, 0x0, 0x0, 0x0, &(0x7f0000000240)={@Status=0xf, 0x5}, 0x1200b, &(0x7f0000000280)={0x0, '\\x00', 0x8}, 0xc, 0x0, 0x0)\n"+
+			"r3 = NtDeviceIoControlFile$afd_set_information_nonblock_tcp_listening(r2, 0x0, 0x0, 0x0, &(0x7f00000002c0)={@Status=0x8, 0x6}, 0x1203b, &(0x7f0000000300)={0x2, 0x0, 0x1}, 0x10, 0x0, 0x0)\n"+
+			"r4 = NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound(r3, 0x0, 0x0, 0x0, &(0x7f0000000340)={@Status=0x2, 0x8}, 0x1203b, &(0x7f0000000380)={0x2, 0x0, 0x1}, 0x10, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock(r4, 0x0, 0x0, 0x0, &(0x7f00000003c0)={@Pointer=0x7fff, 0x9}, 0x1201b, &(0x7f00000004c0)={&(0x7f0000000440)=[{0x4, &(0x7f0000000400)='ping'}], 0x1, 0x2, {&(0x7f0000000480)={0x2, 0x4e22, 0x7f000001}}, {0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x10, 0x0, &(0x7f0000000500)={0x2, 0x4e23, 0x7f000001}}}, 0x48, 0x0, 0x0)\n")
+	if profiled.RuntimePolicy.ShouldScheduleProgram("fuzz", broken) {
+		t.Fatalf("focused profile scheduled mixed TCP/UDP AFD endpoint lineage:\n%s", broken.Serialize())
+	}
+
+	valid := windowsPolicyTestDeserialize(t, profiled,
+		"NtCreateFile$afd_udp_endpoint(&(0x7f0000000000)=<r0=>0xffffffffffffffff, 0xc0100000, &(0x7f00000000c0)={0x30, 0x0, 0x0, &(0x7f0000000080)={0x16, 0x18, 0x0, &(0x7f0000000040)}}, &(0x7f0000000100)={@Pointer=0x7, 0x7a85bf3b}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000000140), 0x34)\n"+
+			"r1 = NtDeviceIoControlFile$afd_bind_udp(r0, 0x0, 0x0, 0x0, &(0x7f0000000180)={@Status=0x7, 0xfff}, 0x12003, &(0x7f00000001c0)={0x1}, 0x14, &(0x7f0000000200), 0x10)\n"+
+			"r2 = NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound(r1, 0x0, 0x0, 0x0, &(0x7f0000000240)={@Status=0x2, 0x8}, 0x1203b, &(0x7f0000000280)={0x2, 0x0, 0x1}, 0x10, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock(r2, 0x0, 0x0, 0x0, &(0x7f00000002c0)={@Pointer=0x7fff, 0x9}, 0x1201b, &(0x7f00000003c0)={&(0x7f0000000340)=[{0x4, &(0x7f0000000300)='pong'}], 0x1, 0x2, {&(0x7f0000000380)={0x2, 0x4e22, 0x7f000001}}}, 0x48, 0x0, 0x0)\n")
+	if !profiled.RuntimePolicy.ShouldScheduleProgram("fuzz", valid) {
+		t.Fatalf("focused profile rejected valid UDP AFD nonblock receive lineage:\n%s", valid.Serialize())
+	}
+}
+
+func TestWindowsAFDTargetProfileRejectsMismatchedAFDReturnedSequence(t *testing.T) {
+	profiled := windowsPolicyTestAFDTarget(t)
+	broken := windowsPolicyTestDeserialize(t, profiled,
+		"NtCreateFile$afd_tcp_endpoint(&(0x7f0000000000)=<r0=>0xffffffffffffffff, 0xc0100000, &(0x7f00000000c0)={0x30, 0x0, 0x0, &(0x7f0000000080)={0x16, 0x18, 0x0, &(0x7f0000000040)}}, &(0x7f0000000100)={@Status=0x7f, 0x75f}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000000140), 0x34)\n"+
+			"r1 = NtDeviceIoControlFile$afd_bind_tcp(r0, 0x0, 0x0, 0x0, &(0x7f0000000180)={@Status=0x8001, 0x80000000}, 0x12003, &(0x7f00000001c0), 0x14, &(0x7f0000000200), 0x10)\n"+
+			"NtCreateFile$afd_tcp_endpoint(&(0x7f0000000280)=<r2=>0xffffffffffffffff, 0xc0100000, &(0x7f0000000340)={0x30, 0x0, 0x0, &(0x7f0000000300)={0x16, 0x18, 0x0, &(0x7f00000002c0)}}, &(0x7f0000000380)={@Pointer=0x9, 0x40}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f00000003c0), 0x34)\n"+
+			"r3 = NtDeviceIoControlFile$afd_bind_tcp_listener(r2, 0x0, 0x0, 0x0, &(0x7f0000000400)={@Status=0x3, 0x5}, 0x12003, &(0x7f0000000440), 0x14, &(0x7f0000000480), 0x10)\n"+
+			"r4 = NtDeviceIoControlFile$afd_start_listen_tcp(r3, 0x0, 0x0, 0x0, &(0x7f00000004c0)={@Status=0x1, 0x21}, 0x1200b, &(0x7f0000000500)={0x0, '\\x00', 0x6}, 0xc, 0x0, 0x0)\n"+
+			"r5 = NtDeviceIoControlFile$afd_connect_tcp_to_listener(r1, 0x0, 0x0, 0x0, &(0x7f0000000240)={@Pointer=0x1, 0x9}, 0x12007, &(0x7f0000000540)={0x0, '\\x00', 0x0, r4}, 0x28, &(0x7f0000000580), 0x10)\n"+
+			"r6 = NtDeviceIoControlFile$afd_wait_for_listen_tcp(r5, 0x0, 0x0, 0x0, &(0x7f00000005c0)={@Status=0x1, 0x6}, 0x1200c, 0x0, 0x0, &(0x7f0000000600)={<r7=>0x0}, 0x14)\n"+
+			"NtCreateFile$afd_tcp_endpoint(&(0x7f0000000680)=<r8=>0xffffffffffffffff, 0xc0100000, &(0x7f0000000740)={0x30, 0x0, 0x0, &(0x7f0000000700)={0x16, 0x18, 0x0, &(0x7f00000006c0)}}, &(0x7f0000000780)={@Pointer=0xffff, 0x5}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f00000007c0), 0x34)\n"+
+			"r9 = NtDeviceIoControlFile$afd_bind_tcp(r8, 0x0, 0x0, 0x0, &(0x7f0000000800)={@Status=0x8}, 0x12003, &(0x7f0000000840)={0x3}, 0x14, &(0x7f0000000880), 0x10)\n"+
+			"NtCreateFile$afd_tcp_endpoint(&(0x7f0000000900)=<r10=>0xffffffffffffffff, 0xc0100000, &(0x7f00000009c0)={0x30, 0x0, 0x0, &(0x7f0000000980)={0x16, 0x18, 0x0, &(0x7f0000000940)}}, &(0x7f0000000a00)={@Status=0x40, 0x8}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000000a40), 0x34)\n"+
+			"r11 = NtDeviceIoControlFile$afd_bind_tcp_listener(r10, 0x0, 0x0, 0x0, &(0x7f0000000a80)={@Status=0x67e, 0x3}, 0x12003, &(0x7f0000000ac0), 0x14, &(0x7f0000000b00), 0x10)\n"+
+			"r12 = NtDeviceIoControlFile$afd_start_listen_tcp(r11, 0x0, 0x0, 0x0, &(0x7f0000000b40)={@Status, 0xc4b7}, 0x1200b, &(0x7f0000000b80)={0x0, '\\x00', 0x2}, 0xc, 0x0, 0x0)\n"+
+			"r13 = NtDeviceIoControlFile$afd_connect_tcp_to_listener(r9, 0x0, 0x0, 0x0, &(0x7f00000008c0)={@Status=0x1, 0x30}, 0x12007, &(0x7f0000000bc0)={0x0, '\\x00', 0x0, r12}, 0x28, &(0x7f0000000c00), 0x10)\n"+
+			"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp(r13, 0x0, 0x0, 0x0, &(0x7f0000000c40)={@Pointer=0x3, 0x500000000000000}, 0x12090, 0x0, 0x0, &(0x7f0000000c80)={<r14=>0x0}, 0x14)\n"+
+			"NtDeviceIoControlFile$afd_get_unaccepted_connect_data_tcp(r6, 0x0, 0x0, 0x0, &(0x7f0000000640)={@Status=0x1, 0x7}, 0x120a7, &(0x7f0000000cc0)={r14}, 0xc, &(0x7f0000000d00), 0xc)\n")
+	if profiled.RuntimePolicy.ShouldScheduleProgram("fuzz", broken) {
+		t.Fatalf("focused profile scheduled returned handle/sequence mismatch:\n%s", broken.Serialize())
+	}
+
+	data, err := os.ReadFile("test/nyx_afd_private_core_listen_accept.txt")
+	if err != nil {
+		t.Fatalf("read core seed: %v", err)
+	}
+	valid := windowsPolicyTestDeserialize(t, profiled, string(data))
+	if !profiled.RuntimePolicy.ShouldScheduleProgram("candidate", valid) {
+		t.Fatalf("focused profile rejected matching returned handle/sequence seed:\n%s", valid.Serialize())
+	}
+}
+
 func TestWindowsAFDTargetProfileRejectsBrokenPrivateResourceLineage(t *testing.T) {
 	windowsSkipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
@@ -662,7 +727,7 @@ func TestWindowsAFDTargetProfileRejectsBrokenPrivateResourceLineage(t *testing.T
 	}
 	p, err := profiled.Deserialize([]byte(
 		"r0 = connect$inet_udp(0xffffffffffffffff, 0x0, 0x0)\n"+
-			"NtDeviceIoControlFile$afd_routing_interface_query_udp(r0, 0x0, 0x0, 0x0, &(0x7f0000000000)={@Status=0x0, 0x0}, 0x120ab, &(0x7f0000000040)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000080), 0x10)\n"),
+			"NtDeviceIoControlFile$afd_routing_interface_query_udp(r0, 0x0, 0x0, 0x0, &(0x7f0000000000)={@Status=0x0, 0x0}, 0x120ab, &(0x7f0000000040)={0x1, 0x10, 0x2, {0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}}, 0x18, &(0x7f0000000080), 0x14)\n"),
 		prog.NonStrict)
 	if err != nil {
 		t.Fatalf("Deserialize: %v", err)
