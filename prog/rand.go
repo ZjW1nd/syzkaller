@@ -467,20 +467,32 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 		// syscalls based on optional inputs resources w/o ctors in TransitivelyEnabledCalls.
 		return nil, nil
 	}
+	selectableCtors := ctors
+	if r.target.Helpers.StrictResourceCtors {
+		selectableCtors = nil
+		for _, info := range ctors {
+			if info.Call != nil && !resourceCtorNeedsResource(info.Call, kind) {
+				selectableCtors = append(selectableCtors, info)
+			}
+		}
+		if len(selectableCtors) == 0 {
+			return nil, nil
+		}
+	}
 	// Now we have a set of candidate calls that can create the necessary resource.
 	// Generate one of them.
 	var meta *Syscall
 	if r.target.SelectResourceCtor != nil {
-		meta = r.target.SelectResourceCtor(r.currentMeta, kind, ctors)
+		meta = r.target.SelectResourceCtor(r.currentMeta, kind, selectableCtors)
 	}
 	if meta == nil {
 		// enabledCtors already filters through the choice table, so no_generate
 		// ctors left here were explicitly enabled by a target profile.
-		meta = selectResourceCtorByDepth(r.currentMeta, kind, ctors, true)
+		meta = selectResourceCtorByDepth(r.currentMeta, kind, selectableCtors, true)
 	}
 	// Prefer precise constructors.
 	var precise []*Syscall
-	for _, info := range ctors {
+	for _, info := range selectableCtors {
 		if info.Precise {
 			precise = append(precise, info.Call)
 		}
@@ -496,9 +508,9 @@ func (r *randGen) createResource(s *state, res *ResourceType, dir Dir) (Arg, []*
 		// transitions when both can synthesize the same resource. Those
 		// seed-only constructors remain available as a fallback for resources
 		// that have no ordinary constructor.
-		randomCtors := ctors
+		randomCtors := selectableCtors
 		var ordinaryCtors []ResourceCtor
-		for _, info := range ctors {
+		for _, info := range selectableCtors {
 			if info.Call != nil && !info.Call.Attrs.NoGenerate {
 				ordinaryCtors = append(ordinaryCtors, info)
 			}
@@ -537,6 +549,9 @@ func (r *randGen) enabledCtors(s *state, kind string) []ResourceCtor {
 		ctors = append(ctors, res.seedCtors...)
 	}
 	for _, info := range ctors {
+		if r.target.Helpers.StrictResourceCtors && !info.Precise {
+			continue
+		}
 		if s.ct.Generatable(info.Call.ID) {
 			ret = append(ret, info)
 		}
@@ -1101,8 +1116,8 @@ func (r *randGen) existingResource(s *state, res *ResourceType, dir Dir) Arg {
 	bestReuse := 0
 	for _, res1 := range alltypes {
 		name1 := res1[0].Type().Name()
-		if r.target.isCompatibleResource(res.Desc.Name, name1) ||
-			r.oneOf(50) && r.target.isCompatibleResource(res.Desc.Kind[0], name1) {
+		if r.target.isPreciseCompatibleResource(res.Desc.Name, name1) ||
+			r.oneOf(50) && r.target.isPreciseCompatibleResource(res.Desc.Kind[0], name1) {
 			allres = append(allres, res1...)
 			for _, candidate := range res1 {
 				reuse := r.target.resourceReuseScore(r.currentMeta, candidate, r.currentProg, r.currentInsertionPoint)
@@ -1324,7 +1339,7 @@ func getCompatibleResources(p *Prog, resourceType string, r *randGen) (preferred
 			if !ok || len(a.uses) == 0 || a.Dir() != DirOut {
 				return
 			}
-			if !r.target.isCompatibleResource(resourceType, a.Type().Name()) {
+			if !r.target.isPreciseCompatibleResource(resourceType, a.Type().Name()) {
 				return
 			}
 			resources = append(resources, a)

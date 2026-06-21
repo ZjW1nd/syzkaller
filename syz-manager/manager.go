@@ -1383,10 +1383,15 @@ func (mgr *Manager) MachineChecked(features flatrpc.Feature,
 		if len(candidates) == 0 {
 			log.Fatalf("%v mode requires at least one corpus candidate", mgr.mode.Name)
 		}
+		corpusUpdates := make(chan corpus.NewItemEvent, 128)
+		mgr.corpus = corpus.NewFocusedCorpus(context.Background(), corpusUpdates, mgr.coverFilters.Areas)
+		mgr.http.Corpus.Store(mgr.corpus)
+		go mgr.corpusInputHandler(corpusUpdates)
 		ctx := &candidateRunSource{
 			candidates: candidates,
 			limit:      *flagCandidateRunLimit,
 			repeat:     *flagCandidateRunRepeat,
+			corpus:     mgr.corpus,
 			finish: func(err error) {
 				if err != nil {
 					log.Fatalf("%v mode failed: %v", mgr.mode.Name, err)
@@ -1512,6 +1517,7 @@ type candidateRunSource struct {
 	candidates []fuzzer.Candidate
 	limit      int
 	repeat     int
+	corpus     *corpus.Corpus
 	finish     func(error)
 
 	mu        sync.Mutex
@@ -1539,7 +1545,7 @@ func (cr *candidateRunSource) Next() *queue.Request {
 		Important: true,
 	}
 	req.OnDone(func(_ *queue.Request, res *queue.Result) bool {
-		cr.onDone(id, res)
+		cr.onDone(id, candidate.Prog, res)
 		return true
 	})
 	return req
@@ -1563,9 +1569,12 @@ func (cr *candidateRunSource) repeatCount() int {
 	return cr.repeat
 }
 
-func (cr *candidateRunSource) onDone(id int, res *queue.Result) {
+func (cr *candidateRunSource) onDone(id int, p *prog.Prog, res *queue.Result) {
 	var finish func(error)
 	var err error
+	if res != nil && res.Status == queue.Success {
+		cr.saveCandidateCoverage(p, res.Info)
+	}
 
 	cr.mu.Lock()
 	if cr.finished {
@@ -1592,6 +1601,44 @@ func (cr *candidateRunSource) onDone(id int, res *queue.Result) {
 	if finish != nil {
 		go finish(err)
 	}
+}
+
+func (cr *candidateRunSource) saveCandidateCoverage(p *prog.Prog, info *flatrpc.ProgInfo) {
+	if cr.corpus == nil || p == nil || info == nil {
+		return
+	}
+	var sig signal.Signal
+	rawCover := make(map[uint64]struct{})
+	mergeCallInfo := func(call *flatrpc.CallInfo) {
+		if call == nil {
+			return
+		}
+		sig.Merge(signal.FromRaw(call.Signal, 0))
+		for _, pc := range call.Cover {
+			rawCover[pc] = struct{}{}
+		}
+	}
+	for _, call := range info.Calls {
+		mergeCallInfo(call)
+	}
+	for _, call := range info.ExtraRaw {
+		mergeCallInfo(call)
+	}
+	mergeCallInfo(info.Extra)
+	coverData := make([]uint64, 0, len(rawCover))
+	for pc := range rawCover {
+		coverData = append(coverData, pc)
+	}
+	if sig.Empty() && len(coverData) == 0 {
+		return
+	}
+	cr.corpus.Save(corpus.NewInput{
+		Prog:     p.Clone(),
+		Call:     -1,
+		Signal:   sig,
+		Cover:    coverData,
+		RawCover: coverData,
+	})
 }
 
 func (mgr *Manager) corpusMinimization() {

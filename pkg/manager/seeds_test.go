@@ -6,6 +6,9 @@ package manager
 import (
 	"reflect"
 	"testing"
+
+	"github.com/google/syzkaller/pkg/fuzzer"
+	"github.com/google/syzkaller/prog"
 )
 
 func TestRequires(t *testing.T) {
@@ -70,5 +73,25 @@ func TestSeedMatchesAnyPrefix(t *testing.T) {
 		if seedMatchesAnyPrefix(name, prefixes) {
 			t.Fatalf("%s should not match %v", name, prefixes)
 		}
+	}
+}
+
+func TestFilterCandidatesCountsSeedOrigin(t *testing.T) {
+	candidates := []fuzzer.Candidate{
+		{Prog: &prog.Prog{}, Flags: fuzzer.ProgFromSeed | fuzzer.ProgMinimized},
+		{Prog: &prog.Prog{}},
+	}
+	filtered := FilterCandidates(candidates, map[*prog.Syscall]bool{}, false)
+	if filtered.SeedCount != 1 {
+		t.Fatalf("SeedCount=%d, want 1", filtered.SeedCount)
+	}
+	if len(filtered.Candidates) != len(candidates) {
+		t.Fatalf("kept %d candidates, want %d", len(filtered.Candidates), len(candidates))
+	}
+	if filtered.Candidates[0].Flags&fuzzer.ProgFromSeed == 0 {
+		t.Fatal("seed candidate lost ProgFromSeed")
+	}
+	if filtered.Candidates[1].Flags&fuzzer.ProgFromSeed != 0 {
+		t.Fatal("ordinary candidate was counted as seed")
 	}
 }

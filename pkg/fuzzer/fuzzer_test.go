@@ -356,6 +356,21 @@ func TestAddCandidatesMarksRequestsNoPrefetch(t *testing.T) {
 	if !req.NoPrefetch {
 		t.Fatal("candidate request should not be prefetched behind")
 	}
+	if req.Origin != "candidate" {
+		t.Fatalf("candidate origin = %q, want candidate", req.Origin)
+	}
+
+	fuzzer.AddCandidates([]Candidate{{Prog: candidateProg, Flags: ProgFromSeed}})
+	req = fuzzer.source.Next()
+	if req == nil {
+		t.Fatal("seed request was not queued")
+	}
+	if req.Origin != "seed" {
+		t.Fatalf("seed origin = %q, want seed", req.Origin)
+	}
+	if !req.NoPrefetch {
+		t.Fatal("seed request should not be prefetched behind")
+	}
 }
 
 func TestFuzzerNextFallsBackToFreshGenerationWhenSourceIsEmpty(t *testing.T) {
@@ -769,6 +784,58 @@ func TestWindowsAFDTriageKeepsDeepOwnerOverScaffold(t *testing.T) {
 	}
 	if _, ok := triage[deepCall]; !ok {
 		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(deepCall))
+	}
+}
+
+func TestWindowsAFDTriageKeepsDirectAFDStateEdgeOwner(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiled, err := target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
+	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_private_full_229_NtDeviceIoControlFile_afd_get_address_udp.txt")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	p, err := profiled.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	bindCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_bind_udp")
+	getAddressCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_get_address_udp")
+	if !profiled.CallEligibleForTriage(p.Calls[bindCall].Meta) {
+		t.Fatal("AfdBind should be eligible for AFD triage")
+	}
+	if !profiled.CallEligibleForTriage(p.Calls[getAddressCall].Meta) {
+		t.Fatal("AfdGetAddress should be eligible for AFD triage")
+	}
+	fuzzer := &Fuzzer{
+		Config: &Config{
+			NewInputFilter: func(string) bool { return true },
+		},
+		target: profiled,
+		Cover:  newCover(),
+	}
+	var triage map[int]*triageCall
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{0x100},
+		Cover:  []uint64{0x100},
+	}, bindCall, &triage)
+	fuzzer.triageProgCall("candidate", p, &flatrpc.CallInfo{
+		Signal: []uint64{0x200},
+		Cover:  []uint64{0x200},
+	}, getAddressCall, &triage)
+	if len(triage) != 2 {
+		t.Fatalf("triage owners=%v, want bind and get_address owners", triage)
+	}
+	if _, ok := triage[bindCall]; !ok {
+		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(bindCall))
+	}
+	if _, ok := triage[getAddressCall]; !ok {
+		t.Fatalf("triage owner is %v, want %s", triage, p.CallName(getAddressCall))
 	}
 }
 

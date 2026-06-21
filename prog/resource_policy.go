@@ -57,7 +57,7 @@ func ExpandEnabledResourceCtors(target *Target, enabled map[*Syscall]bool) map[*
 }
 
 func (target *Target) resourceCtorsForExpansion(res *ResourceDesc) []ResourceCtor {
-	ctors := target.calcResourceCtors(res, false)
+	ctors := target.calcResourceCtors(res, target.Helpers.StrictResourceCtors)
 	ctors = append(ctors, res.seedCtors...)
 	return ctors
 }
@@ -499,7 +499,7 @@ func callAcceptsResultResource(call *Syscall, candidate *ResultArg) bool {
 		return false
 	}
 	for _, input := range call.inputResources {
-		if isCompatibleResourceImpl(input.Kind, candidateDesc.Kind, false) {
+		if isCompatibleResourceImpl(input.Kind, candidateDesc.Kind, true) {
 			return true
 		}
 	}
@@ -540,6 +540,9 @@ func FocusedResourceRuntimePolicy(target *Target, minOwnerScore int) RuntimePoli
 			return ProgramHasResourceOwner(target, p, minOwnerScore)
 		},
 		ShouldScheduleProgram: func(origin string, p *Prog) bool {
+			if origin == "seed" {
+				return len(ValidateProgramResourceUse(p)) == 0
+			}
 			return ProgramHasResourceOwner(target, p, minOwnerScore) &&
 				ProgramHasValidResourceLineage(target, p) &&
 				ProgramHasUsefulResourceOutputs(target, p, minOwnerScore)
@@ -551,6 +554,9 @@ func FocusedResourceRuntimePolicy(target *Target, minOwnerScore int) RuntimePoli
 			return shouldKeepFocusedResourceOwner(target, origin, p, call, minOwnerScore)
 		},
 		ShouldSkipTriageProgram: func(origin string, p *Prog) bool {
+			if origin == "seed" {
+				return false
+			}
 			return ShouldSkipFocusedResourceProgram(target, p, minOwnerScore)
 		},
 		ShouldPersistStableTriageCall: func(origin string, p *Prog, call int) bool {

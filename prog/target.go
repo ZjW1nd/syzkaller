@@ -187,6 +187,10 @@ type HelperPolicy struct {
 	// context for the next top-level call choice. This helps programs transition from setup
 	// scaffolding into deeper target operations more quickly.
 	AvoidAutomaticHelperBias bool
+	// StrictResourceCtors limits resource construction and enabled-call expansion to
+	// constructors that precisely create the requested resource lineage. Generic targets keep
+	// the historical permissive behavior; resource-heavy profiles can opt in.
+	StrictResourceCtors bool
 }
 
 type BiasPolicy struct {

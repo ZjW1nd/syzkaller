@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/syzkaller/pkg/corpus"
 	"github.com/google/syzkaller/pkg/flatrpc"
 	"github.com/google/syzkaller/pkg/fuzzer"
 	"github.com/google/syzkaller/pkg/fuzzer/queue"
@@ -244,6 +246,49 @@ func TestCandidateRunSourceStopsOnFailure(t *testing.T) {
 	err = assertCandidateRunFinish(t, finished, "candidate 1 finished with status Hanged")
 	if err == nil {
 		t.Fatal("candidate-run failure should report an error")
+	}
+}
+
+func TestCandidateRunSourceSavesRawCoverageForBinCover(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := parseSeedProgram(t, target, []byte("WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"))
+	corpusObj := corpus.NewFocusedCorpus(context.Background(), nil, nil)
+
+	finished := make(chan error, 1)
+	src := &candidateRunSource{
+		candidates: []fuzzer.Candidate{{Prog: p}},
+		corpus:     corpusObj,
+		finish: func(err error) {
+			finished <- err
+		},
+	}
+	req := src.Next()
+	if req == nil {
+		t.Fatal("candidate-run returned nil")
+	}
+	req.Done(&queue.Result{
+		Status: queue.Success,
+		Info: &flatrpc.ProgInfo{
+			Calls: []*flatrpc.CallInfo{{
+				Signal: []uint64{0x10},
+				Cover:  []uint64{0x1000, 0x2000},
+			}},
+		},
+	})
+	assertCandidateRunFinish(t, finished, "")
+
+	items := corpusObj.Items()
+	if len(items) != 1 {
+		t.Fatalf("saved corpus items=%d, want 1", len(items))
+	}
+	if len(items[0].Updates) != 1 {
+		t.Fatalf("saved updates=%d, want 1", len(items[0].Updates))
+	}
+	if got := items[0].Updates[0].RawCover; len(got) != 2 {
+		t.Fatalf("raw cover entries=%v, want 2 entries", got)
 	}
 }
 

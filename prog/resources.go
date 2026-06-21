@@ -87,45 +87,39 @@ func (target *Target) populateResourceCtors() {
 	// Populate resource ctors accounting for resource compatibility.
 	for _, res := range target.Resources {
 		for call, callResources := range callsResources {
+			compatible := false
 			preciseOk := false
-			impreciseOk := false
 			for _, callRes := range callResources {
-				if preciseOk && impreciseOk {
+				if compatible && preciseOk {
 					break
+				}
+				if isCompatibleResourceImpl(res.Kind, callRes.Kind, false) {
+					compatible = true
 				}
 				if isCompatibleResourceImpl(res.Kind, callRes.Kind, true) {
 					preciseOk = true
 				}
-				if isCompatibleResourceImpl(res.Kind, callRes.Kind, false) {
-					impreciseOk = true
-				}
 			}
-			if preciseOk {
-				res.Ctors = append(res.Ctors, ResourceCtor{target.Syscalls[call], true})
-			}
-			if impreciseOk {
-				res.Ctors = append(res.Ctors, ResourceCtor{target.Syscalls[call], false})
+			if compatible {
+				res.Ctors = append(res.Ctors, ResourceCtor{target.Syscalls[call], preciseOk})
 			}
 		}
 		for call, callResources := range seedCallsResources {
+			compatible := false
 			preciseOk := false
-			impreciseOk := false
 			for _, callRes := range callResources {
-				if preciseOk && impreciseOk {
+				if compatible && preciseOk {
 					break
+				}
+				if isCompatibleResourceImpl(res.Kind, callRes.Kind, false) {
+					compatible = true
 				}
 				if isCompatibleResourceImpl(res.Kind, callRes.Kind, true) {
 					preciseOk = true
 				}
-				if isCompatibleResourceImpl(res.Kind, callRes.Kind, false) {
-					impreciseOk = true
-				}
 			}
-			if preciseOk {
-				res.seedCtors = append(res.seedCtors, ResourceCtor{target.Syscalls[call], true})
-			}
-			if impreciseOk {
-				res.seedCtors = append(res.seedCtors, ResourceCtor{target.Syscalls[call], false})
+			if compatible {
+				res.seedCtors = append(res.seedCtors, ResourceCtor{target.Syscalls[call], preciseOk})
 			}
 		}
 	}
@@ -148,6 +142,24 @@ func (target *Target) isCompatibleResource(dst, src string) bool {
 		panic(fmt.Sprintf("unknown resource %q", src))
 	}
 	return isCompatibleResourceImpl(dstRes.Kind, srcRes.Kind, false)
+}
+
+func (target *Target) isPreciseCompatibleResource(dst, src string) bool {
+	if target.isAnyRes(dst) {
+		return true
+	}
+	if target.isAnyRes(src) {
+		return false
+	}
+	dstRes := target.resourceMap[dst]
+	if dstRes == nil {
+		panic(fmt.Sprintf("unknown resource %q", dst))
+	}
+	srcRes := target.resourceMap[src]
+	if srcRes == nil {
+		panic(fmt.Sprintf("unknown resource %q", src))
+	}
+	return isCompatibleResourceImpl(dstRes.Kind, srcRes.Kind, true)
 }
 
 // isCompatibleResourceImpl returns true if resource of kind src can be passed as an argument of kind dst.

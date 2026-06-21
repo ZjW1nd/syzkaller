@@ -640,6 +640,7 @@ const (
 	ProgFromCorpus ProgFlags = 1 << iota
 	ProgMinimized
 	ProgSmashed
+	ProgFromSeed
 
 	progCandidate
 	progInTriage
@@ -664,12 +665,16 @@ type CorpusSaveEvent struct {
 func (fuzzer *Fuzzer) AddCandidates(candidates []Candidate) {
 	accepted := 0
 	for _, candidate := range candidates {
+		origin := "candidate"
+		if candidate.Flags&ProgFromSeed != 0 {
+			origin = "seed"
+		}
 		req := &queue.Request{
 			Prog:       candidate.Prog,
 			ExecOpts:   setFlags(flatrpc.ExecFlagCollectSignal),
 			Stat:       fuzzer.statExecCandidate,
-			Origin:     "candidate",
-			TraceID:    fuzzer.nextTraceID("candidate"),
+			Origin:     origin,
+			TraceID:    fuzzer.nextTraceID(origin),
 			Important:  true,
 			NoPrefetch: true,
 		}

@@ -44,6 +44,13 @@ func (sim *CallResourceSimulation) Failures() []ResourceSimulationFailure {
 	return failures
 }
 
+func ValidateProgramResourceUse(p *Prog) []ResourceSimulationFailure {
+	if p == nil {
+		return validateResourceSimulation(nil, 0, 0)
+	}
+	return validateResourceSimulation(p, 0, len(p.Calls))
+}
+
 func (target *Target) SimulateCallResourceUse(meta *Syscall, enabled map[*Syscall]bool) (*CallResourceSimulation, error) {
 	if target == nil {
 		return nil, fmt.Errorf("nil target")
@@ -156,7 +163,11 @@ func validateResourceSimulation(p *Prog, from, to int) []ResourceSimulationFailu
 	if to > len(p.Calls) {
 		to = len(p.Calls)
 	}
-	producers := make(map[*ResultArg]int)
+	type producerInfo struct {
+		call int
+		desc *ResourceDesc
+	}
+	producers := make(map[*ResultArg]producerInfo)
 	var failures []ResourceSimulationFailure
 	for idx, call := range p.Calls[:to] {
 		if call == nil || call.Meta == nil {
@@ -183,23 +194,35 @@ func validateResourceSimulation(p *Prog, from, to int) []ResourceSimulationFailu
 					}
 					return
 				}
-				if producer, ok := producers[res.Res]; !ok || producer >= idx {
+				producer, ok := producers[res.Res]
+				if !ok || producer.call >= idx {
 					failures = append(failures, ResourceSimulationFailure{
 						Call:     idx,
 						Syscall:  call.Meta.Name,
 						Resource: typ.Desc.Name,
 						Reason:   "resource has no prior producer",
 					})
+					return
+				}
+				if producer.desc != nil && !isCompatibleResourceImpl(typ.Desc.Kind, producer.desc.Kind, true) {
+					failures = append(failures, ResourceSimulationFailure{
+						Call:     idx,
+						Syscall:  call.Meta.Name,
+						Resource: typ.Desc.Name,
+						Reason: fmt.Sprintf("resource produced as %s by call %d",
+							producer.desc.Name, producer.call),
+					})
 				}
 			})
 		}
 		ForeachArg(call, func(arg Arg, _ *ArgCtx) {
-			if _, ok := arg.Type().(*ResourceType); !ok {
+			typ, ok := arg.Type().(*ResourceType)
+			if !ok {
 				return
 			}
 			res := arg.(*ResultArg)
 			if res.Dir() != DirIn {
-				producers[res] = idx
+				producers[res] = producerInfo{call: idx, desc: typ.Desc}
 			}
 		})
 	}

@@ -76,7 +76,7 @@ func LoadSeeds(cfg *mgrconfig.Config, immutable bool) (Seeds, error) {
 			}
 			// Seeds are not considered "from corpus" (won't be rerun multiple times)
 			// b/c they are tried on every start anyway.
-			flags = fuzzer.ProgMinimized
+			flags = fuzzer.ProgFromSeed | fuzzer.ProgMinimized
 		}
 		candidates = append(candidates, fuzzer.Candidate{
 			Prog:  inp.Prog,
@@ -487,7 +487,7 @@ func filterCandidates(candidates []fuzzer.Candidate, syscalls map[*prog.Syscall]
 				continue
 			}
 		}
-		if item.Flags&fuzzer.ProgFromCorpus == 0 {
+		if item.Flags&fuzzer.ProgFromSeed != 0 {
 			ret.SeedCount++
 		}
 		ret.Candidates = append(ret.Candidates, item)
