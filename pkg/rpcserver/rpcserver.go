@@ -635,6 +635,9 @@ func machineCheckFeatures(cfg *RemoteConfig) (flatrpc.Feature, bool) {
 	optionalCoverage := false
 	if cfg.TargetOS == targets.Windows && cfg.Type == "nyx" {
 		features = flatrpc.FeatureSandboxNone
+		if cfg.Experimental.TargetProfile == "afd" || cfg.Experimental.WindowsTargetProfile == "afd" {
+			features |= flatrpc.FeatureNetInjection
+		}
 		optionalCoverage = true
 	}
 	return features, optionalCoverage

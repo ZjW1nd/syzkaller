@@ -521,13 +521,14 @@ static void mmap_input();
 #include <urlmon.h>
 #include <wincrypt.h>
 #include <windows.h>
-#include <winternl.h>
 #include <winscard.h>
 #include <winsock2.h>
 #include <winspool.h>
+#include <winternl.h>
 #include <ws2tcpip.h>
 
 extern "C" {
+NTSTATUS NTAPI NtCancelIoFileEx(HANDLE, PIO_STATUS_BLOCK, PIO_STATUS_BLOCK);
 NTSTATUS NTAPI NtDeviceIoControlFile(HANDLE, HANDLE, PIO_APC_ROUTINE, PVOID,
 				     PIO_STATUS_BLOCK, ULONG, PVOID, ULONG, PVOID, ULONG);
 }
@@ -630,11 +631,27 @@ static intptr_t SYSCALLAPI windows_connect_state(intptr_t s, intptr_t name, intp
 	return connect((SOCKET)s, (const struct sockaddr*)name, (int)namelen) == 0 ? s : -1;
 }
 
+static bool windows_ntstatus_resource_success(NTSTATUS status)
+{
+	return NT_SUCCESS(status) || status == STATUS_PENDING;
+}
+
+static intptr_t windows_ntstatus_resource_result(NTSTATUS status, intptr_t resource)
+{
+	if (windows_ntstatus_resource_success(status)) {
+		errno = 0;
+		return resource;
+	}
+	errno = EIO;
+	return -1;
+}
+
 static intptr_t SYSCALLAPI windows_nt_device_io_control_file_state(
     intptr_t file_handle, intptr_t event, intptr_t apc_routine, intptr_t apc_context,
     intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
     intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
 {
+	errno = 0;
 	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
 						(PIO_APC_ROUTINE)apc_routine,
 						(PVOID)apc_context,
@@ -644,7 +661,7 @@ static intptr_t SYSCALLAPI windows_nt_device_io_control_file_state(
 						(ULONG)input_buffer_length,
 						(PVOID)output_buffer,
 						(ULONG)output_buffer_length);
-	return NT_SUCCESS(status) || status == STATUS_PENDING ? file_handle : -1;
+	return windows_ntstatus_resource_result(status, file_handle);
 }
 
 static intptr_t SYSCALLAPI windows_nt_device_io_control_file_input_handle8_state(
@@ -652,6 +669,7 @@ static intptr_t SYSCALLAPI windows_nt_device_io_control_file_input_handle8_state
     intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
     intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
 {
+	errno = 0;
 	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
 						(PIO_APC_ROUTINE)apc_routine,
 						(PVOID)apc_context,
@@ -661,10 +679,15 @@ static intptr_t SYSCALLAPI windows_nt_device_io_control_file_input_handle8_state
 						(ULONG)input_buffer_length,
 						(PVOID)output_buffer,
 						(ULONG)output_buffer_length);
-	if (!NT_SUCCESS(status) && status != STATUS_PENDING)
+	if (!windows_ntstatus_resource_success(status)) {
+		errno = EIO;
 		return -1;
-	if (!input_buffer || input_buffer_length < 16)
+	}
+	if (!input_buffer || input_buffer_length < 16) {
+		errno = EFAULT;
 		return -1;
+	}
+	errno = 0;
 	return *(intptr_t*)(input_buffer + 8);
 }
 
@@ -673,6 +696,7 @@ static intptr_t SYSCALLAPI windows_nt_device_io_control_file_input_handle16_stat
     intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
     intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
 {
+	errno = 0;
 	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
 						(PIO_APC_ROUTINE)apc_routine,
 						(PVOID)apc_context,
@@ -682,10 +706,15 @@ static intptr_t SYSCALLAPI windows_nt_device_io_control_file_input_handle16_stat
 						(ULONG)input_buffer_length,
 						(PVOID)output_buffer,
 						(ULONG)output_buffer_length);
-	if (!NT_SUCCESS(status) && status != STATUS_PENDING)
+	if (!windows_ntstatus_resource_success(status)) {
+		errno = EIO;
 		return -1;
-	if (!input_buffer || input_buffer_length < 24)
+	}
+	if (!input_buffer || input_buffer_length < 24) {
+		errno = EFAULT;
 		return -1;
+	}
+	errno = 0;
 	return *(intptr_t*)(input_buffer + 16);
 }
 
@@ -694,6 +723,7 @@ static intptr_t SYSCALLAPI windows_nt_device_io_control_file_output_int32_state(
     intptr_t io_status_block, intptr_t io_control_code, intptr_t input_buffer,
     intptr_t input_buffer_length, intptr_t output_buffer, intptr_t output_buffer_length)
 {
+	errno = 0;
 	NTSTATUS status = NtDeviceIoControlFile((HANDLE)file_handle, (HANDLE)event,
 						(PIO_APC_ROUTINE)apc_routine,
 						(PVOID)apc_context,
@@ -703,10 +733,15 @@ static intptr_t SYSCALLAPI windows_nt_device_io_control_file_output_int32_state(
 						(ULONG)input_buffer_length,
 						(PVOID)output_buffer,
 						(ULONG)output_buffer_length);
-	if (!NT_SUCCESS(status))
+	if (!NT_SUCCESS(status)) {
+		errno = EIO;
 		return -1;
-	if (!output_buffer || output_buffer_length < 4)
+	}
+	if (!output_buffer || output_buffer_length < 4) {
+		errno = EFAULT;
 		return -1;
+	}
+	errno = 0;
 	return *(int32_t*)output_buffer;
 }
 
@@ -841,13 +876,13 @@ static intptr_t SYSCALLAPI windows_create_iocp_socket(intptr_t file_handle, intp
 }
 
 static intptr_t SYSCALLAPI windows_get_queued_completion_status(intptr_t iocp,
-							       intptr_t bytes,
-							       intptr_t key,
-							       intptr_t overlapped,
-							       intptr_t timeout,
-							       intptr_t, intptr_t,
-							       intptr_t, intptr_t,
-							       intptr_t)
+								intptr_t bytes,
+								intptr_t key,
+								intptr_t overlapped,
+								intptr_t timeout,
+								intptr_t, intptr_t,
+								intptr_t, intptr_t,
+								intptr_t)
 {
 	return GetQueuedCompletionStatus((HANDLE)iocp, (LPDWORD)bytes, (PULONG_PTR)key,
 					 (LPOVERLAPPED*)overlapped, (DWORD)timeout);
@@ -864,8 +899,8 @@ static intptr_t SYSCALLAPI windows_wsa_get_overlapped_result_state(intptr_t s,
 {
 	return WSAGetOverlappedResult((SOCKET)s, (LPWSAOVERLAPPED)overlapped,
 				      (LPDWORD)bytes, (BOOL)wait, (LPDWORD)flags)
-		       ? s
-		       : -1;
+		   ? s
+		   : -1;
 }
 
 static intptr_t SYSCALLAPI windows_cancel_io_ex(intptr_t handle, intptr_t overlapped,
@@ -1196,9 +1231,9 @@ int main(int argc, char** argv)
 	install_segv_handler();
 	current_thread = &threads[0];
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE
-		init_nyx_syscalls();
+	init_nyx_syscalls();
 #endif
-		return nyx_mode_loop(argc, argv);
+	return nyx_mode_loop(argc, argv);
 #else
 	if (strcmp(argv[1], "runner") == 0) {
 		runner(argv, argc);
@@ -2831,8 +2866,8 @@ static int nyx_mode_loop(int argc, char** argv)
 		auto demo_result = nyx_demo_execute_request(output_data, meta->proc_id,
 							    meta->request_id, freshness++,
 							    msg, &cov_cmd);
-		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
 		nyx_finish_exec_payload(meta, msg->num_calls());
+		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)demo_result.size());
 		continue;
@@ -2866,12 +2901,12 @@ static int nyx_mode_loop(int argc, char** argv)
 					    freshness++, 0, false, nullptr);
 		nyx_log_exec_stage("nyx_post_finish_output", meta->request_id, result.size(),
 				   output_data->completed.load(std::memory_order_relaxed));
-		nyx_log_exec_stage("nyx_pre_result_dump", meta->request_id, result.size());
-		bool dumped = nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
-		nyx_log_exec_stage("nyx_post_result_dump", meta->request_id, result.size(), dumped);
 		nyx_log_exec_stage("nyx_pre_finish_payload", meta->request_id, msg->num_calls());
 		nyx_finish_exec_payload(meta, msg->num_calls());
 		nyx_log_exec_stage("nyx_post_finish_payload", meta->request_id, msg->num_calls());
+		nyx_log_exec_stage("nyx_pre_result_dump", meta->request_id, result.size());
+		bool dumped = nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+		nyx_log_exec_stage("nyx_post_result_dump", meta->request_id, result.size(), dumped);
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)result.size());
 	}
@@ -2939,8 +2974,6 @@ void* worker_thread(void* arg)
 		th->worker_wait_seq = th->handoff_seq;
 		if (!event_isset(&th->idle))
 			event_set(&th->idle);
-		nyx_log_thread_stage("worker_wait_ready_begin", th, event_isset(&th->ready),
-				     event_isset(&th->done), th->executing, th->handoff_seq);
 #endif
 		event_wait(&th->ready);
 #if GOOS_windows
@@ -2968,10 +3001,6 @@ void* worker_thread(void* arg)
 				     th->executing);
 #endif
 		event_set(&th->done);
-#if GOOS_windows
-		nyx_log_thread_stage("worker_post_done_set", th, event_isset(&th->done),
-				     th->executing);
-#endif
 	}
 	return 0;
 }

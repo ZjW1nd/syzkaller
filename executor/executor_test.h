@@ -75,19 +75,19 @@ int syz_test_cov_in_hook __attribute__((used));
 extern "C" void __sanitizer_cov_trace_pc(void);
 extern "C" void syz_test_cov_trace_pc_body(uintptr_t pc);
 asm(
-	".section .text\n"
-	".globl __sanitizer_cov_trace_pc\n"
-	".type __sanitizer_cov_trace_pc, @function\n"
-	"__sanitizer_cov_trace_pc:\n"
-	"movl syz_test_cov_in_hook(%rip), %eax\n"
-	"test %eax, %eax\n"
-	"jne 1f\n"
-	"movl $1, syz_test_cov_in_hook(%rip)\n"
-	"mov (%rsp), %rdi\n"
-	"call syz_test_cov_trace_pc_body\n"
-	"movl $0, syz_test_cov_in_hook(%rip)\n"
-	"1:\n"
-	"ret\n");
+    ".section .text\n"
+    ".globl __sanitizer_cov_trace_pc\n"
+    ".type __sanitizer_cov_trace_pc, @function\n"
+    "__sanitizer_cov_trace_pc:\n"
+    "movl syz_test_cov_in_hook(%rip), %eax\n"
+    "test %eax, %eax\n"
+    "jne 1f\n"
+    "movl $1, syz_test_cov_in_hook(%rip)\n"
+    "mov (%rsp), %rdi\n"
+    "call syz_test_cov_trace_pc_body\n"
+    "movl $0, syz_test_cov_in_hook(%rip)\n"
+    "1:\n"
+    "ret\n");
 
 extern "C" __attribute__((noinline)) void syz_test_cov_trace_pc_body(uintptr_t pc)
 {

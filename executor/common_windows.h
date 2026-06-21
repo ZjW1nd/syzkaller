@@ -7,15 +7,22 @@
 #include <io.h> // for mktemp
 #if SYZ_NET_INJECTION
 #include <winsock2.h>
-#include <ws2tcpip.h>
+#endif
+#include <windows.h>
+#if SYZ_NET_INJECTION
 #include <iphlpapi.h>
+#include <iptypes.h>
+#include <netfw.h>
 #include <netioapi.h>
 #include <objbase.h>
 #include <oleauto.h>
-#include <netfw.h>
 #include <winioctl.h>
+#include <ws2tcpip.h>
 #endif
-#include <windows.h>
+
+#ifndef SYZ_WINDOWS_NET_INJECTION_NETIO2
+#define SYZ_WINDOWS_NET_INJECTION_NETIO2 0
+#endif
 
 #if SYZ_EXECUTOR || SYZ_HANDLE_SEGV
 static void install_segv_handler()
@@ -144,7 +151,7 @@ static void nyx_hprintf(const char* fmt, ...);
 
 #if SYZ_EXECUTOR || __NR_syz_kafl_bugcheck_trigger
 static intptr_t SYSCALLAPI syz_kafl_bugcheck_trigger(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
-						      intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)
+						     intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)
 {
 	// Diagnostic-only pseudo syscall. It starts a preinstalled kernel driver
 	// whose DriverEntry calls KeBugCheckEx, so Nyx can validate bugcheck dump
@@ -295,9 +302,7 @@ static DWORD windows_net_injection_target_ifindex()
 	if (status != NO_ERROR) {
 		windows_nyx_log("windows net injection target adapter get-adapters-addresses failed status=%lu size=%lu name=%s\n",
 				(unsigned long)status, (unsigned long)size,
-				windows_net_injection_target_adapter_name[0] ?
-				    windows_net_injection_target_adapter_name :
-				    "<unset>");
+				windows_net_injection_target_adapter_name[0] ? windows_net_injection_target_adapter_name : "<unset>");
 		if (adapters != NULL)
 			HeapFree(GetProcessHeap(), 0, adapters);
 		return 0;
@@ -314,9 +319,7 @@ static DWORD windows_net_injection_target_ifindex()
 		return windows_net_injection_target_ifindex_cache;
 	}
 	windows_nyx_log("windows net injection target adapter not found name=%s\n",
-			windows_net_injection_target_adapter_name[0] ?
-			    windows_net_injection_target_adapter_name :
-			    "<unset>");
+			windows_net_injection_target_adapter_name[0] ? windows_net_injection_target_adapter_name : "<unset>");
 	HeapFree(GetProcessHeap(), 0, adapters);
 	return 0;
 }
@@ -409,6 +412,7 @@ static void windows_net_injection_log_adapter_addresses(const char* label)
 	HeapFree(GetProcessHeap(), 0, adapters);
 }
 
+#if SYZ_WINDOWS_NET_INJECTION_NETIO2
 static void windows_net_injection_log_unicast_ipv4_entry(DWORD ifindex, const char* label)
 {
 	NET_LUID luid;
@@ -446,7 +450,7 @@ static void windows_net_injection_log_unicast_ipv4_entry(DWORD ifindex, const ch
 			(unsigned long)row.PreferredLifetime,
 			(unsigned long long)row.InterfaceLuid.Value,
 			(unsigned long long)row.InterfaceLuid.Info.NetLuidIndex,
-				(unsigned long long)row.InterfaceLuid.Info.IfType);
+			(unsigned long long)row.InterfaceLuid.Info.IfType);
 }
 
 static void windows_net_injection_format_mac(const UCHAR* mac, ULONG length, char* out, size_t out_size)
@@ -590,6 +594,31 @@ static void windows_net_injection_refresh_unicast_ipv4_entry(DWORD ifindex, cons
 			(unsigned long)row.PreferredLifetime,
 			(unsigned long long)row.InterfaceLuid.Value);
 }
+#else
+static void windows_net_injection_log_unicast_ipv4_entry(DWORD, const char*)
+{
+}
+
+static void windows_net_injection_log_neighbor_ipv4_table_for_index(DWORD, const char*)
+{
+}
+
+static void windows_net_injection_configure_static_neighbor(DWORD ifindex, const char* label)
+{
+	if (InterlockedCompareExchange(&windows_net_injection_static_neighbor_enabled, 0, 0) == 0)
+		return;
+	windows_nyx_log("windows net injection static-neighbor %s ifindex=%lu skipped: netio2 unavailable\n",
+			label, (unsigned long)ifindex);
+}
+
+static void windows_net_injection_refresh_unicast_ipv4_entry(DWORD ifindex, const char* label)
+{
+	if (InterlockedCompareExchange(&windows_net_injection_refresh_unicast_enabled, 0, 0) == 0)
+		return;
+	windows_nyx_log("windows net injection refresh-unicast %s ifindex=%lu skipped: netio2 unavailable\n",
+			label, (unsigned long)ifindex);
+}
+#endif
 
 static DWORD windows_net_injection_env_dword(const char* name, DWORD max_value)
 {
@@ -611,6 +640,7 @@ static DWORD windows_net_injection_env_dword(const char* name, DWORD max_value)
 	return parsed;
 }
 
+#if SYZ_WINDOWS_NET_INJECTION_NETIO2
 static void windows_net_injection_log_ip_interface_for_index(DWORD ifindex, const char* label)
 {
 	NET_LUID luid;
@@ -678,6 +708,15 @@ static void windows_net_injection_log_unicast_ipv4_table(const char* label)
 		windows_nyx_log("windows net state %s unicast 172.20.0.0/24 not found\n", label);
 	FreeMibTable(table);
 }
+#else
+static void windows_net_injection_log_ip_interface_for_index(DWORD, const char*)
+{
+}
+
+static void windows_net_injection_log_unicast_ipv4_table(const char*)
+{
+}
+#endif
 
 static void windows_net_injection_log_ip_tcp_statistics(const char* label)
 {
@@ -738,9 +777,9 @@ static void windows_net_injection_allow_firewall_tcp_inbound()
 	}
 	INetFwPolicy2* policy = NULL;
 	HRESULT hr_create_policy = CoCreateInstance(__uuidof(NetFwPolicy2), NULL,
-						   CLSCTX_INPROC_SERVER,
-						   __uuidof(INetFwPolicy2),
-						   (void**)&policy);
+						    CLSCTX_INPROC_SERVER,
+						    __uuidof(INetFwPolicy2),
+						    (void**)&policy);
 	if (FAILED(hr_create_policy) || policy == NULL) {
 		windows_nyx_log("windows net injection firewall-allow policy cocreate failed hr=0x%lx coinit=0x%lx\n",
 				(unsigned long)hr_create_policy, (unsigned long)hr_init);
@@ -782,9 +821,9 @@ static void windows_net_injection_allow_firewall_tcp_inbound()
 	HRESULT hr_remove = rules->Remove(name);
 	INetFwRule* rule = NULL;
 	HRESULT hr_create_rule = CoCreateInstance(__uuidof(NetFwRule), NULL,
-						 CLSCTX_INPROC_SERVER,
-						 __uuidof(INetFwRule),
-						 (void**)&rule);
+						  CLSCTX_INPROC_SERVER,
+						  __uuidof(INetFwRule),
+						  (void**)&rule);
 	HRESULT hr_name = E_POINTER;
 	HRESULT hr_desc = E_POINTER;
 	HRESULT hr_protocol = E_POINTER;
@@ -842,6 +881,7 @@ static bool windows_net_injection_ipv4_prefix_contains(uint32 prefix_addr,
 	return (prefix_host & mask) == (addr_host & mask);
 }
 
+#if SYZ_WINDOWS_NET_INJECTION_NETIO2
 static void windows_net_injection_log_peer_route(DWORD ifindex, const char* label)
 {
 	NET_LUID luid;
@@ -903,6 +943,11 @@ static void windows_net_injection_log_peer_route(DWORD ifindex, const char* labe
 				(unsigned long long)luid.Value);
 	FreeMibTable(table);
 }
+#else
+static void windows_net_injection_log_peer_route(DWORD, const char*)
+{
+}
+#endif
 
 static const char* windows_net_injection_tcp_state_name(DWORD state)
 {
@@ -947,7 +992,7 @@ static void windows_net_injection_log_extended_tcp_table(const char* label)
 		return;
 	}
 	PMIB_TCPTABLE_OWNER_PID owner_table = (PMIB_TCPTABLE_OWNER_PID)HeapAlloc(GetProcessHeap(),
-		HEAP_ZERO_MEMORY, owner_table_size);
+										 HEAP_ZERO_MEMORY, owner_table_size);
 	if (owner_table == NULL) {
 		windows_nyx_log("windows net state %s get-extended-tcp-table alloc failed size=%lu\n",
 				label, (unsigned long)owner_table_size);
@@ -1022,9 +1067,7 @@ static void windows_net_injection_try_configure_local_ipv4()
 	DWORD ifindex = windows_net_injection_target_ifindex();
 	if (ifindex == 0) {
 		windows_nyx_log("windows net injection local ipv4 target adapter not found name=%s\n",
-				windows_net_injection_target_adapter_name[0] ?
-				    windows_net_injection_target_adapter_name :
-				    "<unset>");
+				windows_net_injection_target_adapter_name[0] ? windows_net_injection_target_adapter_name : "<unset>");
 		return;
 	}
 
@@ -1082,18 +1125,16 @@ static void windows_net_injection_log_guest_net_state(const char* label)
 					(unsigned long)row->dwInErrors,
 					(unsigned long)row->dwOutDiscards,
 					(unsigned long)row->dwOutErrors);
-				windows_net_injection_log_ip_interface_for_index(row->dwIndex, label);
-				windows_net_injection_log_unicast_ipv4_entry(row->dwIndex, label);
-				windows_net_injection_configure_static_neighbor(row->dwIndex, label);
-				windows_net_injection_log_neighbor_ipv4_table_for_index(row->dwIndex, label);
-				windows_net_injection_log_peer_route(row->dwIndex, label);
-			}
+			windows_net_injection_log_ip_interface_for_index(row->dwIndex, label);
+			windows_net_injection_log_unicast_ipv4_entry(row->dwIndex, label);
+			windows_net_injection_configure_static_neighbor(row->dwIndex, label);
+			windows_net_injection_log_neighbor_ipv4_table_for_index(row->dwIndex, label);
+			windows_net_injection_log_peer_route(row->dwIndex, label);
+		}
 		if (!found)
 			windows_nyx_log("windows net state %s tap adapter not found by device name=%s\n",
 					label,
-					windows_net_injection_target_adapter_name[0] ?
-					    windows_net_injection_target_adapter_name :
-					    "<unset>");
+					windows_net_injection_target_adapter_name[0] ? windows_net_injection_target_adapter_name : "<unset>");
 	} else if (if_table != NULL) {
 		windows_nyx_log("windows net state %s get-if-table failed status=%lu size=%lu\n",
 				label, (unsigned long)if_status, (unsigned long)if_table_size);
@@ -1142,8 +1183,8 @@ static void windows_net_injection_log_guest_net_state(const char* label)
 		windows_nyx_log("windows net state %s get-ip-addr-table failed status=%lu size=%lu\n",
 				label, (unsigned long)ip_status, (unsigned long)ip_table_size);
 	}
-		if (ip_table != NULL)
-			HeapFree(GetProcessHeap(), 0, ip_table);
+	if (ip_table != NULL)
+		HeapFree(GetProcessHeap(), 0, ip_table);
 	windows_net_injection_log_ip_tcp_statistics(label);
 	windows_net_injection_log_unicast_ipv4_table(label);
 	windows_net_injection_log_extended_tcp_table(label);
@@ -1620,7 +1661,7 @@ static intptr_t SYSCALLAPI syz_extract_tcp_res(intptr_t a0, intptr_t a1, intptr_
 
 	char data[256];
 	int read_attempts = (int)windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS_ENV,
-								SYZ_WINDOWS_NET_INJECTION_MAX_READ_ATTEMPTS);
+								 SYZ_WINDOWS_NET_INJECTION_MAX_READ_ATTEMPTS);
 	if (read_attempts == 0)
 		read_attempts = SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS;
 	for (int attempt = 0; attempt < read_attempts; attempt++) {

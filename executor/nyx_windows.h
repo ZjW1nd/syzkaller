@@ -246,7 +246,7 @@ static PRTL_PROCESS_MODULES nyx_query_loaded_modules()
 		if (!modules)
 			return nullptr;
 		NTSTATUS status = NtQuerySystemInformation((SYSTEM_INFORMATION_CLASS)11,
-							    modules, alloc_len, &len);
+							   modules, alloc_len, &len);
 		if (NT_SUCCESS(status))
 			return modules;
 		VirtualFree(modules, 0, MEM_RELEASE);

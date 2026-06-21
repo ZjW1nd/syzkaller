@@ -126,6 +126,26 @@ func TestNew(t *testing.T) {
 				assert.Nil(t, s.serv)
 			},
 		},
+		{
+			name: "windows nyx afd net injection",
+			modifyCfg: func() *mgrconfig.Config {
+				cfg := defaultCfg
+				cfg.Type = "nyx"
+				cfg.Cover = true
+				cfg.Experimental.RemoteCover = true
+				cfg.Experimental.WindowsTargetProfile = "afd"
+				cfg.Derived.TargetOS = targets.Windows
+				cfg.Derived.TargetArch = targets.AMD64
+				cfg.Derived.TargetVMArch = targets.AMD64
+				return &cfg
+			},
+			expectedServCheck: func(srv Server) {
+				s := srv.(*server)
+				assert.Equal(t, flatrpc.FeatureSandboxNone|flatrpc.FeatureNetInjection, s.cfg.Config.Features)
+				assert.True(t, s.cfg.Config.OptionalCoverage)
+				assert.Nil(t, s.serv)
+			},
+		},
 	}
 
 	for _, tt := range tests {
