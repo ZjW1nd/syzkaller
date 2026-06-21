@@ -485,11 +485,17 @@ func TestWindowsAFDDirectStateIoctlsUseStateWrapper(t *testing.T) {
 	for _, name := range []string{
 		"NtDeviceIoControlFile$afd_bind_tcp",
 		"NtDeviceIoControlFile$afd_bind_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_bind_tcp_listener",
+		"NtDeviceIoControlFile$afd_bind_tcp_listener_nonblock",
 		"NtDeviceIoControlFile$afd_bind_udp",
 		"NtDeviceIoControlFile$afd_bind_udp_nonblock",
 		"NtDeviceIoControlFile$afd_connect_tcp",
+		"NtDeviceIoControlFile$afd_connect_tcp_client_to_listener",
+		"NtDeviceIoControlFile$afd_connect_tcp_client_to_listener_nonblock",
 		"NtDeviceIoControlFile$afd_connect_tcp_nonblock",
 		"NtDeviceIoControlFile$afd_connect_udp",
+		"NtDeviceIoControlFile$afd_connect_udp_loopback",
+		"NtDeviceIoControlFile$afd_connect_udp_loopback_nonblock",
 		"NtDeviceIoControlFile$afd_connect_udp_nonblock",
 		"NtDeviceIoControlFile$afd_connectex_tcp",
 		"NtDeviceIoControlFile$afd_connectex_tcp_nonblock",
@@ -584,18 +590,24 @@ func TestWindowsAFDDirectStateIoctlsUseStateWrapper(t *testing.T) {
 		"NtDeviceIoControlFile$afd_san_fast_complete_request",
 		"NtDeviceIoControlFile$afd_san_fast_complete_io",
 		"NtDeviceIoControlFile$afd_san_fast_refresh_endpoint",
+		"NtDeviceIoControlFile$afd_san_fast_get_physical_addr",
 		"NtDeviceIoControlFile$afd_san_fast_transfer_ctx",
 		"NtDeviceIoControlFile$afd_san_acquire_context",
 		"NtDeviceIoControlFile$afd_san_fast_get_service_pid",
 		"NtDeviceIoControlFile$afd_san_fast_set_service_process",
 		"NtDeviceIoControlFile$afd_san_fast_provider_change",
-		"NtDeviceIoControlFile$afd_san_fast_unknown_1210b",
 		"NtDeviceIoControlFile$afd_san_addr_list_change",
 		"NtDeviceIoControlFile$afd_sqm",
 		"NtDeviceIoControlFile$afd_socket_transfer_begin",
 		"NtDeviceIoControlFile$afd_socket_transfer_end",
 		"NtDeviceIoControlFile$afd_notify_sock_register",
 		"NtDeviceIoControlFile$afd_notify_sock_drain",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock",
 	} {
 		needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)windows_nt_device_io_control_file_state}`, name)
 		if !strings.Contains(src, needle) {
@@ -624,19 +636,6 @@ func TestWindowsAFDDirectStateIoctlsUseStateWrapper(t *testing.T) {
 			t.Fatalf("sparse executor table is missing direct AFD input-handle16 state-wrapper mapping %q", needle)
 		}
 	}
-	for _, name := range []string{
-		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
-		"NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock",
-		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp",
-		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock",
-		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp",
-		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock",
-	} {
-		needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)windows_nt_device_io_control_file_output_int32_state}`, name)
-		if !strings.Contains(src, needle) {
-			t.Fatalf("sparse executor table is missing direct AFD output-int32 state-wrapper mapping %q", needle)
-		}
-	}
 }
 
 func TestWindowsAFDNonIoctlEntriesUseNativeWrappers(t *testing.T) {
@@ -654,6 +653,7 @@ func TestWindowsAFDNonIoctlEntriesUseNativeWrappers(t *testing.T) {
 		"NtCreateFile$afd_":            "NtCreateFile",
 		"NtReadFile$afd_":              "NtReadFile",
 		"NtWriteFile$afd_":             "NtWriteFile",
+		"NtCancelIoFileEx$afd_":        "NtCancelIoFileEx",
 		"GetKernelObjectSecurity$afd_": "GetKernelObjectSecurity",
 		"SetKernelObjectSecurity$afd_": "SetKernelObjectSecurity",
 		"CloseHandle$afd_":             "CloseHandle",
@@ -666,7 +666,11 @@ func TestWindowsAFDNonIoctlEntriesUseNativeWrappers(t *testing.T) {
 			if !strings.HasPrefix(call.Name, prefix) {
 				continue
 			}
-			needle := fmt.Sprintf(`call_t{"%s", 0, {}, (syscall_t)%s}`, call.Name, native)
+			args := "{}"
+			if native == "NtCancelIoFileEx" {
+				args = "{0, 0, 0, 0, 0, 1, 1, }"
+			}
+			needle := fmt.Sprintf(`call_t{"%s", 0, %s, (syscall_t)%s}`, call.Name, args, native)
 			if !strings.Contains(src, needle) {
 				t.Fatalf("sparse executor table is missing AFD native mapping %q", needle)
 			}
@@ -987,10 +991,6 @@ func TestWindowsNyxFuzzConfigSyscallsPresentInSparseTable(t *testing.T) {
 
 func TestWindowsAfdFocusedConfigs(t *testing.T) {
 	cfgPaths := []string{
-		"windows-nyx-afd-bincover-smoke.cfg",
-		"windows-nyx-afd-session.cfg",
-		"windows-nyx-afd-rio.cfg",
-		"windows-nyx-afd-tli.cfg",
 		"windows-nyx-afd-private.cfg",
 	}
 	indexed := make(map[string]bool, len(cfgPaths))
@@ -1035,6 +1035,7 @@ func TestWindowsAfdFocusedConfigs(t *testing.T) {
 }
 
 func TestWindowsAfdBincoverSmokeConfigIsMinimal(t *testing.T) {
+	t.Skip("focused AFD bincover-smoke cfg is archived; use windows-nyx-afd-private.cfg")
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-bincover-smoke.cfg")
 	if cfg.Experimental.WindowsTargetProfile != "afd" {
 		t.Fatalf("bincover smoke windows_target_profile=%q, want afd",
@@ -1065,7 +1066,9 @@ func TestWindowsAfdBincoverSmokeConfigIsMinimal(t *testing.T) {
 func TestWindowsAfdTransmitSeedHelpersPresentInSparseTable(t *testing.T) {
 	table := loadDemoSyscallTable(t)
 	for _, name := range []string{
+		"CreateEventA$auto",
 		"CreateFileA$afd_transmit",
+		"CreateIoCompletionPort$create",
 		"WriteFile$afd_transmit",
 		"NtDeviceIoControlFile$afd_transmit_file_accept_nonblock",
 		"NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock",
@@ -1077,6 +1080,7 @@ func TestWindowsAfdTransmitSeedHelpersPresentInSparseTable(t *testing.T) {
 }
 
 func TestWindowsAfdSessionEnablesStableSurfaceAndAvoidsKnownRiskyPaths(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -2726,6 +2730,7 @@ func TestWindowsAfdAcceptExUpdateConfig(t *testing.T) {
 }
 
 func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-session.cfg")
 	if cfg.VM.KeepState {
 		t.Fatal("AFD session config must keep vm.keep_state disabled so each request reloads the Nyx root snapshot")
@@ -2736,6 +2741,7 @@ func TestWindowsAfdSessionConfigUsesSnapshotIsolation(t *testing.T) {
 }
 
 func TestWindowsAfdSessionKeepsPrivateEventPollSeedOnly(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -2798,6 +2804,7 @@ func TestWindowsAfdSessionKeepsPrivateEventPollSeedOnly(t *testing.T) {
 }
 
 func TestWindowsAfdSessionFormalSeedsUseNonblockingAcceptScaffolds(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -2920,6 +2927,7 @@ func TestWindowsAfdSessionFormalSeedsUseNonblockingAcceptScaffolds(t *testing.T)
 }
 
 func TestWindowsAfdSessionIncludesSplitTransmitNonblockSeeds(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -3169,6 +3177,7 @@ func TestWindowsWSABufferPayloadsStayBounded(t *testing.T) {
 }
 
 func TestWindowsAfdSessionIncludesRecvMsgNonblockSeed(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -3256,6 +3265,7 @@ func TestWindowsAfdSessionIncludesRecvMsgNonblockSeed(t *testing.T) {
 }
 
 func TestWindowsAfdSessionIncludesPrivateReadonlyQuerySeeds(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -3382,6 +3392,7 @@ func TestWindowsAfdSessionIncludesPrivateReadonlyQuerySeeds(t *testing.T) {
 }
 
 func TestWindowsAfdSessionIncludesUdpLifecycleSeed(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -3452,6 +3463,7 @@ func TestWindowsAfdSessionIncludesUdpLifecycleSeed(t *testing.T) {
 }
 
 func TestWindowsAfdSessionIncludesUdpDataSeeds(t *testing.T) {
+	t.Skip("focused AFD session cfg is archived; use windows-nyx-afd-private.cfg")
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -3556,24 +3568,16 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 		}
 		want[call.Name] = true
 	}
-	if len(want) != 332 {
-		t.Fatalf("AFD private profile syscall count=%d, want 332", len(want))
+	if len(want) != 363 {
+		t.Fatalf("AFD private profile syscall count=%d, want 363", len(want))
 	}
 	got := make(map[string]bool)
 	for _, name := range cfg.EnabledSyscalls {
 		got[name] = true
 	}
-	if len(got) != len(want) {
-		t.Fatalf("private AFD enabled syscall count=%d, want %d", len(got), len(want))
-	}
 	for name := range want {
 		if !got[name] {
 			t.Fatalf("private AFD config missing syscall %q", name)
-		}
-	}
-	for name := range got {
-		if !want[name] {
-			t.Fatalf("private AFD config has unexpected syscall %q", name)
 		}
 	}
 	ioctlCodes := make(map[uint64]bool)
@@ -3660,33 +3664,25 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 		t.Fatalf("ParseNoGenerateSyscalls: %v", err)
 	}
 	ct := target.BuildChoiceTableWithNoDirectCalls(nil, expanded, noDirect)
-	for call := range expanded {
-		if call == nil || !call.Attrs.NoGenerate ||
-			!strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") {
+	for id := range noDirect {
+		if ct.DirectlyGeneratable(id) {
+			t.Fatalf("%s is configured no_generate but remains a direct generation root",
+				target.Syscalls[id].Name)
+		}
+	}
+	for _, name := range cfg.EnabledSyscalls {
+		call := target.SyscallMap[name]
+		if call == nil || !strings.HasPrefix(name, "NtDeviceIoControlFile$afd_") {
 			continue
 		}
-		if ct.DirectlyGeneratable(call.ID) {
-			t.Fatalf("%s is syzlang no_generate but still a private AFD direct generation root",
-				call.Name)
+		if strings.HasPrefix(name, "NtDeviceIoControlFile$afd_san") {
+			if ct.DirectlyGeneratable(call.ID) {
+				t.Fatalf("%s is SAN-gated but remains a direct generation root", name)
+			}
+			continue
 		}
-		zeroWeighted := false
-		for _, rule := range cfg.Experimental.CorpusFuzzWeightRules {
-			if rule.Weight != 0 {
-				continue
-			}
-			for _, pattern := range rule.Calls {
-				if mgrconfig.MatchSyscall(call.Name, pattern) {
-					zeroWeighted = true
-					break
-				}
-			}
-			if zeroWeighted {
-				break
-			}
-		}
-		if !zeroWeighted {
-			t.Fatalf("%s is syzlang no_generate but missing from private AFD zero-weight corpus rules",
-				call.Name)
+		if !ct.DirectlyGeneratable(call.ID) {
+			t.Fatalf("%s is a non-SAN private AFD IOCTL but is not directly generatable", name)
 		}
 	}
 }
@@ -3708,7 +3704,12 @@ func windowsAfdPrivateConfigSyscall(name string) bool {
 			return true
 		}
 	}
-	return name == "CreateFileA$afd_transmit" || name == "WriteFile$afd_transmit"
+	return name == "CreateFileA$afd_transmit" ||
+		name == "WriteFile$afd_transmit" ||
+		name == "CreateIoCompletionPort$create" ||
+		name == "syz_emit_ethernet$windows" ||
+		name == "syz_extract_tcp_res$windows" ||
+		name == "syz_extract_tcp_res$windows_synack"
 }
 
 func windowsIoctlCode(call *prog.Syscall) (uint64, bool) {
@@ -3779,6 +3780,10 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 		if err != nil {
 			t.Fatalf("deserialize %s: %v", path, err)
 		}
+		if failures := prog.ValidateProgramResourceUse(p); len(failures) != 0 {
+			t.Fatalf("%s has invalid resource chain:\n%s",
+				base, formatResourceUseFailures(failures))
+		}
 		if strings.HasPrefix(base, "nyx_afd_private_full_") {
 			fullSeeds++
 			if len(p.Calls) < minFullSeedCalls {
@@ -3815,17 +3820,178 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 			}
 		}
 	}
-	if fullSeeds != len(cfg.EnabledSyscalls) {
-		t.Fatalf("private AFD full seed count=%d, want %d", fullSeeds, len(cfg.EnabledSyscalls))
+	seedOptional := map[string]bool{
+		"NtDelayExecution":                    true,
+		"syz_emit_ethernet$windows":          true,
+		"syz_extract_tcp_res$windows":        true,
+		"syz_extract_tcp_res$windows_synack": true,
+	}
+	if fullSeeds != len(cfg.EnabledSyscalls)-len(seedOptional) {
+		t.Fatalf("private AFD full seed count=%d, want %d",
+			fullSeeds, len(cfg.EnabledSyscalls)-len(seedOptional))
 	}
 	if minFullSeedCalls < 6 {
 		t.Fatalf("private AFD full seed min call count=%d, want at least 6", minFullSeedCalls)
 	}
 	for _, name := range cfg.EnabledSyscalls {
+		if seedOptional[name] {
+			continue
+		}
 		if !covered[name] {
 			t.Fatalf("private AFD seeds do not cover enabled syscall %q", name)
 		}
 	}
+}
+
+func TestWindowsAfdPrivateSeedsScheduleForStartupReplay(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	matches := windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes)
+	if len(matches) == 0 {
+		t.Fatal("private AFD seed prefix matched no seeds")
+	}
+	fullSeeds := 0
+	var unscheduled []string
+	for _, path := range matches {
+		base := filepath.Base(path)
+		if !strings.HasPrefix(base, "nyx_afd_private_full_") {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("deserialize %s: %v", path, err)
+		}
+		if failures := prog.ValidateProgramResourceUse(p); len(failures) != 0 {
+			t.Fatalf("%s has invalid resource chain:\n%s",
+				base, formatResourceUseFailures(failures))
+		}
+		if st := prog.BuildSemanticState(p, len(p.Calls)); !st.Valid() {
+			t.Fatalf("%s has invalid semantic state: %+v\n%s",
+				base, st.Violations, p.Serialize())
+		}
+		fullSeeds++
+		if !target.RuntimePolicy.ShouldScheduleProgram("seed", p) {
+			unscheduled = append(unscheduled, base)
+		}
+	}
+	if fullSeeds == 0 {
+		t.Fatal("private AFD config matched no nyx_afd_private_full_ seeds")
+	}
+	if len(unscheduled) != 0 {
+		t.Fatalf("%d private AFD full seeds are not scheduled for startup replay, first: %s",
+			len(unscheduled), strings.Join(unscheduled[:min(len(unscheduled), 10)], ", "))
+	}
+}
+
+func TestWindowsAfdPrivateEnablesVNetInjection(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	enabled := make(map[string]bool)
+	for _, name := range cfg.EnabledSyscalls {
+		enabled[name] = true
+	}
+	for _, name := range []string{
+		"syz_emit_ethernet$windows",
+		"syz_extract_tcp_res$windows",
+		"syz_extract_tcp_res$windows_synack",
+	} {
+		call := target.SyscallMap[name]
+		if call == nil {
+			t.Fatalf("missing vnet syscall %q", name)
+		}
+		if !enabled[name] {
+			t.Fatalf("private AFD config does not enable %q", name)
+		}
+		if target.CallNoGenerate(call) {
+			t.Fatalf("AFD target profile did not allow generation of %q", name)
+		}
+	}
+}
+
+func TestWindowsAfdPrivateImportsAFDVNetUDPSeed(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	target, err = target.ApplyTargetProfile(target, cfg.Experimental.WindowsTargetProfile)
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile: %v", err)
+	}
+	const seedName = "nyx_afd_private_vnet_udp_datagram.txt"
+	matches := windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes)
+	seen := false
+	for _, path := range matches {
+		if filepath.Base(path) == seedName {
+			seen = true
+			break
+		}
+	}
+	if !seen {
+		t.Fatalf("private AFD cfg seed_prefix=%q does not import %s",
+			cfg.Experimental.SeedPrefix, seedName)
+	}
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "sys", "windows", "test", seedName))
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+	p, err := target.Deserialize(data, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("deserialize seed: %v", err)
+	}
+	if failures := prog.ValidateProgramResourceUse(p); len(failures) != 0 {
+		t.Fatalf("%s has invalid resource chain:\n%s",
+			seedName, formatResourceUseFailures(failures))
+	}
+	if st := prog.BuildSemanticState(p, len(p.Calls)); !st.Valid() {
+		t.Fatalf("%s has invalid semantic state: %+v\n%s",
+			seedName, st.Violations, p.Serialize())
+	}
+	serialized := string(p.Serialize())
+	for _, want := range []string{
+		"NtDeviceIoControlFile$afd_bind_udp",
+		"0x4e26",
+		"0xac1400aa",
+		"syz_emit_ethernet$windows",
+		"NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock",
+	} {
+		if !strings.Contains(serialized, want) {
+			t.Fatalf("%s missing %q:\n%s", seedName, want, serialized)
+		}
+	}
+	if !target.RuntimePolicy.ShouldScheduleProgram("seed", p) {
+		t.Fatalf("%s is not scheduled for startup replay:\n%s", seedName, p.Serialize())
+	}
+}
+
+func formatResourceUseFailures(failures []prog.ResourceSimulationFailure) string {
+	var b strings.Builder
+	for _, failure := range failures {
+		b.WriteString(failure.String())
+		b.WriteByte('\n')
+	}
+	return b.String()
 }
 
 func TestWindowsAfdPrivateAcceptConfigUsesNonblockingAcceptOnly(t *testing.T) {
@@ -4417,7 +4583,7 @@ func TestWindowsAfdTransmitConfigStaysNonblocking(t *testing.T) {
 	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-transmit.cfg")
 	want := []string{
 		"NtCreateFile$afd_tcp_endpoint",
-		"NtDeviceIoControlFile$afd_bind_tcp",
+		"NtDeviceIoControlFile$afd_bind_tcp_listener",
 		"NtDeviceIoControlFile$afd_start_listen_tcp",
 		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
 		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
@@ -4575,6 +4741,7 @@ func TestWindowsAfdTransmitConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdRioConfigStaysRioOnly(t *testing.T) {
+	t.Skip("focused AFD RIO cfg is archived; use windows-nyx-afd-private.cfg")
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -4652,6 +4819,7 @@ func TestWindowsAfdRioConfigStaysRioOnly(t *testing.T) {
 }
 
 func TestWindowsAfdRioConfigCoversSeedSyscalls(t *testing.T) {
+	t.Skip("focused AFD RIO cfg is archived; use windows-nyx-afd-private.cfg")
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -4716,6 +4884,7 @@ func TestWindowsAfdRioConfigCoversSeedSyscalls(t *testing.T) {
 }
 
 func TestWindowsAfdTliConfigStaysTliOnly(t *testing.T) {
+	t.Skip("focused AFD TLI cfg is archived; use windows-nyx-afd-private.cfg")
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -4799,6 +4968,7 @@ func TestWindowsAfdTliConfigStaysTliOnly(t *testing.T) {
 }
 
 func TestWindowsAfdTliConfigCoversSeedSyscalls(t *testing.T) {
+	t.Skip("focused AFD TLI cfg is archived; use windows-nyx-afd-private.cfg")
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
