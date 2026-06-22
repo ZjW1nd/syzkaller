@@ -3568,8 +3568,8 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 		}
 		want[call.Name] = true
 	}
-	if len(want) != 363 {
-		t.Fatalf("AFD private profile syscall count=%d, want 363", len(want))
+	if len(want) != 367 {
+		t.Fatalf("AFD private profile syscall count=%d, want 367", len(want))
 	}
 	got := make(map[string]bool)
 	for _, name := range cfg.EnabledSyscalls {
@@ -3734,6 +3734,13 @@ func TestWindowsAfdPrivateConfigForcesGenerationInterleave(t *testing.T) {
 	}
 }
 
+func TestWindowsAfdPrivateConfigEnablesCollide(t *testing.T) {
+	cfg := loadWindowsNyxConfig(t, "windows-nyx-afd-private.cfg")
+	if cfg.Experimental.DisableCollide {
+		t.Fatal("private AFD config must keep collide enabled for async/race coverage")
+	}
+}
+
 func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -3821,7 +3828,7 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 		}
 	}
 	seedOptional := map[string]bool{
-		"NtDelayExecution":                    true,
+		"NtDelayExecution":                   true,
 		"syz_emit_ethernet$windows":          true,
 		"syz_extract_tcp_res$windows":        true,
 		"syz_extract_tcp_res$windows_synack": true,
@@ -3970,9 +3977,7 @@ func TestWindowsAfdPrivateImportsAFDVNetUDPSeed(t *testing.T) {
 	}
 	serialized := string(p.Serialize())
 	for _, want := range []string{
-		"NtDeviceIoControlFile$afd_bind_udp",
-		"0x4e26",
-		"0xac1400aa",
+		"NtDeviceIoControlFile$afd_bind_udp_vnet",
 		"syz_emit_ethernet$windows",
 		"NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock",
 	} {

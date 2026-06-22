@@ -1,20 +1,39 @@
 # Copyright 2026 syzkaller project authors. All rights reserved.
 # Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
-# Windows/Nyx virtual network injection. Keep the pseudo syscalls seed-only
-# until the Windows injection model is stable enough for standalone generation.
+# Windows/Nyx virtual network injection. These pseudo syscalls are part of the
+# AFD fuzzing surface so packet traffic can be generated and mutated alongside
+# endpoint IOCTL state.
 
-syz_emit_ethernet$windows(len len[packet], packet ptr[in, win_vnet_eth_packet]) (no_generate, no_minimize)
+syz_emit_ethernet$windows(len len[packet], packet ptr[in, win_vnet_eth_packet])
 
 resource win_vnet_tcp_seq_num[int32]: 0x41424344
+
+win_vnet_tcp_seq_value [
+	tracked	win_vnet_tcp_seq_num
+	literal	int32be
+]
+
+win_vnet_tcp_port [
+	afd		sock_port
+	tcp_peer	const[0x9c40, int16be]
+]
+
+win_vnet_udp_port [
+	afd		sock_port
+	udp_recv	const[0x4e26, int16be]
+	udp_fast	const[0x4e27, int16be]
+	udp_msg		const[0x4e28, int16be]
+	udp_peer	const[0x9c40, int16be]
+]
 
 win_vnet_tcp_resources {
 	seq	win_vnet_tcp_seq_num
 	ack	win_vnet_tcp_seq_num
 }
 
-syz_extract_tcp_res$windows(res ptr[out, win_vnet_tcp_resources], seq_inc int32, ack_inc int32) (no_generate, no_minimize)
-syz_extract_tcp_res$windows_synack(res ptr[out, win_vnet_tcp_resources], seq_inc const[1], ack_inc const[0]) (no_generate, no_minimize)
+syz_extract_tcp_res$windows(res ptr[out, win_vnet_tcp_resources], seq_inc int32, ack_inc int32)
+syz_extract_tcp_res$windows_synack(res ptr[out, win_vnet_tcp_resources], seq_inc const[1], ack_inc const[0])
 
 win_vnet_openvpn_tap_mac_addr {
 	a0	const[0x00, int8]
@@ -54,6 +73,7 @@ win_vnet_eth_payload [
 	raw	array[int8]
 	arp	win_vnet_eth2_packet_t[const[0x0806, int16be], win_vnet_arp_packet]
 	ipv4	win_vnet_eth2_packet_t[const[0x0800, int16be], win_vnet_ipv4_packet]
+	vlan	win_vnet_vlan_packet
 ] [varlen]
 
 type win_vnet_eth2_packet_t[TYPE, PAYLOAD] {
@@ -66,6 +86,19 @@ win_vnet_arp_ops = 0x1, 0x2
 win_vnet_arp_packet [
 	ether_ipv4	win_vnet_arp_packet_t[const[0x1, int16be], const[0x0800, int16be], win_vnet_ipv4_addr]
 ] [varlen]
+
+win_vnet_vlan_tci {
+	pcp	int16:3
+	dei	int16:1
+	vid	int16:12[0:4]
+} [packed]
+
+win_vnet_vlan_packet {
+	tpid	const[0x8100, int16be]
+	tci	win_vnet_vlan_tci
+	etype	const[0x0800, int16be]
+	payload	win_vnet_ipv4_packet
+} [packed]
 
 type win_vnet_arp_packet_t[HTYPE, PTYPE, ADDR] {
 	ar_hrd	HTYPE
@@ -108,15 +141,16 @@ type win_vnet_ipv4_packet_t[PROTO, PAYLOAD] {
 win_vnet_ipv4_packet [
 	tcp	win_vnet_ipv4_packet_t[const[6, int8], win_vnet_tcp_packet]
 	udp	win_vnet_ipv4_packet_t[const[17, int8], win_vnet_udp_packet]
+	icmp	win_vnet_ipv4_packet_t[const[1, int8], win_vnet_icmp_packet]
 ] [varlen]
 
 win_vnet_tcp_flags = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
 
 win_vnet_tcp_header {
-	src_port	sock_port
-	dst_port	sock_port
-	seq_num		win_vnet_tcp_seq_num
-	ack_num		win_vnet_tcp_seq_num
+	src_port	win_vnet_tcp_port
+	dst_port	win_vnet_tcp_port
+	seq_num		win_vnet_tcp_seq_value
+	ack_num		win_vnet_tcp_seq_value
 	ns		int8:1
 	reserved	const[0, int8:3]
 	data_off	bytesize4[parent, int8:4]
@@ -132,9 +166,19 @@ win_vnet_tcp_packet {
 } [packed]
 
 win_vnet_udp_packet {
-	src_port	sock_port
-	dst_port	sock_port
+	src_port	win_vnet_udp_port
+	dst_port	win_vnet_udp_port
 	length		len[parent, int16be]
 	csum		csum[parent, pseudo, 17, int16be]
 	payload	array[int8]
+} [packed]
+
+win_vnet_icmp_type = 0x0, 0x3, 0x8, 0xb
+win_vnet_icmp_code = 0x0, 0x1, 0x3
+
+win_vnet_icmp_packet {
+	type	flags[win_vnet_icmp_type, int8]
+	code	flags[win_vnet_icmp_code, int8]
+	csum	csum[parent, inet, int16be]
+	body	array[int8, 0:64]
 } [packed]

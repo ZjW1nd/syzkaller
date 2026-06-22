@@ -1574,6 +1574,14 @@ func (err *nyxCrashError) Error() string {
 	return "nyx crash: " + err.title
 }
 
+func logStandaloneFatal(format string, err error) {
+	var crashErr *nyxCrashError
+	if errors.As(err, &crashErr) {
+		_, _ = os.Stderr.Write(crashErr.report)
+	}
+	log.Fatalf(format, err)
+}
+
 func (vm *nyxVM) makeCrashError(code byte, req *flatrpc.ExecRequest) *nyxCrashError {
 	title := nyxCrashTitle(code, string(vm.aux.misc()))
 	dump := vm.preserveWindowsDump(title)
@@ -3420,17 +3428,17 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 		keepState:         keepState,
 		coverageDebugPath: coverageDebugPath,
 	}
-	if rounds <= 0 {
+	if rounds < 0 {
 		rounds = 1
 	}
 	var ct *prog.ChoiceTable
-	if rounds > 1 && !fixedRepeat {
+	if (rounds == 0 || rounds > 1) && !fixedRepeat {
 		enabled := standaloneEnabledCallsForProgram(target, p)
 		ct = target.BuildChoiceTable(nil, enabled)
 	}
 	corpus := []*prog.Prog{p.Clone()}
 	seenSignal := make(map[uint64]struct{})
-	for round := 0; round < rounds; round++ {
+	for round := 0; rounds == 0 || round < rounds; round++ {
 		var cur *prog.Prog
 		roundSeed := seed + int64(round)
 		if round == 0 {
@@ -3516,11 +3524,11 @@ func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepS
 		keepState:         keepState,
 		coverageDebugPath: coverageDebugPath,
 	}
-	if rounds <= 0 {
+	if rounds < 0 {
 		rounds = 1
 	}
 	seenSignal := make(map[uint64]struct{})
-	for round := 0; round < rounds; round++ {
+	for round := 0; rounds == 0 || round < rounds; round++ {
 		req.Id = int64(round + 1)
 		log.Logf(0, "standalone exec file program round=%d for %s collect_cover=%v: %s",
 			round+1, label, collectCover, describeExecProgram(execData))
@@ -4353,7 +4361,7 @@ func main() {
 		standaloneExecProgramPath   = flag.String("standalone-exec-program", "", "path to a serialized executor program to execute in standalone mode")
 		standaloneStagedProgram     = flag.String("standalone-staged-program", "", "optional second serialized syzkaller program for staged standalone mode")
 		standaloneStagedExecProgram = flag.String("standalone-staged-exec-program", "", "optional second serialized executor program for staged standalone mode")
-		standaloneRounds            = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; rounds>1 mutate accepted programs with syzkaller's mutator")
+		standaloneRounds            = flag.Int("standalone-rounds", 1, "number of standalone exec rounds; 0 repeats until externally stopped; rounds>1 mutate accepted syzkaller programs")
 		standaloneStageDelayMs      = flag.Int("standalone-stage-delay-ms", 0, "host-side delay between standalone staged programs")
 		standaloneStageIdleMs       = flag.Int("standalone-stage-idle-ms", 0, "guest-side Nyx yield payload count between standalone staged programs")
 		standaloneSyscallTimeoutMs  = flag.Int("standalone-syscall-timeout-ms", 20000, "standalone executor syscall timeout in ms")
@@ -4439,27 +4447,27 @@ func main() {
 		if *standaloneStagedExecProgram != "" {
 			if err := runStandaloneExecStaged(index, vm, *standaloneExecProgramPath, *standaloneStagedExecProgram, *standaloneThreaded,
 				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs, *coverageDebugStream); err != nil {
-				log.Fatalf("standalone staged Nyx exec request failed: %v", err)
+				logStandaloneFatal("standalone staged Nyx exec request failed: %v", err)
 			}
 			return
 		}
 		if *standaloneStagedProgram != "" {
 			if err := runStandaloneStaged(index, vm, *standaloneProgramPath, *standaloneStagedProgram, *standaloneTargetProfile, *standaloneThreaded,
 				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneStageDelayMs, *standaloneStageIdleMs, *coverageDebugStream); err != nil {
-				log.Fatalf("standalone staged Nyx request failed: %v", err)
+				logStandaloneFatal("standalone staged Nyx request failed: %v", err)
 			}
 			return
 		}
 		if *standaloneExecProgramPath != "" {
 			if err := runStandaloneExec(index, vm, *standaloneExecProgramPath, *standaloneThreaded,
 				*standaloneKeepState, standaloneCollectCover, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds, *coverageDebugStream); err != nil {
-				log.Fatalf("standalone Nyx exec request failed: %v", err)
+				logStandaloneFatal("standalone Nyx exec request failed: %v", err)
 			}
 			return
 		}
 		if err := runStandalone(index, vm, *standaloneSyscall, *standaloneSeed, *standaloneProgramPath, *standaloneTargetProfile, *standaloneThreaded,
 			*standaloneKeepState, standaloneCollectCover, *standaloneFixedRepeat, *standaloneSyscallTimeoutMs, *standaloneProgramTimeoutMs, *standaloneRounds, *coverageDebugStream); err != nil {
-			log.Fatalf("standalone Nyx request failed: %v", err)
+			logStandaloneFatal("standalone Nyx request failed: %v", err)
 		}
 		return
 	}

@@ -31,26 +31,27 @@ func init() {
 }
 
 type Config struct {
-	Count                  int      `json:"count"`
-	Runner                 string   `json:"runner"`
-	Qemu                   string   `json:"qemu"`
-	Workdir                string   `json:"workdir"`
-	Image                  string   `json:"image"`
-	Memory                 int      `json:"memory"`
-	PayloadSize            int      `json:"payload_size"`
-	BitmapSize             int      `json:"bitmap_size"`
-	HardTimeout            string   `json:"hard_timeout"`
-	ModuleRanges           string   `json:"module_ranges"`
-	QemuArgs               []string `json:"qemu_args"`
-	Debug                  bool     `json:"debug"`
-	Host                   string   `json:"host"`
-	RunnerLog              string   `json:"runner_log"`
-	SlowTraceDir           string   `json:"slow_trace_dir"`
-	SlowTraceThresholdMS   int      `json:"slow_trace_threshold_ms"`
-	SlowTraceMaxEvents     int      `json:"slow_trace_max_events"`
-	WindowsMinidump        bool     `json:"windows_minidump"`
-	WindowsMinidumpTimeout int      `json:"windows_minidump_timeout"`
-	KeepState              bool     `json:"keep_state"`
+	Count                   int      `json:"count"`
+	Runner                  string   `json:"runner"`
+	Qemu                    string   `json:"qemu"`
+	Workdir                 string   `json:"workdir"`
+	Image                   string   `json:"image"`
+	Memory                  int      `json:"memory"`
+	PayloadSize             int      `json:"payload_size"`
+	BitmapSize              int      `json:"bitmap_size"`
+	HardTimeout             string   `json:"hard_timeout"`
+	ModuleRanges            string   `json:"module_ranges"`
+	QemuArgs                []string `json:"qemu_args"`
+	Debug                   bool     `json:"debug"`
+	Host                    string   `json:"host"`
+	RunnerLog               string   `json:"runner_log"`
+	SlowTraceDir            string   `json:"slow_trace_dir"`
+	SlowTraceThresholdMS    int      `json:"slow_trace_threshold_ms"`
+	SlowTraceMaxEvents      int      `json:"slow_trace_max_events"`
+	WindowsMinidump         bool     `json:"windows_minidump"`
+	WindowsMinidumpTimeout  int      `json:"windows_minidump_timeout"`
+	KeepState               bool     `json:"keep_state"`
+	StandaloneTargetProfile string   `json:"standalone_target_profile"`
 }
 
 type Pool struct {
@@ -68,6 +69,13 @@ type instance struct {
 	cmd         *exec.Cmd
 	runnerLog   *os.File
 	forwardPort int
+}
+
+type execprogCommand struct {
+	program      string
+	threaded     bool
+	collectCover bool
+	repeat       int
 }
 
 func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
@@ -187,11 +195,7 @@ func (inst *instance) Forward(port int) (string, error) {
 }
 
 func (inst *instance) Run(ctx context.Context, command string) (<-chan vmimpl.Chunk, <-chan error, error) {
-	host, port, err := inst.managerEndpoint(command)
-	if err != nil {
-		return nil, nil, err
-	}
-	args, err := inst.runnerArgs(host, port)
+	args, err := inst.runnerArgsForCommand(command)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -250,6 +254,18 @@ func (inst *instance) Run(ctx context.Context, command string) (<-chan vmimpl.Ch
 	})
 }
 
+func (inst *instance) runnerArgsForCommand(command string) ([]string, error) {
+	host, port, endpointErr := inst.managerEndpoint(command)
+	if endpointErr == nil {
+		return inst.runnerArgs(host, port)
+	}
+	args, err := inst.standaloneRunnerArgs(command)
+	if err == nil {
+		return args, nil
+	}
+	return nil, fmt.Errorf("%v; %v", endpointErr, err)
+}
+
 func (inst *instance) managerEndpoint(command string) (string, string, error) {
 	fields := strings.Fields(command)
 	for i := 0; i+3 < len(fields); i++ {
@@ -264,18 +280,99 @@ func (inst *instance) managerEndpoint(command string) (string, string, error) {
 }
 
 func (inst *instance) runnerArgs(host, port string) ([]string, error) {
+	args := []string{
+		strconv.Itoa(inst.index),
+		host,
+		port,
+	}
+	return inst.appendRunnerArgs(args)
+}
+
+func (inst *instance) standaloneRunnerArgs(command string) ([]string, error) {
+	execprog, err := parseExecprogCommand(command)
+	if err != nil {
+		return nil, err
+	}
+	args := []string{
+		strconv.Itoa(inst.index),
+		"--standalone",
+		"--standalone-program", execprog.program,
+		fmt.Sprintf("--standalone-threaded=%t", execprog.threaded),
+		fmt.Sprintf("--standalone-keep-state=%t", inst.pool.cfg.KeepState),
+		"--standalone-fixed-repeat",
+		"--standalone-rounds", strconv.Itoa(execprog.repeat),
+	}
+	if !execprog.collectCover {
+		args = append(args, "--standalone-no-cover")
+	}
+	if profile := inst.pool.cfg.StandaloneTargetProfile; profile != "" {
+		args = append(args, "--standalone-target-profile", profile)
+	}
+	return inst.appendRunnerArgs(args)
+}
+
+func parseExecprogCommand(command string) (*execprogCommand, error) {
+	fields := strings.Fields(command)
+	execprogIndex := -1
+	for i, field := range fields {
+		if strings.HasPrefix(filepath.Base(field), "syz-execprog") {
+			execprogIndex = i
+			break
+		}
+	}
+	if execprogIndex < 0 {
+		return nil, fmt.Errorf("nyx: command is not a syz-execprog invocation")
+	}
+	fields = fields[execprogIndex:]
+	if len(fields) < 2 {
+		return nil, fmt.Errorf("nyx: syz-execprog command has no program file: %q", command)
+	}
+	ret := &execprogCommand{
+		program:  fields[len(fields)-1],
+		threaded: true,
+		repeat:   1,
+	}
+	if strings.HasPrefix(ret.program, "-") {
+		return nil, fmt.Errorf("nyx: syz-execprog command has no program file: %q", command)
+	}
+	seenExecutor := false
+	for _, field := range fields[1 : len(fields)-1] {
+		switch {
+		case strings.HasPrefix(field, "-executor="):
+			seenExecutor = true
+		case strings.HasPrefix(field, "-threaded="):
+			threaded, err := strconv.ParseBool(strings.TrimPrefix(field, "-threaded="))
+			if err != nil {
+				return nil, fmt.Errorf("nyx: bad syz-execprog threaded flag %q: %w", field, err)
+			}
+			ret.threaded = threaded
+		case strings.HasPrefix(field, "-cover="):
+			cover, err := strconv.ParseBool(strings.TrimPrefix(field, "-cover="))
+			if err != nil {
+				return nil, fmt.Errorf("nyx: bad syz-execprog cover flag %q: %w", field, err)
+			}
+			ret.collectCover = cover
+		case strings.HasPrefix(field, "-repeat="):
+			repeat, err := strconv.Atoi(strings.TrimPrefix(field, "-repeat="))
+			if err != nil || repeat < 0 {
+				return nil, fmt.Errorf("nyx: bad syz-execprog repeat flag %q", field)
+			}
+			ret.repeat = repeat
+		}
+	}
+	if !seenExecutor {
+		return nil, fmt.Errorf("nyx: syz-execprog command has no executor flag: %q", command)
+	}
+	return ret, nil
+}
+
+func (inst *instance) appendRunnerArgs(args []string) ([]string, error) {
 	cfg := inst.pool.cfg
 	workdir := inst.expand(cfg.Workdir)
 	if workdir == "" {
 		workdir = filepath.Join(inst.pool.env.Workdir, "nyx")
 	}
-	args := []string{
-		strconv.Itoa(inst.index),
-		host,
-		port,
-		"--workdir", workdir,
-		"--qemu-path", inst.expand(cfg.Qemu),
-	}
+	args = append(args, "--workdir", workdir, "--qemu-path", inst.expand(cfg.Qemu))
 	if image := inst.expand(cfg.Image); image != "" {
 		args = append(args, "--image", image)
 	}

@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
-	"os"
 	"strings"
 	"testing"
 
@@ -345,23 +344,13 @@ func TestWindowsAFDMinimizePreservesFocusedResourceLineage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
-			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fuzzer := NewFuzzer(ctx, &Config{
 		Corpus:       corpus.NewCorpus(ctx),
-		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
+		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["NtDeviceIoControlFile$afd_receive_accept_nonblock"]: true},
 		Logf:         func(int, string, ...any) {},
 	}, rand.New(rand.NewSource(0)), profiled)
 	job := &triageJob{
@@ -379,8 +368,8 @@ func TestWindowsAFDMinimizePreservesFocusedResourceLineage(t *testing.T) {
 	if minimized == nil {
 		t.Fatal("minimize returned nil")
 	}
-	if minimized.CallName(minCall) != "WSARecv$accept" {
-		t.Fatalf("minimized call=%s, want WSARecv$accept", minimized.CallName(minCall))
+	if minimized.CallName(minCall) != "NtDeviceIoControlFile$afd_receive_accept_nonblock" {
+		t.Fatalf("minimized call=%s, want NtDeviceIoControlFile$afd_receive_accept_nonblock", minimized.CallName(minCall))
 	}
 	if len(minimized.Calls) < 5 {
 		t.Fatalf("minimization dropped focused resource lineage:\n%s", minimized.Serialize())
@@ -399,25 +388,15 @@ func TestTriageMinimizeDoesNotSpawnRecursiveTriageJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
-			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fuzzer := NewFuzzer(ctx, &Config{
 		Corpus:       corpus.NewCorpus(ctx),
-		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["WSARecv$accept"]: true},
+		EnabledCalls: map[*prog.Syscall]bool{profiled.SyscallMap["NtDeviceIoControlFile$afd_receive_accept_nonblock"]: true},
 		Logf:         func(int, string, ...any) {},
 	}, rand.New(rand.NewSource(0)), profiled)
-	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	job := &triageJob{
 		p:       p,
 		fuzzer:  fuzzer,
@@ -448,18 +427,8 @@ func TestFocusedResourceTriageDeflakeLogsProgress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
-			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	var logs []string
 	fuzzer := &Fuzzer{
 		Config: &Config{
@@ -502,12 +471,12 @@ func TestFocusedResourceTriageDeflakeLogsProgress(t *testing.T) {
 	}
 	got := strings.Join(logs, "\n")
 	for _, want := range []string{
-		"triage deflake start: origin=candidate trace=candidate-1 calls=[WSARecv$accept] need_runs=3",
-		"triage deflake run: origin=candidate trace=candidate-1 run=1 need_runs=3 calls=[WSARecv$accept] status=Success",
+		"triage deflake start: origin=candidate trace=candidate-1 calls=[NtDeviceIoControlFile$afd_receive_accept_nonblock] need_runs=3",
+		"triage deflake run: origin=candidate trace=candidate-1 run=1 need_runs=3 calls=[NtDeviceIoControlFile$afd_receive_accept_nonblock] status=Success",
 		"triage deflake signal: origin=candidate trace=candidate-1 run=1 need_runs=3 call=",
-		"name=WSARecv$accept signal=1 cover=1 prio=3 new_max=0 candidate_overlap=1 new_overlap=1 buckets=[1 1 0]",
+		"name=NtDeviceIoControlFile$afd_receive_accept_nonblock signal=1 cover=1 prio=3 new_max=0 candidate_overlap=1 new_overlap=1 buckets=[1 1 0]",
 		"triage deflake complete: origin=candidate trace=candidate-1 call=",
-		"name=WSARecv$accept stable_signal=1 new_stable=1",
+		"name=NtDeviceIoControlFile$afd_receive_accept_nonblock stable_signal=1 new_stable=1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing log %q in:\n%s", want, got)
@@ -524,19 +493,9 @@ func TestWindowsAFDTriageDeflakeStopsForPersistableStableOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
-			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"recv$inet_accept(r3, &(0x7f0000000100)=\"\"/64, 0x40, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	acceptCall := windowsFuzzerTestCallIndex(t, p, "accept$inet_tcp")
-	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	acceptCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_accept_tcp")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	fuzzer := &Fuzzer{
 		Config: &Config{},
 		target: profiled,
@@ -586,10 +545,10 @@ func TestWindowsAFDTriageDeflakeStopsForPersistableStableOwner(t *testing.T) {
 	}
 	info := job.calls[recvCall]
 	if info.stableSignal.Empty() {
-		t.Fatal("recv$inet_accept should have stable signal")
+		t.Fatal("NtDeviceIoControlFile$afd_receive_accept_nonblock should have stable signal")
 	}
 	if !job.calls[acceptCall].stableSignal.Empty() {
-		t.Fatalf("accept$inet_tcp stable signal=%d, want only deep persistable owner to stop deflake",
+		t.Fatalf("NtDeviceIoControlFile$afd_accept_tcp stable signal=%d, want only deep persistable owner to stop deflake",
 			job.calls[acceptCall].stableSignal.Len())
 	}
 }
@@ -603,17 +562,8 @@ func TestFocusedResourceTriageSkipLogsEmptyNewStableSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"recv$inet_accept(r3, &(0x7f0000000100)=\"\"/64, 0x40, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	call := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	var logs []string
 	fuzzer := &Fuzzer{
 		Config: &Config{
@@ -639,7 +589,7 @@ func TestFocusedResourceTriageSkipLogsEmptyNewStableSignal(t *testing.T) {
 	got := strings.Join(logs, "\n")
 	for _, want := range []string{
 		"triage skip: origin=fuzz trace=candidate-1 call=",
-		"name=recv$inet_accept reason=no_new_stable_signal",
+		"name=NtDeviceIoControlFile$afd_receive_accept_nonblock reason=no_new_stable_signal",
 		"stable_signal=1 new_stable=0 new_signal=2 cover=1 raw_cover=0",
 	} {
 		if !strings.Contains(got, want) {
@@ -657,16 +607,7 @@ func TestWindowsAFDPersistsStableCandidateOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
 	corp := corpus.NewCorpus(context.Background())
 	fuzzer := &Fuzzer{
 		ctx: context.Background(),
@@ -676,7 +617,7 @@ func TestWindowsAFDPersistsStableCandidateOwner(t *testing.T) {
 		},
 		target: profiled,
 	}
-	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	job := &triageJob{
 		p:      p,
 		flags:  ProgMinimized | ProgSmashed,
@@ -691,8 +632,8 @@ func TestWindowsAFDPersistsStableCandidateOwner(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("corpus items=%d, want one deep candidate owner", len(items))
 	}
-	if got := items[0].StringCall(); got != "WSARecv$accept" {
-		t.Fatalf("corpus owner=%q, want WSARecv$accept", got)
+	if got := items[0].StringCall(); got != "NtDeviceIoControlFile$afd_receive_accept_nonblock" {
+		t.Fatalf("corpus owner=%q, want NtDeviceIoControlFile$afd_receive_accept_nonblock", got)
 	}
 }
 
@@ -705,14 +646,7 @@ func TestWindowsAFDKeepsOriginalStableOwnerWhenMinimizeHangs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
 	corp := corpus.NewCorpus(context.Background())
 	fuzzer := &Fuzzer{
 		ctx: context.Background(),
@@ -722,7 +656,7 @@ func TestWindowsAFDKeepsOriginalStableOwnerWhenMinimizeHangs(t *testing.T) {
 		},
 		target: profiled,
 	}
-	call := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	job := &triageJob{
 		p:      p,
 		flags:  ProgSmashed,
@@ -743,8 +677,8 @@ func TestWindowsAFDKeepsOriginalStableOwnerWhenMinimizeHangs(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("corpus items=%d, want original stable AFD vnet owner", len(items))
 	}
-	if got := items[0].StringCall(); got != "recv$inet_accept" {
-		t.Fatalf("corpus owner=%q, want recv$inet_accept", got)
+	if got := items[0].StringCall(); got != "NtDeviceIoControlFile$afd_receive_accept_nonblock" {
+		t.Fatalf("corpus owner=%q, want NtDeviceIoControlFile$afd_receive_accept_nonblock", got)
 	}
 	if got := string(items[0].Prog.Serialize()); got != string(p.Serialize()) {
 		t.Fatalf("persisted program was minimized despite hanged minimization:\n%s", items[0].Prog.Serialize())
@@ -760,14 +694,16 @@ func TestWindowsAFDKeepsOriginalStableNoMinimizeOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_updated.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+	noMinimize := profiled.SyscallMap["NtReadFile$afd_accept_nonblock"]
+	if noMinimize == nil {
+		t.Fatal("NtReadFile$afd_accept_nonblock is missing")
 	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
+	if profiled.GenerateNoGenerateCalls == nil {
+		profiled.GenerateNoGenerateCalls = make(map[int]bool)
 	}
+	profiled.GenerateNoGenerateCalls[noMinimize.ID] = true
+	p := windowsFuzzerTestSeedProgram(t, profiled,
+		"../../sys/windows/test/nyx_afd_private_full_010_NtReadFile_afd_accept_nonblock.txt")
 	corp := corpus.NewCorpus(context.Background())
 	fuzzer := &Fuzzer{
 		ctx: context.Background(),
@@ -777,9 +713,9 @@ func TestWindowsAFDKeepsOriginalStableNoMinimizeOwner(t *testing.T) {
 		},
 		target: profiled,
 	}
-	call := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept_updated")
+	call := windowsFuzzerTestCallIndex(t, p, "NtReadFile$afd_accept_nonblock")
 	if !p.Calls[call].Meta.Attrs.NoMinimize {
-		t.Fatal("recv$inet_accept_updated must stay no_minimize for this test")
+		t.Fatal("NtReadFile$afd_accept_nonblock must stay no_minimize for this test")
 	}
 	job := &triageJob{
 		p:      p,
@@ -801,8 +737,8 @@ func TestWindowsAFDKeepsOriginalStableNoMinimizeOwner(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("corpus items=%d, want original stable no_minimize owner", len(items))
 	}
-	if got := items[0].StringCall(); got != "recv$inet_accept_updated" {
-		t.Fatalf("corpus owner=%q, want recv$inet_accept_updated", got)
+	if got := items[0].StringCall(); got != "NtReadFile$afd_accept_nonblock" {
+		t.Fatalf("corpus owner=%q, want NtReadFile$afd_accept_nonblock", got)
 	}
 	if got := string(items[0].Prog.Serialize()); got != string(p.Serialize()) {
 		t.Fatalf("persisted program was modified despite no_minimize owner:\n%s", items[0].Prog.Serialize())
@@ -818,16 +754,7 @@ func TestWindowsAFDCorpusSaveCallbackIncludesCandidateTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
 	var events []CorpusSaveEvent
 	fuzzer := &Fuzzer{
 		Config: &Config{
@@ -839,7 +766,7 @@ func TestWindowsAFDCorpusSaveCallbackIncludesCandidateTrace(t *testing.T) {
 		},
 		target: profiled,
 	}
-	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	job := &triageJob{
 		p:       p,
 		flags:   ProgMinimized | ProgSmashed,
@@ -858,13 +785,28 @@ func TestWindowsAFDCorpusSaveCallbackIncludesCandidateTrace(t *testing.T) {
 	}
 	event := events[0]
 	if event.Origin != "candidate" || event.TraceID != "candidate-7" ||
-		event.Call != call || event.CallName != "WSARecv$accept" {
+		event.Call != call || event.CallName != "NtDeviceIoControlFile$afd_receive_accept_nonblock" {
 		t.Fatalf("bad corpus save event: %+v", event)
 	}
 	if event.StableSignal != 2 || event.NewStableSignal != 1 ||
 		event.Cover != 3 || event.RawCover != 1 {
 		t.Fatalf("bad corpus save event counts: %+v", event)
 	}
+}
+
+func windowsAFDDirectAcceptReceiveProgram() string {
+	return `NtCreateFile$afd_tcp_endpoint(&(0x7f0000030000)=<r0=>0x0, 0xc0100000, &(0x7f0000030040)={0x30, 0x0, 0x0, &(0x7f0000030080)={0x16, 0x18, 0x0, &(0x7f00000300c0)={0x5c, 0x44, 0x65, 0x76, 0x69, 0x63, 0x65, 0x5c, 0x41, 0x66, 0x64, 0x0}}, 0x40, 0x0, 0x0, 0x0}, &(0x7f0000030140)={@Status=0x0, 0x0}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000030180)={0x0, 0x0, 0xf, 0x1c, {0x41, 0x66, 0x64, 0x4f, 0x70, 0x65, 0x6e, 0x50, 0x61, 0x63, 0x6b, 0x65, 0x74, 0x58, 0x58, 0x0}, {0x0, 0x0, 0x2, 0x1, 0x6, 0x0, 0x0}}, 0x34)
+r1 = NtDeviceIoControlFile$afd_bind_tcp_listener(r0, 0x0, 0x0, 0x0, &(0x7f0000030200)={@Status=0x0, 0x0}, 0x12003, &(0x7f0000030240)={0x3, {0x2, 0x4e22, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}}, 0x14, &(0x7f0000030280), 0x10)
+r2 = NtDeviceIoControlFile$afd_start_listen_tcp(r1, 0x0, 0x0, 0x0, &(0x7f00000302c0)={@Status=0x0, 0x0}, 0x1200b, &(0x7f0000030300)={0x0, [0, 0, 0], 0x1, 0x0, [0, 0, 0]}, 0xc, 0x0, 0x0)
+NtCreateFile$afd_tcp_endpoint(&(0x7f0000030340)=<r3=>0x0, 0xc0100000, &(0x7f0000030380)={0x30, 0x0, 0x0, &(0x7f00000303c0)={0x16, 0x18, 0x0, &(0x7f0000030400)={0x5c, 0x44, 0x65, 0x76, 0x69, 0x63, 0x65, 0x5c, 0x41, 0x66, 0x64, 0x0}}, 0x40, 0x0, 0x0, 0x0}, &(0x7f0000030480)={@Status=0x0, 0x0}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f00000304c0)={0x0, 0x0, 0xf, 0x1c, {0x41, 0x66, 0x64, 0x4f, 0x70, 0x65, 0x6e, 0x50, 0x61, 0x63, 0x6b, 0x65, 0x74, 0x58, 0x58, 0x0}, {0x0, 0x0, 0x2, 0x1, 0x6, 0x0, 0x0}}, 0x34)
+r4 = NtDeviceIoControlFile$afd_bind_tcp(r3, 0x0, 0x0, 0x0, &(0x7f0000030540)={@Status=0x0, 0x0}, 0x12003, &(0x7f0000030580)={0x3, {0x2, 0x0, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}}, 0x14, &(0x7f00000305c0), 0x10)
+r5 = NtDeviceIoControlFile$afd_connect_tcp_to_listener(r4, 0x0, 0x0, 0x0, &(0x7f0000030600)={@Status=0x0, 0x0}, 0x12007, &(0x7f0000030640)={0x0, [0, 0, 0, 0, 0, 0, 0], 0x0, r2, {0x2, 0x4e22, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}}, 0x28, &(0x7f0000030680)={@Status=0x0, 0x0}, 0x10)
+r6 = NtDeviceIoControlFile$afd_wait_for_listen_tcp(r5, 0x0, 0x0, 0x0, &(0x7f00000306c0)={@Status=0x0, 0x0}, 0x1200c, 0x0, 0x0, &(0x7f0000030700)={<r7=>0x0, {0x2, 0x0, 0x0, [0, 0, 0, 0, 0, 0, 0, 0]}}, 0x14)
+NtCreateFile$afd_tcp_accept_slot(&(0x7f0000030800)=<r8=>0x0, 0xc0100000, &(0x7f0000030840)={0x30, 0x0, 0x0, &(0x7f0000030880)={0x16, 0x18, 0x0, &(0x7f00000308c0)={0x5c, 0x44, 0x65, 0x76, 0x69, 0x63, 0x65, 0x5c, 0x41, 0x66, 0x64, 0x0}}, 0x40, 0x0, 0x0, 0x0}, &(0x7f0000030940)={@Status=0x0, 0x0}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000030980)={0x0, 0x0, 0xf, 0x1c, {0x41, 0x66, 0x64, 0x4f, 0x70, 0x65, 0x6e, 0x50, 0x61, 0x63, 0x6b, 0x65, 0x74, 0x58, 0x58, 0x0}, {0x0, 0x0, 0x2, 0x1, 0x6, 0x0, 0x0}}, 0x34)
+r9 = NtDeviceIoControlFile$afd_accept_tcp(r6, 0x0, 0x0, 0x0, &(0x7f0000030a00)={@Status=0x0, 0x0}, 0x12010, &(0x7f0000030a40)={0x0, [0, 0, 0], r7, r8}, 0x10, 0x0, 0x0)
+r10 = NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted(r9, 0x0, 0x0, 0x0, &(0x7f0000030a80)={@Status=0x0, 0x0}, 0x1203b, &(0x7f0000030ac0)={0x2, 0x0, 0x1, [0, 0, 0, 0, 0, 0, 0]}, 0x10, 0x0, 0x0)
+NtDeviceIoControlFile$afd_receive_accept_nonblock(r10, 0x0, 0x0, 0x0, &(0x7f0000030b00)={@Status=0x0, 0x0}, 0x12017, &(0x7f0000030b40)={&(0x7f0000030b80)=[{0x40, &(0x7f0000030bc0)=""/64}], 0x1, 0x0, 0x20, 0x0}, 0x18, 0x0, 0x0)
+`
 }
 
 func TestWindowsAFDPersistsStableCollideOwner(t *testing.T) {
@@ -876,13 +818,7 @@ func TestWindowsAFDPersistsStableCollideOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
+	p, err := profiled.Deserialize([]byte(windowsAFDDirectAcceptReceiveProgram()), prog.NonStrict)
 	if err != nil {
 		t.Fatalf("Deserialize: %v", err)
 	}
@@ -894,7 +830,7 @@ func TestWindowsAFDPersistsStableCollideOwner(t *testing.T) {
 		},
 		target: profiled,
 	}
-	call := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	call := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	job := &triageJob{
 		p:      p,
 		flags:  ProgMinimized | ProgSmashed,
@@ -909,12 +845,12 @@ func TestWindowsAFDPersistsStableCollideOwner(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("corpus items=%d, want one deep collide owner", len(items))
 	}
-	if got := items[0].StringCall(); got != "WSARecv$accept" {
-		t.Fatalf("corpus owner=%q, want WSARecv$accept", got)
+	if got := items[0].StringCall(); got != "NtDeviceIoControlFile$afd_receive_accept_nonblock" {
+		t.Fatalf("corpus owner=%q, want NtDeviceIoControlFile$afd_receive_accept_nonblock", got)
 	}
 }
 
-func TestWindowsAFDSchedulesImmediateCollideForDeepOwner(t *testing.T) {
+func TestWindowsAFDSchedulesImmediateCollideForDirectOwner(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatal(err)
@@ -923,21 +859,14 @@ func TestWindowsAFDSchedulesImmediateCollideForDeepOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
-			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
+	p, err := profiled.Deserialize([]byte(windowsAFDDirectAcceptReceiveProgram()), prog.NonStrict)
 	if err != nil {
 		t.Fatalf("Deserialize: %v", err)
 	}
-	if len(p.Calls) == 0 || p.Calls[0].Meta.Name != "WSAStartup" {
-		t.Fatalf("test program lost WSAStartup scaffold:\n%s", p.Serialize())
-	}
-	enabledCalls := windowsFuzzerTestEnabledCalls(t, profiled, []string{"WSARecv$accept"}, nil)
+	enabledCalls := windowsFuzzerTestEnabledCalls(t, profiled, []string{
+		"NtDeviceIoControlFile$afd_start_listen_tcp",
+		"NtDeviceIoControlFile$afd_receive_accept_nonblock",
+	}, nil)
 	newTestFuzzer := func(seed int64) *Fuzzer {
 		return NewFuzzer(context.Background(), &Config{
 			Collide:      true,
@@ -947,20 +876,20 @@ func TestWindowsAFDSchedulesImmediateCollideForDeepOwner(t *testing.T) {
 	}
 	fuzzer := newTestFuzzer(0)
 	job := &triageJob{fuzzer: fuzzer}
-	job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "listen$inet_tcp"))
-	if got := fuzzer.immediateCollideQueue.Len(); got != 0 {
-		t.Fatalf("shallow scaffold scheduled %d immediate collide requests", got)
+	job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_start_listen_tcp"))
+	if got := fuzzer.immediateCollideQueue.Len(); got == 0 {
+		t.Fatal("foundational AFD listen owner did not schedule immediate collide")
 	}
 
 	var req *queue.Request
 	for seed := int64(0); seed < 64 && req == nil; seed++ {
 		fuzzer = newTestFuzzer(seed)
 		job = &triageJob{fuzzer: fuzzer}
-		job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "WSARecv$accept"))
+		job.maybeScheduleImmediateCollide(p, windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock"))
 		req = fuzzer.immediateCollideQueue.Next()
 	}
 	if req == nil {
-		t.Fatal("deep AFD owner did not schedule immediate collide")
+		t.Fatal("direct AFD owner did not schedule immediate collide")
 	}
 	if req.Origin != "collide:triage" || req.Stat != fuzzer.statExecCollide || !req.Important {
 		t.Fatalf("bad collide request: origin=%q stat=%v important=%v", req.Origin, req.Stat, req.Important)

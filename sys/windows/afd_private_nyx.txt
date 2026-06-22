@@ -349,6 +349,16 @@ AFD_BIND_INFO_TL_LISTENER {
 	Address		sockaddr_in_afd_listener
 } [size[20]]
 
+AFD_BIND_INFO_TL_VNET_TCP_LISTENER {
+	ShareAccess	const[3, int32]
+	Address		sockaddr_in_afd_vnet_tcp_listener
+} [size[20]]
+
+AFD_BIND_INFO_TL_VNET_UDP {
+	ShareAccess	const[1, int32]
+	Address		sockaddr_in_afd_vnet_udp
+} [size[20]]
+
 sockaddr_in_afd_any {
 	family	const[2, int16]
 	port	const[0, int16be]
@@ -360,6 +370,20 @@ sockaddr_in_afd_listener {
 	family	const[2, int16]
 	port	const[0x4e22, int16be]
 	addr	const[0x7f000001, int32be]
+	zero	array[const[0, int8], 8]
+} [size[16]]
+
+sockaddr_in_afd_vnet_tcp_listener {
+	family	const[2, int16]
+	port	const[0x4e20, int16be]
+	addr	const[0xac1400aa, int32be]
+	zero	array[const[0, int8], 8]
+} [size[16]]
+
+sockaddr_in_afd_vnet_udp {
+	family	const[2, int16]
+	port	const[0x4e26, int16be]
+	addr	const[0xac1400aa, int32be]
 	zero	array[const[0, int8], 8]
 } [size[16]]
 
@@ -1383,8 +1407,12 @@ NtDeviceIoControlFile$afd_bind_tcp(FileHandle AFD_TCP_CREATED, Event const[0], A
 NtDeviceIoControlFile$afd_bind_tcp_nonblock(FileHandle AFD_TCP_CREATED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_BOUND_NONBLOCK
 NtDeviceIoControlFile$afd_bind_tcp_listener(FileHandle AFD_TCP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL_LISTENER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_BOUND_LISTENER
 NtDeviceIoControlFile$afd_bind_tcp_listener_nonblock(FileHandle AFD_TCP_CREATED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL_LISTENER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_BOUND_LISTENER_NONBLOCK
+NtDeviceIoControlFile$afd_bind_tcp_vnet_listener(FileHandle AFD_TCP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL_VNET_TCP_LISTENER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_BOUND_LISTENER
+NtDeviceIoControlFile$afd_bind_tcp_vnet_listener_nonblock(FileHandle AFD_TCP_CREATED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL_VNET_TCP_LISTENER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_BOUND_LISTENER_NONBLOCK
 NtDeviceIoControlFile$afd_bind_udp(FileHandle AFD_UDP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_BOUND
 NtDeviceIoControlFile$afd_bind_udp_nonblock(FileHandle AFD_UDP_CREATED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_BOUND_NONBLOCK
+NtDeviceIoControlFile$afd_bind_udp_vnet(FileHandle AFD_UDP_CREATED, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL_VNET_UDP], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_BOUND
+NtDeviceIoControlFile$afd_bind_udp_vnet_nonblock(FileHandle AFD_UDP_CREATED_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12003], InputBuffer ptr[in, AFD_BIND_INFO_TL_VNET_UDP], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, sockaddr_in], OutputBufferLength bytesize[OutputBuffer]) AFD_UDP_BOUND_NONBLOCK
 NtDeviceIoControlFile$afd_connect_tcp(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECT_PENDING (no_generate, no_minimize)
 NtDeviceIoControlFile$afd_connect_tcp_nonblock(FileHandle AFD_TCP_BOUND_NONBLOCK, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECT_PENDING_NONBLOCK (no_generate, no_minimize)
 NtDeviceIoControlFile$afd_connect_tcp_client_to_listener(FileHandle AFD_TCP_BOUND, Event const[0], ApcRoutine const[0], ApcContext const[0], IoStatusBlock ptr[inout, IO_STATUS_BLOCK], IoControlCode const[0x12007], InputBuffer ptr[in, AFD_CONNECT_JOIN_INFO_TL_LISTENER], InputBufferLength bytesize[InputBuffer], OutputBuffer ptr[out, IO_STATUS_BLOCK, opt], OutputBufferLength bytesize[OutputBuffer]) AFD_TCP_CONNECTED

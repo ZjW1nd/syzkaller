@@ -476,13 +476,13 @@ func TestWindowsAFDSkipsCorpusForSeedOnlyPrograms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	seedOnly := profiled.SyscallMap["WSAEventSelect$tcp"]
+	seedOnly := profiled.SyscallMap["NtDeviceIoControlFile$afd_event_select_accept"]
 	if seedOnly == nil || !seedOnly.Attrs.NoGenerate {
-		t.Fatal("WSAEventSelect$tcp should be seed-only in the windows target")
+		t.Fatal("NtDeviceIoControlFile$afd_event_select_accept should be seed-only in the windows target")
 	}
-	creator := profiled.SyscallMap["ConnectEx$inet_tcp"]
+	creator := profiled.SyscallMap["NtDeviceIoControlFile$afd_start_listen_tcp"]
 	if creator == nil || creator.Attrs.NoGenerate {
-		t.Fatal("ConnectEx$inet_tcp should remain generatable")
+		t.Fatal("NtDeviceIoControlFile$afd_start_listen_tcp should remain generatable")
 	}
 	fuzzer := &Fuzzer{Config: &Config{}, target: profiled}
 	job := &triageJob{fuzzer: fuzzer, origin: "candidate"}
@@ -490,8 +490,8 @@ func TestWindowsAFDSkipsCorpusForSeedOnlyPrograms(t *testing.T) {
 	if job.shouldPersistCall(seedOnlyProg, 0) {
 		t.Fatal("seed-only AFD programs should not be persisted as corpus entries")
 	}
-	creatorProg := windowsFuzzerTestConnectExProgram(t, profiled)
-	creatorCall := windowsFuzzerTestCallIndex(t, creatorProg, "ConnectEx$inet_tcp")
+	creatorProg := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	creatorCall := windowsFuzzerTestCallIndex(t, creatorProg, "NtDeviceIoControlFile$afd_start_listen_tcp")
 	if !job.shouldPersistCall(creatorProg, creatorCall) {
 		t.Fatal("regular public AFD calls should still be persisted")
 	}
@@ -507,8 +507,7 @@ func TestWindowsAFDSkipsBrokenResourceLineageCandidate(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
 	p, err := profiled.Deserialize([]byte(
-		"r0 = connect$inet_udp(0xffffffffffffffff, 0x0, 0x0)\n"+
-			"NtDeviceIoControlFile$afd_routing_interface_query_udp(r0, 0x0, 0x0, 0x0, &(0x7f0000000000)={@Status=0x0, 0x0}, 0x120ab, &(0x7f0000000040)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000080), 0x10)\n"),
+		"NtDeviceIoControlFile$afd_routing_interface_query_udp(0xffffffffffffffff, 0x0, 0x0, 0x0, &(0x7f0000000000)={@Status=0x0, 0x0}, 0x120ab, &(0x7f0000000040)={0x1, 0x10, 0x2, {0x2, 0x4e24, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}}, 0x18, &(0x7f0000000080), 0x14)\n"),
 		prog.NonStrict)
 	if err != nil {
 		t.Fatalf("Deserialize: %v", err)
@@ -537,13 +536,8 @@ func TestWindowsAFDSkipsMixedBrokenResourceLineageCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"NtDeviceIoControlFile$afd_event_select_accept(r3, 0x0, 0x0, 0x0, &(0x7f0000000100)={@Status=0x0, 0x0}, 0x12087, &(0x7f0000000140)={0x0, 0x3ff, 0x0}, 0x10, 0x0, 0x0)\n"+
-			"r4 = bind$inet_tcp(0xffffffffffffffff, 0x0, 0x0)\n"),
+	p, err := profiled.Deserialize([]byte(windowsAFDDirectAcceptReceiveProgram()+
+		"NtDeviceIoControlFile$afd_receive_accept_nonblock(0xffffffffffffffff, 0x0, 0x0, 0x0, &(0x7f0000040000)={@Status=0x0, 0x0}, 0x12017, &(0x7f0000040040)={&(0x7f0000040080)=[{0x40, &(0x7f00000400c0)=\"\"/64}], 0x1, 0x0, 0x20, 0x0}, 0x18, 0x0, 0x0)\n"),
 		prog.NonStrict)
 	if err != nil {
 		t.Fatalf("Deserialize: %v", err)
@@ -554,7 +548,7 @@ func TestWindowsAFDSkipsMixedBrokenResourceLineageCandidate(t *testing.T) {
 		Corpus: corpus.NewCorpus(ctx),
 		Logf:   func(int, string, ...any) {},
 		EnabledCalls: map[*prog.Syscall]bool{
-			profiled.SyscallMap["NtDeviceIoControlFile$afd_event_select_accept"]: true,
+			profiled.SyscallMap["NtDeviceIoControlFile$afd_receive_accept_nonblock"]: true,
 		},
 	}, rand.New(rand.NewSource(0)), profiled)
 	fuzzer.AddCandidates([]Candidate{{Prog: p}})
@@ -574,20 +568,11 @@ func TestWindowsAFDRejectsProgramUsingDisabledConstructor(t *testing.T) {
 	}
 	enabledCalls := windowsFuzzerTestEnabledCalls(t, profiled,
 		[]string{"NtDeviceIoControlFile$afd_address_list_query_udp"},
-		[]string{"accept$inet_tcp"})
-	if enabledCalls[profiled.SyscallMap["accept$inet_tcp"]] {
-		t.Fatal("test setup left accept$inet_tcp enabled")
+		[]string{"NtCreateFile$afd_udp_endpoint"})
+	if enabledCalls[profiled.SyscallMap["NtCreateFile$afd_udp_endpoint"]] {
+		t.Fatal("test setup left NtCreateFile$afd_udp_endpoint enabled")
 	}
-	p, err := profiled.Deserialize([]byte(
-		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
-			"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000100)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"accept$inet_tcp(r2, 0x0, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize disabled constructor program: %v", err)
-	}
+	p := windowsFuzzerTestAddressListQueryProgram(t, profiled)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fuzzer := NewFuzzer(ctx, &Config{
@@ -619,17 +604,20 @@ func TestWindowsAFDAllowsProgramUsingParsedEnabledScaffold(t *testing.T) {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
 	enabledCalls := windowsFuzzerTestEnabledCalls(t, profiled,
-		[]string{"NtDeviceIoControlFile$afd_address_list_query_udp"},
+		[]string{
+			"NtCreateFile$afd_tcp_endpoint",
+			"NtCreateFile$afd_tcp_accept_slot",
+			"NtDeviceIoControlFile$afd_bind_tcp",
+			"NtDeviceIoControlFile$afd_bind_tcp_listener",
+			"NtDeviceIoControlFile$afd_start_listen_tcp",
+			"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
+			"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+			"NtDeviceIoControlFile$afd_accept_tcp",
+			"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted",
+			"NtDeviceIoControlFile$afd_receive_accept_nonblock",
+		},
 		nil)
-	p, err := profiled.Deserialize([]byte(
-		"WSAStartup(0x202, &(0x7f0000000000)=0x0)\n"+
-			"r0 = socket$inet_udp(0x2, 0x2, 0x11)\n"+
-			"r1 = bind$inet_udp(r0, &(0x7f0000000100)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"NtDeviceIoControlFile$afd_address_list_query_udp(r1, 0x0, 0x0, 0x0, &(0x7f0000000200)={@Status=0x0, 0x0}, 0x120b3, 0x0, 0x0, &(0x7f0000000240), 0x44)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize enabled scaffold program: %v", err)
-	}
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fuzzer := NewFuzzer(ctx, &Config{
@@ -704,13 +692,13 @@ func TestWindowsAFDSkipsTriageForSeedOnlyPrograms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	seedOnly := profiled.SyscallMap["WSAEventSelect$tcp"]
+	seedOnly := profiled.SyscallMap["NtDeviceIoControlFile$afd_event_select_accept"]
 	if seedOnly == nil || !seedOnly.Attrs.NoGenerate {
-		t.Fatal("WSAEventSelect$tcp should be seed-only in the windows target")
+		t.Fatal("NtDeviceIoControlFile$afd_event_select_accept should be seed-only in the windows target")
 	}
-	creator := profiled.SyscallMap["ConnectEx$inet_tcp"]
+	creator := profiled.SyscallMap["NtDeviceIoControlFile$afd_start_listen_tcp"]
 	if creator == nil || creator.Attrs.NoGenerate {
-		t.Fatal("ConnectEx$inet_tcp should remain generatable")
+		t.Fatal("NtDeviceIoControlFile$afd_start_listen_tcp should remain generatable")
 	}
 	fuzzer := &Fuzzer{
 		Config: &Config{
@@ -731,8 +719,8 @@ func TestWindowsAFDSkipsTriageForSeedOnlyPrograms(t *testing.T) {
 	if got := fuzzer.Cover.CopyMaxSignal().Len(); got != 3 {
 		t.Fatalf("seed-only AFD program max signal=%d, want 3", got)
 	}
-	creatorProg := windowsFuzzerTestConnectExProgram(t, profiled)
-	creatorCall := windowsFuzzerTestCallIndex(t, creatorProg, "ConnectEx$inet_tcp")
+	creatorProg := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	creatorCall := windowsFuzzerTestCallIndex(t, creatorProg, "NtDeviceIoControlFile$afd_start_listen_tcp")
 	fuzzer.triageProgCall("candidate", creatorProg, &flatrpc.CallInfo{
 		Signal: []uint64{4, 5, 6},
 		Cover:  []uint64{4, 5, 6},
@@ -751,18 +739,9 @@ func TestWindowsAFDTriageKeepsDeepOwnerOverScaffold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$inet_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"r2 = listen$inet_tcp(r1, 0x1)\n"+
-			"r3 = accept$inet_tcp(r2, 0x0, 0x0)\n"+
-			"WSARecv$accept(r3, &(0x7f0000000100)=[{0x40, &(0x7f0000000180)='\\x00'/64}], 0x1, &(0x7f0000000200), &(0x7f0000000240)=0x0, 0x0, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	listenCall := windowsFuzzerTestCallIndex(t, p, "listen$inet_tcp")
-	deepCall := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgramWithDelay(t, profiled)
+	listenCall := windowsFuzzerTestCallIndex(t, p, "NtDelayExecution")
+	deepCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	fuzzer := &Fuzzer{
 		Config: &Config{
 			NewInputFilter: func(string) bool { return true },
@@ -848,17 +827,10 @@ func TestWindowsAFDTriageKeepsVNetReceiveSeedOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	if !profiled.CallEligibleForTriage(p.Calls[recvCall].Meta) {
-		t.Fatal("recv$inet_accept should be eligible for AFD triage")
+		t.Fatal("NtDeviceIoControlFile$afd_receive_accept_nonblock should be eligible for AFD triage")
 	}
 	fuzzer := &Fuzzer{
 		Config: &Config{
@@ -888,21 +860,14 @@ func TestWindowsAFDTriageKeepsVNetReceiveOwnerWhenScaffoldSignalOverlaps(t *test
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	scaffoldCall := windowsFuzzerTestCallIndex(t, p, "WSAStartup")
+	p := windowsFuzzerTestDirectAcceptReceiveProgramWithDelay(t, profiled)
+	scaffoldCall := windowsFuzzerTestCallIndex(t, p, "NtDelayExecution")
 	if profiled.CallEligibleForTriage(p.Calls[scaffoldCall].Meta) {
-		t.Fatal("WSAStartup should be an ineligible AFD triage scaffold")
+		t.Fatal("NtDelayExecution should be an ineligible AFD triage scaffold")
 	}
-	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	if !profiled.CallEligibleForTriage(p.Calls[recvCall].Meta) {
-		t.Fatal("recv$inet_accept should be eligible for AFD triage")
+		t.Fatal("NtDeviceIoControlFile$afd_receive_accept_nonblock should be eligible for AFD triage")
 	}
 	fuzzer := &Fuzzer{
 		Config: &Config{
@@ -935,26 +900,19 @@ func TestWindowsAFDTriageDoesNotLetFilteredOwnerConsumeVNetReceiveSignal(t *test
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	p, err := profiled.Deserialize([]byte(
-		"r0 = socket$accept_tcp(0x2, 0x1, 0x6)\n"+
-			"send$inet_accept(r0, &(0x7f0000000000)='ping', 0x4, 0x0)\n"+
-			"recv$inet_accept(r0, &(0x7f0000000100)='\\x00'/64, 0x40, 0x0)\n"),
-		prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	filteredCall := windowsFuzzerTestCallIndex(t, p, "send$inet_accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	filteredCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted")
 	if !profiled.CallEligibleForTriage(p.Calls[filteredCall].Meta) {
-		t.Fatal("send$inet_accept should be eligible enough to test NewInputFilter ordering")
+		t.Fatal("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted should be eligible enough to test NewInputFilter ordering")
 	}
-	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	if !profiled.CallEligibleForTriage(p.Calls[recvCall].Meta) {
-		t.Fatal("recv$inet_accept should be eligible for AFD triage")
+		t.Fatal("NtDeviceIoControlFile$afd_receive_accept_nonblock should be eligible for AFD triage")
 	}
 	fuzzer := &Fuzzer{
 		Config: &Config{
 			NewInputFilter: func(call string) bool {
-				return call == "recv$inet_accept"
+				return call == "NtDeviceIoControlFile$afd_receive_accept_nonblock"
 			},
 		},
 		target: profiled,
@@ -992,16 +950,9 @@ func TestWindowsAFDProcessResultQueuesCandidateTriageWhenScaffoldSignalOverlaps(
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	scaffoldCall := windowsFuzzerTestCallIndex(t, p, "WSAStartup")
-	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgramWithDelay(t, profiled)
+	scaffoldCall := windowsFuzzerTestCallIndex(t, p, "NtDelayExecution")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	fuzzer := NewFuzzer(ctx, &Config{
 		Corpus: corpus.NewCorpus(ctx),
 		NewInputFilter: func(string) bool {
@@ -1044,20 +995,13 @@ func TestWindowsAFDProcessResultQueuesCandidateTriageWhenFilteredOwnerSignalOver
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_recv.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	filteredCall := windowsFuzzerTestCallIndex(t, p, "accept$inet_tcp")
-	recvCall := windowsFuzzerTestCallIndex(t, p, "recv$inet_accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	filteredCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	fuzzer := NewFuzzer(ctx, &Config{
 		Corpus: corpus.NewCorpus(ctx),
 		NewInputFilter: func(call string) bool {
-			return call == "recv$inet_accept"
+			return call == "NtDeviceIoControlFile$afd_receive_accept_nonblock"
 		},
 	}, rand.New(rand.NewSource(0)), profiled)
 	fuzzer.statCandidates.Add(1)
@@ -1096,14 +1040,7 @@ func TestWindowsAFDProcessResultQueuesAllCandidateSeedOwnersWithNewSignal(t *tes
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_private_query_readonly.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
+	p := windowsFuzzerTestSeedProgram(t, profiled, "../../sys/windows/test/nyx_afd_private_core_readonly.txt")
 	queryCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_query_recv_tcp")
 	routeCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_routing_interface_query_udp")
 	for _, call := range []int{queryCall, routeCall} {
@@ -1157,15 +1094,8 @@ func TestWindowsAFDProcessResultForcesCandidateTriageForStableDeepOwner(t *testi
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_wsarecv.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	recvCall := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	fuzzer := NewFuzzer(ctx, &Config{
 		Corpus:         corpus.NewCorpus(ctx),
 		NewInputFilter: func(string) bool { return true },
@@ -1206,16 +1136,9 @@ func TestWindowsAFDProcessResultKeepsNonEmptyOwnerOverZeroSignalDeepOwner(t *tes
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile(afd): %v", err)
 	}
-	data, err := os.ReadFile("../../sys/windows/test/nyx_afd_accept_vnet_wsarecv.txt")
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	p, err := profiled.Deserialize(data, prog.NonStrict)
-	if err != nil {
-		t.Fatalf("Deserialize: %v", err)
-	}
-	nonblockCall := windowsFuzzerTestCallIndex(t, p, "ioctlsocket$fionbio_accept")
-	recvCall := windowsFuzzerTestCallIndex(t, p, "WSARecv$accept")
+	p := windowsFuzzerTestDirectAcceptReceiveProgram(t, profiled)
+	nonblockCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted")
+	recvCall := windowsFuzzerTestCallIndex(t, p, "NtDeviceIoControlFile$afd_receive_accept_nonblock")
 	fuzzer := NewFuzzer(ctx, &Config{
 		Corpus:         corpus.NewCorpus(ctx),
 		NewInputFilter: func(string) bool { return true },
@@ -1269,17 +1192,40 @@ func windowsFuzzerTestEnabledCalls(t *testing.T, target *prog.Target, enabled, d
 	return calls
 }
 
-func windowsFuzzerTestConnectExProgram(t *testing.T, target *prog.Target) *prog.Prog {
+func windowsFuzzerTestDeserializeProgram(t *testing.T, target *prog.Target, data []byte) *prog.Prog {
 	t.Helper()
-	p, err := target.Deserialize([]byte(
-		"r0 = socket$inet_tcp(0x2, 0x1, 0x6)\n"+
-			"r1 = bind$connectex_tcp(r0, &(0x7f0000000000)={0x2, 0x4e20, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10)\n"+
-			"ConnectEx$inet_tcp(r1, &(0x7f0000000100)={0x2, 0x4e21, 0x7f000001, [0, 0, 0, 0, 0, 0, 0, 0]}, 0x10, &(0x7f0000000200)='', 0x0, &(0x7f0000000240), 0x0)\n"),
-		prog.NonStrict)
+	p, err := target.Deserialize(data, prog.NonStrict)
 	if err != nil {
-		t.Fatalf("Deserialize ConnectEx program: %v", err)
+		t.Fatalf("Deserialize program: %v", err)
 	}
 	return p
+}
+
+func windowsFuzzerTestSeedProgram(t *testing.T, target *prog.Target, path string) *prog.Prog {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	return windowsFuzzerTestDeserializeProgram(t, target, data)
+}
+
+func windowsFuzzerTestDirectAcceptReceiveProgram(t *testing.T, target *prog.Target) *prog.Prog {
+	t.Helper()
+	return windowsFuzzerTestDeserializeProgram(t, target, []byte(windowsAFDDirectAcceptReceiveProgram()))
+}
+
+func windowsFuzzerTestDirectAcceptReceiveProgramWithDelay(t *testing.T, target *prog.Target) *prog.Prog {
+	t.Helper()
+	return windowsFuzzerTestDeserializeProgram(t, target, []byte(
+		"NtDelayExecution(0x0, &(0x7f0000020000)=@QuadPart=0xffffffffffff3cb0)\n"+
+			windowsAFDDirectAcceptReceiveProgram()))
+}
+
+func windowsFuzzerTestAddressListQueryProgram(t *testing.T, target *prog.Target) *prog.Prog {
+	t.Helper()
+	return windowsFuzzerTestSeedProgram(t, target,
+		"../../sys/windows/test/nyx_afd_private_full_301_NtDeviceIoControlFile_afd_address_list_query_udp.txt")
 }
 
 func BenchmarkFuzzer(b *testing.B) {

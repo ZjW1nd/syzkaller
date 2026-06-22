@@ -65,6 +65,7 @@ type reproContext struct {
 	timeouts       targets.Timeouts
 	observedTitles map[string]crash.Type
 	fast           bool
+	vmType         string
 }
 
 // execInterface describes the interfaces needed by pkg/repro.
@@ -150,6 +151,7 @@ func runInner(ctx context.Context, crashLog []byte, env Environment, exec execIn
 		timeouts:       cfg.Timeouts,
 		observedTitles: map[string]crash.Type{},
 		fast:           env.Fast,
+		vmType:         cfg.Type,
 		logf:           env.logf,
 	}
 
@@ -603,6 +605,10 @@ func (ctx *reproContext) simplifyProg(res *Result) (*Result, error) {
 func (ctx *reproContext) extractC(res *Result) (*Result, error) {
 	if ctx.target.BrokenCompiler != "" {
 		ctx.reproLogf(2, "skipping C reproducer extraction due to broken compiler: %v", ctx.target.BrokenCompiler)
+		return res, nil
+	}
+	if ctx.vmType == "nyx" {
+		ctx.reproLogf(2, "skipping C reproducer extraction because nyx VM backend does not execute arbitrary binaries")
 		return res, nil
 	}
 	ctx.reproLogf(2, "extracting C reproducer")

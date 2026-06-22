@@ -127,6 +127,18 @@ func (tei *testExecInterface) RunSyz(_ context.Context, syzProg []byte, _ instan
 	return tei.run(syzProg)
 }
 
+type noCExecInterface struct{}
+
+func (tei *noCExecInterface) RunC(_ context.Context, _ *prog.Prog, _ instance.RunOptions,
+	_ instance.ExecutorLogger) (*instance.RunResult, error) {
+	return nil, fmt.Errorf("unexpected C repro execution")
+}
+
+func (tei *noCExecInterface) RunSyz(_ context.Context, syzProg []byte, _ instance.RunOptions,
+	_ instance.ExecutorLogger) (*instance.RunResult, error) {
+	return testExecRunner(syzProg)
+}
+
 func runTestRepro(t *testing.T, log string, exec execInterface) (*Result, *Stats, error) {
 	mgrConfig := &mgrconfig.Config{
 		Derived: mgrconfig.Derived{
@@ -378,6 +390,36 @@ func TestBrokenCompilerRepro(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Equal(t, false, result.CRepro, "C repro should have been skipped")
+}
+
+func TestNyxSkipsCRepro(t *testing.T) {
+	mgrConfig := &mgrconfig.Config{
+		Type: "nyx",
+		Derived: mgrconfig.Derived{
+			TargetOS:     targets.Linux,
+			TargetVMArch: targets.AMD64,
+			SysTarget:    targets.Get(targets.Linux, targets.AMD64),
+		},
+		Sandbox: "namespace",
+	}
+	var err error
+	mgrConfig.Target, err = prog.GetTarget(targets.Linux, targets.AMD64)
+	require.NoError(t, err)
+	reporter, err := report.NewReporter(mgrConfig)
+	require.NoError(t, err)
+	env := Environment{
+		Config:   mgrConfig,
+		Features: flatrpc.AllFeatures,
+		Fast:     false,
+		Reporter: reporter,
+		logf:     t.Logf,
+	}
+
+	result, _, err := runInner(context.Background(), []byte(testReproLog), env, &noCExecInterface{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, expectedReproducer, string(result.Prog.Serialize()))
+	require.False(t, result.CRepro)
 }
 
 func TestAvoidLostConnection(t *testing.T) {
