@@ -7811,9 +7811,9 @@ func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 		if log == -1 {
 			t.Fatalf("%s: result-dumped log not found", label)
 		}
-		if !(dump < finish && finish < log) {
-			t.Fatalf("%s: expected dump < finish < result-log, got dump=%d finish=%d log=%d",
-				label, dump, finish, log)
+		if !(finish < dump && dump < log) {
+			t.Fatalf("%s: expected finish < dump < result-log, got finish=%d dump=%d log=%d",
+				label, finish, dump, log)
 		}
 	}
 	helper := extractFunctionBody(t, src, "static void nyx_finish_exec_payload")

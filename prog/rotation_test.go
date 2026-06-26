@@ -105,8 +105,8 @@ nextIter:
 
 func TestRotationTracksSeedOnlyResourceConstructors(t *testing.T) {
 	target, rs, _ := initRandomTargetTest(t, "windows", "amd64")
-	ctor := target.SyscallMap["AcceptEx$inet_tcp_pending"]
-	consumer := target.SyscallMap["CancelIoEx$accept_pending"]
+	ctor := target.SyscallMap["NtCreateFile$afd_tli_tcp_endpoint"]
+	consumer := target.SyscallMap["NtDeviceIoControlFile$afd_tli_type1_nobuf"]
 	if ctor == nil || consumer == nil {
 		t.Fatalf("missing seed-only resource test calls: ctor=%v consumer=%v", ctor, consumer)
 	}
@@ -115,12 +115,12 @@ func TestRotationTracksSeedOnlyResourceConstructors(t *testing.T) {
 		consumer: true,
 	}
 	rotator := MakeRotator(target, calls, rand.New(rs))
-	res := target.resourceMap["SOCKET_TCP_ACCEPT_PENDING"]
+	res := target.resourceMap["AFD_TLI_ENDPOINT"]
 	if res == nil {
-		t.Fatal("missing SOCKET_TCP_ACCEPT_PENDING resource")
+		t.Fatal("missing AFD_TLI_ENDPOINT resource")
 	}
 	info := rotator.resources[res]
-	if !rotationTestContainsCall(info.ctors[1], ctor) {
+	if !rotationTestContainsCall(info.ctors[0], ctor) {
 		t.Fatalf("rotator did not track seed-only constructor %q for %s", ctor.Name, res.Name)
 	}
 	if !rotationTestContainsCall(info.uses[0], consumer) {

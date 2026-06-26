@@ -1285,8 +1285,7 @@ func (vm *nyxVM) close() {
 		vm.auxFile = nil
 	}
 	if vm.process != nil && vm.process.Process != nil {
-		_ = vm.process.Process.Kill()
-		_ = vm.process.Wait()
+		_ = osutil.KillAndWait(vm.process, 10*time.Second)
 	}
 	vm.process = nil
 	_ = os.Remove(vm.controlPath)
@@ -1560,6 +1559,30 @@ func synthesizeHangedResult(req *flatrpc.ExecRequest) *flatrpc.ExecutorMessage {
 				Proc:   0,
 				Info:   flatrpc.EmptyProgInfo(callCount),
 				Hanged: true,
+			},
+		},
+	}
+}
+
+func synthesizeErrorResult(req *flatrpc.ExecRequest, err error) *flatrpc.ExecutorMessage {
+	callCount := 0
+	var id int64
+	if req != nil {
+		id = req.Id
+		callCount = progExecCallCountOrPanic(req.Data)
+	}
+	errText := ""
+	if err != nil {
+		errText = err.Error()
+	}
+	return &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
+			Value: &flatrpc.ExecResult{
+				Id:    id,
+				Proc:  0,
+				Error: errText,
+				Info:  flatrpc.EmptyProgInfo(callCount),
 			},
 		},
 	}
@@ -3318,19 +3341,8 @@ func (r *runner) loop() error {
 				var crashErr *nyxCrashError
 				if errors.As(err, &crashErr) {
 					_, _ = os.Stderr.Write(crashErr.report)
-					return err
 				}
-				execMsg = &flatrpc.ExecutorMessage{
-					Msg: &flatrpc.ExecutorMessages{
-						Type: flatrpc.ExecutorMessagesRawExecResult,
-						Value: &flatrpc.ExecResult{
-							Id:    req.Id,
-							Proc:  0,
-							Error: err.Error(),
-							Info:  flatrpc.EmptyProgInfo(progExecCallCountOrPanic(req.Data)),
-						},
-					},
-				}
+				execMsg = synthesizeErrorResult(req, err)
 			}
 			if err := flatrpc.Send(r.conn, execMsg); err != nil {
 				if isExpectedManagerDisconnect(err) {

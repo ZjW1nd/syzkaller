@@ -2866,8 +2866,8 @@ static int nyx_mode_loop(int argc, char** argv)
 		auto demo_result = nyx_demo_execute_request(output_data, meta->proc_id,
 							    meta->request_id, freshness++,
 							    msg, &cov_cmd);
-		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
 		nyx_finish_exec_payload(meta, msg->num_calls());
+		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)demo_result.size());
 		continue;
@@ -2901,12 +2901,12 @@ static int nyx_mode_loop(int argc, char** argv)
 					    freshness++, 0, false, nullptr);
 		nyx_log_exec_stage("nyx_post_finish_output", meta->request_id, result.size(),
 				   output_data->completed.load(std::memory_order_relaxed));
-		nyx_log_exec_stage("nyx_pre_result_dump", meta->request_id, result.size());
-		bool dumped = nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
-		nyx_log_exec_stage("nyx_post_result_dump", meta->request_id, result.size(), dumped);
 		nyx_log_exec_stage("nyx_pre_finish_payload", meta->request_id, msg->num_calls());
 		nyx_finish_exec_payload(meta, msg->num_calls());
 		nyx_log_exec_stage("nyx_post_finish_payload", meta->request_id, msg->num_calls());
+		nyx_log_exec_stage("nyx_pre_result_dump", meta->request_id, result.size());
+		bool dumped = nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+		nyx_log_exec_stage("nyx_post_result_dump", meta->request_id, result.size(), dumped);
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)result.size());
 	}

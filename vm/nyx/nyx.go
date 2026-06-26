@@ -458,8 +458,7 @@ func (inst *instance) Close() error {
 	inst.runnerLog = nil
 	inst.mu.Unlock()
 	if cmd != nil && cmd.Process != nil {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		_ = osutil.KillAndWait(cmd, 10*time.Second)
 	}
 	if logFile != nil {
 		return logFile.Close()

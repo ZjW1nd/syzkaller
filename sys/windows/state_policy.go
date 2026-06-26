@@ -208,23 +208,101 @@ func windowsHasValidAFDNonblockState(p *prog.Prog) bool {
 	if p == nil {
 		return true
 	}
+	afdNonblock := make(map[*prog.ResultArg]bool)
 	for idx, call := range p.Calls {
-		if call == nil || call.Meta == nil || !windowsCallNeedsUDPBoundNonblock(call.Meta.Name) {
+		if call == nil || call.Meta == nil {
 			continue
 		}
-		if len(call.Args) == 0 {
+		name := call.Meta.Name
+		if windowsCallNeedsUDPBoundNonblock(name) {
+			if len(call.Args) == 0 {
+				return false
+			}
+			sock, ok := call.Args[0].(*prog.ResultArg)
+			if !ok || sock.Res == nil {
+				return false
+			}
+			producer := prog.ResourceProducer(sock.Res, p, idx)
+			if producer == nil || producer.Name != "ioctlsocket$fionbio_udp_bound" {
+				return false
+			}
+		}
+		if windowsCallMarksAFDNonblock(name) {
+			root := windowsSemanticInputRoot(call, 0)
+			if root == nil {
+				return false
+			}
+			afdNonblock[root] = true
+			continue
+		}
+		if !windowsCallRequiresAFDNonblock(name) {
+			continue
+		}
+		root := windowsSemanticInputRoot(call, 0)
+		if root == nil || !afdNonblock[root] {
 			return false
 		}
-		sock, ok := call.Args[0].(*prog.ResultArg)
-		if !ok || sock.Res == nil {
-			return false
+		for _, nested := range windowsAFDNestedNonblockRoots(call) {
+			if nested == nil || !afdNonblock[nested] {
+				return false
+			}
 		}
-		producer := prog.ResourceProducer(sock.Res, p, idx)
-		if producer == nil || producer.Name != "ioctlsocket$fionbio_udp_bound" {
-			return false
+		for _, accepted := range windowsAFDAcceptedNonblockRoots(call) {
+			if accepted != nil {
+				afdNonblock[accepted] = true
+			}
 		}
 	}
 	return true
+}
+
+func windowsCallMarksAFDNonblock(name string) bool {
+	return strings.HasPrefix(name, "NtDeviceIoControlFile$afd_set_information_nonblock_")
+}
+
+func windowsCallRequiresAFDNonblock(name string) bool {
+	if windowsCallMarksAFDNonblock(name) {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(name, "NtDeviceIoControlFile$afd_"),
+		strings.HasPrefix(name, "NtReadFile$afd_"),
+		strings.HasPrefix(name, "NtWriteFile$afd_"),
+		strings.HasPrefix(name, "NtCancelIoFileEx$afd_"),
+		strings.HasPrefix(name, "CancelIoEx$afd_"),
+		strings.HasPrefix(name, "CancelIo$afd_"),
+		strings.HasPrefix(name, "CloseHandle$afd_"):
+		return strings.Contains(name, "_nonblock")
+	default:
+		return false
+	}
+}
+
+func windowsAFDNestedNonblockRoots(call *prog.Call) []*prog.ResultArg {
+	if call == nil || call.Meta == nil || len(call.Args) <= 6 {
+		return nil
+	}
+	switch call.Meta.Name {
+	case "NtDeviceIoControlFile$afd_connect_tcp_client_to_listener_nonblock",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock",
+		"NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock":
+		return windowsInputResourceRootsWithPrefix(call.Args[6], "AFD_TCP")
+	default:
+		return nil
+	}
+}
+
+func windowsAFDAcceptedNonblockRoots(call *prog.Call) []*prog.ResultArg {
+	if call == nil || call.Meta == nil || len(call.Args) <= 6 {
+		return nil
+	}
+	switch call.Meta.Name {
+	case "NtDeviceIoControlFile$afd_accept_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_super_accept_tcp_nonblock":
+		return windowsInputResourceRootsWithPrefix(call.Args[6], "AFD_TCP_ACCEPT_SLOT")
+	default:
+		return nil
+	}
 }
 
 func windowsHasCompatibleNetworkResourceFamilies(p *prog.Prog) bool {
@@ -271,39 +349,100 @@ func windowsHasMatchingAFDReturnedSequence(p *prog.Prog) bool {
 	if p == nil {
 		return true
 	}
-	for idx, call := range p.Calls {
-		if call == nil || len(call.Args) == 0 {
+	sequenceListener := make(map[*prog.ResultArg]*prog.ResultArg)
+	for _, call := range p.Calls {
+		if call == nil || call.Meta == nil {
 			continue
 		}
-		handle, ok := call.Args[0].(*prog.ResultArg)
-		if !ok || handle.Res == nil ||
-			!windowsResultArgWantsResourcePrefix(handle, "AFD_TCP_RETURNED_CONNECTION") {
+		if windowsAFDWaitForListenSequenceCall(call.Meta.Name) {
+			listener := windowsSemanticInputRoot(call, 0)
+			if listener == nil || len(call.Args) <= 8 {
+				return false
+			}
+			seq := windowsFirstResourceArgWithPrefix(call.Args[8], "AFD_TCP_RETURNED_SEQUENCE")
+			if seq == nil {
+				return false
+			}
+			sequenceListener[seq] = listener
+		}
+		if len(call.Args) <= 6 {
 			continue
 		}
-		handleProducer := windowsResourceProducerCall(handle.Res, p, idx)
-		if handleProducer == nil {
+		seq := windowsFirstInputResourceArgWithPrefix(call.Args[6], "AFD_TCP_RETURNED_SEQUENCE")
+		if seq == nil {
+			continue
+		}
+		listener := windowsSemanticInputRoot(call, 0)
+		if listener == nil || seq.Res == nil {
 			return false
 		}
-		matched := true
-		prog.ForeachArg(call, func(arg prog.Arg, ctx *prog.ArgCtx) {
-			if !matched || arg.Dir() == prog.DirOut {
-				return
-			}
-			seq, ok := arg.(*prog.ResultArg)
-			if !ok || seq.Res == nil ||
-				!windowsResultArgWantsResourcePrefix(seq, "AFD_TCP_RETURNED_SEQUENCE") {
-				return
-			}
-			if windowsResourceProducerCall(seq.Res, p, idx) != handleProducer {
-				matched = false
-				ctx.Stop = true
-			}
-		})
-		if !matched {
+		if sequenceListener[seq.Res] != listener {
 			return false
 		}
 	}
 	return true
+}
+
+func windowsAFDWaitForListenSequenceCall(name string) bool {
+	switch name {
+	case "NtDeviceIoControlFile$afd_wait_for_listen_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock":
+		return true
+	default:
+		return false
+	}
+}
+
+func windowsFirstResourceArgWithPrefix(arg prog.Arg, prefix string) *prog.ResultArg {
+	var found *prog.ResultArg
+	prog.ForeachSubArg(arg, func(arg prog.Arg, ctx *prog.ArgCtx) {
+		if found != nil {
+			ctx.Stop = true
+			return
+		}
+		res, ok := arg.(*prog.ResultArg)
+		if !ok || !windowsResultArgWantsResourcePrefix(res, prefix) {
+			return
+		}
+		found = res
+		ctx.Stop = true
+	})
+	return found
+}
+
+func windowsFirstInputResourceArgWithPrefix(arg prog.Arg, prefix string) *prog.ResultArg {
+	var found *prog.ResultArg
+	prog.ForeachSubArg(arg, func(arg prog.Arg, ctx *prog.ArgCtx) {
+		if found != nil {
+			ctx.Stop = true
+			return
+		}
+		res, ok := arg.(*prog.ResultArg)
+		if !ok || res.Dir() == prog.DirOut || res.Res == nil ||
+			!windowsResultArgWantsResourcePrefix(res, prefix) {
+			return
+		}
+		found = res
+		ctx.Stop = true
+	})
+	return found
+}
+
+func windowsInputResourceRootsWithPrefix(arg prog.Arg, prefix string) []*prog.ResultArg {
+	var roots []*prog.ResultArg
+	prog.ForeachSubArg(arg, func(arg prog.Arg, _ *prog.ArgCtx) {
+		res, ok := arg.(*prog.ResultArg)
+		if !ok || res.Dir() == prog.DirOut || res.Res == nil ||
+			!windowsResultArgWantsResourcePrefix(res, prefix) {
+			return
+		}
+		roots = append(roots, res.Res)
+	})
+	return roots
 }
 
 func windowsResultArgWantsResourcePrefix(arg *prog.ResultArg, prefix string) bool {

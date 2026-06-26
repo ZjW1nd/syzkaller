@@ -337,6 +337,30 @@ func TestSynthesizeHangedResultPreservesRequest(t *testing.T) {
 	}
 }
 
+func TestSynthesizeErrorResultPreservesRequest(t *testing.T) {
+	var data [binary.MaxVarintLen64]byte
+	n := binary.PutVarint(data[:], 3)
+	req := &flatrpc.ExecRequest{
+		Id:   43,
+		Data: data[:n],
+	}
+	msg := synthesizeErrorResult(req, errors.New("nyx crash: bugcheck"))
+	if msg.Msg.Type != flatrpc.ExecutorMessagesRawExecResult {
+		t.Fatalf("message type=%v, want ExecResult", msg.Msg.Type)
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok {
+		t.Fatalf("message value has type %T", msg.Msg.Value)
+	}
+	if res.Id != req.Id || res.Proc != 0 || res.Error != "nyx crash: bugcheck" || res.Hanged {
+		t.Fatalf("bad error result metadata: id=%d proc=%d error=%q hanged=%v",
+			res.Id, res.Proc, res.Error, res.Hanged)
+	}
+	if res.Info == nil || len(res.Info.Calls) != 3 {
+		t.Fatalf("error result call info len=%d, want 3", len(res.Info.Calls))
+	}
+}
+
 func TestPreserveWindowsDumpWaitsForStableFile(t *testing.T) {
 	oldPoll := windowsDumpSettlePoll
 	oldStableFor := windowsDumpSettleStableFor

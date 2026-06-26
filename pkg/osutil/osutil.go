@@ -102,6 +102,34 @@ func Command(bin string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// KillAndWait terminates cmd's process group and waits for the process to exit.
+// It returns after timeout even if Wait remains blocked, so VM cleanup paths do
+// not permanently consume a worker slot after a broken child process.
+func KillAndWait(cmd *exec.Cmd, timeout time.Duration) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+		killPgroup(cmd)
+		_ = cmd.Process.Kill()
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+	if timeout <= 0 {
+		return <-done
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return fmt.Errorf("timed out waiting for %q to exit", cmd.Args)
+	}
+}
+
 // Command is similar to os/exec.Command, but also sets PDEATHSIG to SIGTERM on linux,
 // i.e. the child has a chance to exit gracefully. This may be important when running
 // e.g. syz-manager. If it is killed immediately, it can leak GCE instances.

@@ -23,6 +23,23 @@ func windowsSkipLegacyAfdWinsockArchived(t *testing.T) {
 	}
 }
 
+func windowsAfdStatusLikeCall(name string) bool {
+	for _, prefix := range []string{
+		"NtDeviceIoControlFile$afd_",
+		"NtReadFile$afd_",
+		"NtWriteFile$afd_",
+		"NtCancelIoFileEx$afd_",
+		"CancelIoEx$afd_",
+		"CancelIo$afd_",
+		"CloseHandle$afd_",
+	} {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func TestInitTargetMarksWindowsHelpers(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
@@ -809,233 +826,30 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("NtWriteFile", 1, "EVENT_HANDLE")
 	assertResource("NtDeviceIoControlFile", 0, "FILE_HANDLE")
 	assertResource("NtDeviceIoControlFile", 1, "EVENT_HANDLE")
-	assertPtrResource("NtCreateFile$afd_tcp_endpoint", 0, "AFD_TCP_CREATED")
+	assertPtrResource("NtCreateFile$afd_tcp_endpoint", 0, "AFD_TCP")
 	assertPtrResource("NtCreateFile$afd_tcp_accept_slot", 0, "AFD_TCP_ACCEPT_SLOT")
-	assertPtrResource("NtCreateFile$afd_udp_endpoint", 0, "AFD_UDP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp", 0, "AFD_TCP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp", -1, "AFD_TCP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp_nonblock", 0, "AFD_TCP_CREATED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp_nonblock", -1, "AFD_TCP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp_listener", 0, "AFD_TCP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp_listener", -1, "AFD_TCP_BOUND_LISTENER")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp_listener_nonblock", 0, "AFD_TCP_CREATED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_bind_tcp_listener_nonblock", -1, "AFD_TCP_BOUND_LISTENER_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_bind_udp", 0, "AFD_UDP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_bind_udp", -1, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_bind_udp_nonblock", 0, "AFD_UDP_CREATED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_bind_udp_nonblock", -1, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp", 0, "AFD_TCP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp", -1, "AFD_TCP_CONNECTED")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_nonblock", 0, "AFD_TCP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_nonblock", -1, "AFD_TCP_CONNECTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener", 0, "AFD_TCP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener", -1, "AFD_TCP_UNACCEPTED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock", 0, "AFD_TCP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock", -1, "AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener", -1, "AFD_TCP_UNACCEPTED_CONNECTION_DELAYED")
-	assertResource("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock", -1, "AFD_TCP_UNACCEPTED_CONNECTION_DELAYED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp", 0, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp", -1, "AFD_UDP_PEERED_EXTERNAL")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp_nonblock", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp_nonblock", -1, "AFD_UDP_PEERED_EXTERNAL_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp_loopback", 0, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp_loopback", -1, "AFD_UDP_PEERED")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp_loopback_nonblock", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_connect_udp_loopback_nonblock", -1, "AFD_UDP_PEERED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp", 0, "AFD_TCP_BOUND_LISTENER")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp", -1, "AFD_TCP_LISTEN_BACKLOG")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp_nonblock", 0, "AFD_TCP_BOUND_LISTENER_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp_nonblock", -1, "AFD_TCP_LISTEN_BACKLOG_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp_delayed", 0, "AFD_TCP_BOUND_LISTENER")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp_delayed", -1, "AFD_TCP_LISTENING_DELAYED")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp_delayed_nonblock", 0, "AFD_TCP_BOUND_LISTENER_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp_delayed_nonblock", -1, "AFD_TCP_LISTENING_DELAYED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_tcp", 0, "AFD_TCP_UNACCEPTED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_tcp", -1, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock", 0, "AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_tcp_nonblock", -1, "AFD_TCP_RETURNED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp", 0, "AFD_TCP_UNACCEPTED_CONNECTION_DELAYED")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp", -1, "AFD_TCP_RETURNED_CONNECTION_DELAYED")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock", 0, "AFD_TCP_UNACCEPTED_CONNECTION_DELAYED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock", -1, "AFD_TCP_RETURNED_CONNECTION_DELAYED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp", 0, "AFD_TCP_UNACCEPTED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp", -1, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock", 0, "AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock", -1, "AFD_TCP_RETURNED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp", 0, "AFD_TCP_LISTEN_BACKLOG")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp", 1, "EVENT_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp", -1, "AFD_TCP_LISTEN_IRP_PENDING")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp", -1, "AFD_TCP_LISTEN_IRP_PENDING_LIFO")
-	assertResource("NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp_nonblock", -1, "AFD_TCP_LISTEN_IRP_PENDING_LIFO_NONBLOCK")
-	assertResource("CancelIoEx$afd_listen_irp_pending", 0, "AFD_TCP_LISTEN_IRP_PENDING")
-	assertResource("CancelIo$afd_listen_irp_pending", 0, "AFD_TCP_LISTEN_IRP_PENDING")
-	assertResource("CancelIoEx$afd_listen_irp_pending_lifo", 0, "AFD_TCP_LISTEN_IRP_PENDING_LIFO")
-	assertResource("CancelIo$afd_listen_irp_pending_lifo", 0, "AFD_TCP_LISTEN_IRP_PENDING_LIFO")
-	assertResource("CloseHandle$afd_listen_irp_pending", 0, "AFD_TCP_LISTEN_IRP_PENDING")
-	assertResource("CloseHandle$afd_listen_irp_pending_lifo", 0, "AFD_TCP_LISTEN_IRP_PENDING_LIFO")
-	assertResource("NtDeviceIoControlFile$afd_accept_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_accept_tcp", -1, "AFD_TCP_ACCEPTED")
-	assertResource("NtDeviceIoControlFile$afd_accept_tcp_nonblock", 0, "AFD_TCP_RETURNED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_accept_tcp_nonblock", -1, "AFD_TCP_ACCEPTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_super_accept_tcp", 0, "AFD_TCP_UNACCEPTED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_super_accept_tcp", -1, "AFD_TCP_PREACCEPTED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_super_accept_tcp_nonblock", 0, "AFD_TCP_UNACCEPTED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_super_accept_tcp_nonblock", -1, "AFD_TCP_PREACCEPTED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_noop_preaccepted", 0, "AFD_TCP_PREACCEPTED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_noop_preaccepted_nonblock", 0, "AFD_TCP_PREACCEPTED_CONNECTION_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_defer_accept_requeue_tcp", 0, "AFD_TCP_RETURNED_CONNECTION_DELAYED")
-	assertResource("NtDeviceIoControlFile$afd_defer_accept_requeue_tcp", -1, "AFD_TCP_UNACCEPTED_CONNECTION_DELAYED")
-	assertResource("NtDeviceIoControlFile$afd_defer_accept_requeue_tcp_nonblock", 0, "AFD_TCP_RETURNED_CONNECTION_DELAYED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_defer_accept_requeue_tcp_nonblock", -1, "AFD_TCP_UNACCEPTED_CONNECTION_DELAYED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_defer_accept_reject_tcp", 0, "AFD_TCP_RETURNED_CONNECTION_DELAYED")
-	assertResource("NtDeviceIoControlFile$afd_defer_accept_reject_tcp_nonblock", 0, "AFD_TCP_RETURNED_CONNECTION_DELAYED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_get_unaccepted_connect_data_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created", 0, "AFD_TCP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created", -1, "AFD_TCP_CREATED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_bound", 0, "AFD_TCP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_bound", -1, "AFD_TCP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_listening", 0, "AFD_TCP_LISTEN_BACKLOG")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_listening", -1, "AFD_TCP_LISTEN_BACKLOG_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_connected", 0, "AFD_TCP_CONNECTED")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_connected", -1, "AFD_TCP_CONNECTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted", 0, "AFD_TCP_ACCEPTED")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted", -1, "AFD_TCP_ACCEPTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_created", 0, "AFD_UDP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_created", -1, "AFD_UDP_CREATED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound", 0, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound", -1, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_peered", 0, "AFD_UDP_PEERED")
-	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_peered", -1, "AFD_UDP_PEERED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_partial_disconnect_tcp", 0, "AFD_TCP_CONNECTED")
-	assertResource("NtDeviceIoControlFile$afd_partial_disconnect_tcp", -1, "AFD_TCP_DISCONNECTED")
-	assertResource("NtDeviceIoControlFile$afd_unconnect_udp", 0, "AFD_UDP_PEERED")
-	assertResource("NtDeviceIoControlFile$afd_unconnect_udp", -1, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_unbind_tcp", 0, "AFD_TCP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_unbind_tcp", -1, "AFD_TCP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_unbind_udp", 0, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_unbind_udp", -1, "AFD_UDP_CREATED")
-	assertResource("NtDeviceIoControlFile$afd_get_information_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_get_information_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_send_tcp", 0, "AFD_TCP_CONNECTED")
-	assertResource("NtDeviceIoControlFile$afd_send_tcp_nonblock", 0, "AFD_TCP_CONNECTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_receive_tcp_nonblock", 0, "AFD_TCP_CONNECTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_send_accept", 0, "AFD_TCP_ACCEPTED")
-	assertResource("NtDeviceIoControlFile$afd_send_accept_nonblock", 0, "AFD_TCP_ACCEPTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_receive_accept_nonblock", 0, "AFD_TCP_ACCEPTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_send_udp_peer", 0, "AFD_UDP_PEERED")
-	assertResource("NtDeviceIoControlFile$afd_send_udp_peer_nonblock", 0, "AFD_UDP_PEERED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_send_datagram_udp_bound", 0, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock_irp", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_send_datagram_udp_bound_sockaddr", 0, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock_sockaddr", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_receive_datagram_udp_peer_nonblock", 0, "AFD_UDP_PEERED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock_fast", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_receive_datagram_udp_peer_nonblock_fast", 0, "AFD_UDP_PEERED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_get_address_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_get_address_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_query_recv_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_query_recv_tcp_irp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_query_recv_tcp_irp", 1, "EVENT_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_query_recv_accept", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_query_handles_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_query_handles_accept", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_query_handles_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_query_handles_udp_peer", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_get_remote_address_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_context_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_context_tcp", -1, "AFD_TCP_CONTEXT")
-	assertResource("NtDeviceIoControlFile$afd_set_context_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_context_udp", -1, "AFD_UDP_CONTEXT")
-	assertResource("NtDeviceIoControlFile$afd_get_context_tcp", 0, "AFD_TCP_CONTEXT")
-	assertResource("NtDeviceIoControlFile$afd_get_context_udp", 0, "AFD_UDP_CONTEXT")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_data_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_data_tcp", -1, "AFD_TCP_SEND_CONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_options_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_options_tcp", -1, "AFD_TCP_SEND_CONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_data_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_data_tcp", -1, "AFD_TCP_SEND_DISCONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_options_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_options_tcp", -1, "AFD_TCP_SEND_DISCONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_data_length_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_data_length_tcp", -1, "AFD_TCP_RECEIVE_CONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_options_length_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_options_length_tcp", -1, "AFD_TCP_RECEIVE_CONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_tcp", -1, "AFD_TCP_RECEIVE_DISCONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_tcp", -1, "AFD_TCP_RECEIVE_DISCONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_connect_data_tcp", 0, "AFD_TCP_RECEIVE_CONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_connect_options_tcp", 0, "AFD_TCP_RECEIVE_CONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_disconnect_data_tcp", 0, "AFD_TCP_RECEIVE_DISCONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_disconnect_options_tcp", 0, "AFD_TCP_RECEIVE_DISCONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_data_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_data_udp", -1, "AFD_UDP_SEND_CONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_options_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_connect_options_udp", -1, "AFD_UDP_SEND_CONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_data_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_data_udp", -1, "AFD_UDP_SEND_DISCONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_options_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_send_disconnect_options_udp", -1, "AFD_UDP_SEND_DISCONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_data_length_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_data_length_udp", -1, "AFD_UDP_RECEIVE_CONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_options_length_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_connect_options_length_udp", -1, "AFD_UDP_RECEIVE_CONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_data_length_udp", -1, "AFD_UDP_RECEIVE_DISCONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_set_receive_disconnect_options_length_udp", -1, "AFD_UDP_RECEIVE_DISCONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_connect_data_udp", 0, "AFD_UDP_RECEIVE_CONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_connect_options_udp", 0, "AFD_UDP_RECEIVE_CONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_disconnect_data_udp", 0, "AFD_UDP_RECEIVE_DISCONNECT_DATA")
-	assertResource("NtDeviceIoControlFile$afd_get_receive_disconnect_options_udp", 0, "AFD_UDP_RECEIVE_DISCONNECT_OPTIONS")
-	assertResource("NtDeviceIoControlFile$afd_set_returned_receive_connect_data_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_set_returned_receive_connect_options_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_set_returned_receive_disconnect_data_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_set_returned_receive_disconnect_options_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_get_returned_receive_connect_data_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_get_returned_receive_connect_options_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_get_returned_receive_disconnect_data_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_get_returned_receive_disconnect_options_length_tcp", 0, "AFD_TCP_RETURNED_CONNECTION")
-	assertResource("NtDeviceIoControlFile$afd_get_qos_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_get_qos_accept", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_get_qos_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_noop_tcp", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_noop_accept", 0, "AFD_TCP")
-	assertResource("NtDeviceIoControlFile$afd_noop_accept_pending", 0, "AFD_TCP_ACCEPT_PENDING")
-	assertResource("NtDeviceIoControlFile$afd_noop_accept_pending_nonblock", 0, "AFD_TCP_ACCEPT_PENDING_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_noop_tcp_listening_nonblock", 0, "AFD_TCP_LISTEN_BACKLOG_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_noop_tcp_disconnected", 0, "AFD_TCP_DISCONNECTED")
-	assertResource("NtDeviceIoControlFile$afd_noop_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_address_list_query_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_routing_interface_query_udp", 0, "AFD_UDP")
-	assertResource("NtDeviceIoControlFile$afd_address_list_change_udp", 0, "AFD_UDP_BOUND")
-	assertResource("NtDeviceIoControlFile$afd_address_list_change_udp", 1, "EVENT_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_address_list_change_udp", -1, "AFD_UDP_ADDRESS_LIST_CHANGE_PENDING")
-	assertResource("NtDeviceIoControlFile$afd_address_list_change_udp_nonblock", 0, "AFD_UDP_BOUND_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_address_list_change_udp_nonblock", 1, "EVENT_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_address_list_change_udp_nonblock", -1, "AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_routing_interface_change_udp", 0, "AFD_UDP_PEERED")
-	assertResource("NtDeviceIoControlFile$afd_routing_interface_change_udp", 1, "EVENT_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_routing_interface_change_udp", -1, "AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING")
-	assertResource("NtDeviceIoControlFile$afd_routing_interface_change_udp_nonblock", 0, "AFD_UDP_PEERED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_routing_interface_change_udp_nonblock", 1, "EVENT_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_routing_interface_change_udp_nonblock", -1, "AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK")
-	assertResource("CancelIoEx$afd_address_list_change_pending", 0, "AFD_UDP_ADDRESS_LIST_CHANGE_PENDING")
-	assertResource("CancelIoEx$afd_address_list_change_pending_nonblock", 0, "AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK")
-	assertResource("CancelIoEx$afd_routing_interface_change_pending", 0, "AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING")
-	assertResource("CancelIoEx$afd_routing_interface_change_pending_nonblock", 0, "AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK")
-	assertResource("CloseHandle$afd_address_list_change_pending", 0, "AFD_UDP_ADDRESS_LIST_CHANGE_PENDING")
-	assertResource("CloseHandle$afd_address_list_change_pending_nonblock", 0, "AFD_UDP_ADDRESS_LIST_CHANGE_PENDING_NONBLOCK")
-	assertResource("CloseHandle$afd_routing_interface_change_pending", 0, "AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING")
-	assertResource("CloseHandle$afd_routing_interface_change_pending_nonblock", 0, "AFD_UDP_ROUTING_INTERFACE_CHANGE_PENDING_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_event_select_accept", 0, "AFD_TCP_LISTEN_BACKLOG")
-	assertResource("NtDeviceIoControlFile$afd_enum_network_events_accept", 0, "AFD_TCP_LISTEN_BACKLOG")
-	assertResource("NtDeviceIoControlFile$afd_poll_accept", 0, "AFD_TCP_LISTEN_BACKLOG")
-	assertResource("NtDeviceIoControlFile$afd_event_select_accept_nonblock", 0, "AFD_TCP_LISTEN_BACKLOG_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock", 0, "AFD_TCP_LISTEN_BACKLOG_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_poll_accept_nonblock", 0, "AFD_TCP_LISTEN_BACKLOG_NONBLOCK")
+	assertPtrResource("NtCreateFile$afd_udp_endpoint", 0, "AFD_UDP")
+	assertResource("NtDeviceIoControlFile$afd_bind_tcp", 0, "AFD_TCP")
+	assertResource("NtDeviceIoControlFile$afd_connect_tcp_client_to_listener", 0, "AFD_TCP")
+	assertResource("NtDeviceIoControlFile$afd_start_listen_tcp", 0, "AFD_TCP")
+	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created", 0, "AFD_TCP")
+	assertResource("NtReadFile$afd_tcp_nonblock", 0, "AFD_TCP")
+	assertResource("NtWriteFile$afd_tcp_nonblock", 0, "AFD_TCP")
+	assertResource("NtDeviceIoControlFile$afd_bind_udp", 0, "AFD_UDP")
+	assertResource("NtDeviceIoControlFile$afd_connect_udp_loopback", 0, "AFD_UDP")
+	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_created", 0, "AFD_UDP")
+	assertResource("NtReadFile$afd_udp_peer_nonblock", 0, "AFD_UDP")
+	assertResource("NtWriteFile$afd_udp_peer", 0, "AFD_UDP")
+	assertPtrResource("NtDeviceIoControlFile$afd_rio_create_cq", 8, "AFD_RIO_CQ")
+	assertPtrResource("NtDeviceIoControlFile$afd_rio_register_buffer", 8, "AFD_RIO_BUFFER")
+	for _, meta := range target.Syscalls {
+		if !windowsAfdStatusLikeCall(meta.CallName) {
+			continue
+		}
+		if meta.Ret != nil {
+			t.Fatalf("%s must not model NTSTATUS/BOOL return as a resource: %v", meta.CallName, meta.Ret)
+		}
+	}
 	assertResource("NtFsControlFile", 0, "FILE_HANDLE")
 	assertResource("NtFsControlFile", 1, "EVENT_HANDLE")
 	assertResource("NtFsControlFile$ntfs_get_compression", 0, "FILE_HANDLE")
@@ -1072,13 +886,13 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp", 6, "AFD_CONNECT_JOIN_INFO_TL")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp_nonblock", 6, "AFD_CONNECT_JOIN_INFO_TL")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp_to_listener", 6, "AFD_CONNECT_JOIN_INFO_TL_LISTENER")
-	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener", 6, "Listener", "AFD_TCP_LISTEN_BACKLOG")
+	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener", 6, "Listener", "AFD_TCP")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock", 6, "AFD_CONNECT_JOIN_INFO_TL_LISTENER_NONBLOCK")
-	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock", 6, "Listener", "AFD_TCP_LISTEN_BACKLOG_NONBLOCK")
+	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_listener_nonblock", 6, "Listener", "AFD_TCP")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener", 6, "AFD_CONNECT_JOIN_INFO_TL_LISTENER_DELAYED")
-	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener", 6, "Listener", "AFD_TCP_LISTENING_DELAYED")
+	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener", 6, "Listener", "AFD_TCP")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock", 6, "AFD_CONNECT_JOIN_INFO_TL_LISTENER_DELAYED_NONBLOCK")
-	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock", 6, "Listener", "AFD_TCP_LISTENING_DELAYED_NONBLOCK")
+	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_connect_tcp_to_delayed_listener_nonblock", 6, "Listener", "AFD_TCP")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_udp", 6, "AFD_CONNECT_JOIN_INFO_TL")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_udp_nonblock", 6, "AFD_CONNECT_JOIN_INFO_TL")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_udp_loopback", 6, "AFD_CONNECT_JOIN_INFO_TL_UDP_LOOPBACK")
@@ -1157,30 +971,18 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertPtrStruct("NtDeviceIoControlFile$afd_receive_datagram_udp_peer_nonblock", 6, "AFD_DATAGRAM_INFO")
 	assertPtrStruct("NtDeviceIoControlFile$afd_receive_datagram_udp_bound_nonblock_fast", 6, "AFD_DATAGRAM_INFO_FAST")
 	assertPtrStruct("NtDeviceIoControlFile$afd_receive_datagram_udp_peer_nonblock_fast", 6, "AFD_DATAGRAM_INFO_FAST")
-	assertResource("NtDeviceIoControlFile$afd_transmit_file_tcp_nonblock", 0, "AFD_TCP_CONNECTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_transmit_file_tcp_nonblock", -1, "AFD_TCP_TRANSMIT_PENDING_NONBLOCK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_file_tcp_nonblock", 6, "AFD_TRANSMIT_FILE_INFO_FILE")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_file_tcp_nonblock", 8, "AFD_TRANSMIT_FILE_STATUS")
 	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_transmit_file_tcp_nonblock", 6, "FileHandle", "AFD_TRANSMIT_FILE_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_transmit_file_accept_nonblock", 0, "AFD_TCP_ACCEPTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_transmit_file_accept_nonblock", -1, "AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_file_accept_nonblock", 6, "AFD_TRANSMIT_FILE_INFO_FILE")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_file_accept_nonblock", 8, "AFD_TRANSMIT_FILE_STATUS")
 	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_transmit_file_accept_nonblock", 6, "FileHandle", "AFD_TRANSMIT_FILE_HANDLE")
-	assertResource("NtDeviceIoControlFile$afd_transmit_packets_tcp_nonblock", 0, "AFD_TCP_CONNECTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_transmit_packets_tcp_nonblock", -1, "AFD_TCP_TRANSMIT_PENDING_NONBLOCK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_packets_tcp_nonblock", 6, "AFD_TPACKETS_INFO_MEMORY")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_packets_tcp_nonblock", 8, "AFD_TRANSMIT_FILE_STATUS")
-	assertResource("NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock", 0, "AFD_TCP_ACCEPTED_NONBLOCK")
-	assertResource("NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock", -1, "AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock", 6, "AFD_TPACKETS_INFO_MEMORY")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_packets_accept_nonblock", 8, "AFD_TRANSMIT_FILE_STATUS")
-	assertResource("CloseHandle$afd_tcp_transmit_pending_nonblock", 0, "AFD_TCP_TRANSMIT_PENDING_NONBLOCK")
-	assertResource("CloseHandle$afd_accept_transmit_pending_nonblock", 0, "AFD_TCP_ACCEPTED_TRANSMIT_PENDING_NONBLOCK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_file_reuse_accept_nonblock", 6, "AFD_TRANSMIT_FILE_INFO_FILE_REUSE")
-	assertResource("NtDeviceIoControlFile$afd_transmit_file_reuse_accept_nonblock", -1, "AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_transmit_packets_reuse_accept_nonblock", 6, "AFD_TPACKETS_INFO_MEMORY_REUSE")
-	assertResource("NtDeviceIoControlFile$afd_transmit_packets_reuse_accept_nonblock", -1, "AFD_TCP_ACCEPTED_TRANSMIT_CLOSING_NONBLOCK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_get_address_tcp", 8, "sockaddr_in")
 	assertPtrStruct("NtDeviceIoControlFile$afd_get_address_udp", 8, "sockaddr_in")
 	assertPtrStruct("NtDeviceIoControlFile$afd_query_recv_tcp", 8, "AFD_RECEIVE_INFORMATION")
@@ -3058,6 +2860,10 @@ func TestWindowsAFDDirectEndpointStateCallsAreGeneratable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
 	}
+	target, err = target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
 	tests := []struct {
 		root string
 		want []string
@@ -3132,15 +2938,20 @@ func TestWindowsAFDDirectEndpointStateCallsAreGeneratable(t *testing.T) {
 		if root == nil {
 			t.Fatalf("missing syscall %q", test.root)
 		}
-		ct := target.BuildChoiceTable(nil, map[*prog.Syscall]bool{root: true})
-		if ct == nil {
-			t.Fatalf("BuildChoiceTable(%s) returned nil", test.root)
-		}
+		enabled := map[*prog.Syscall]bool{root: true}
 		for _, name := range test.want {
 			call := target.SyscallMap[name]
 			if call == nil {
 				t.Fatalf("missing syscall %q", name)
 			}
+			enabled[call] = true
+		}
+		ct := target.BuildChoiceTable(nil, enabled)
+		if ct == nil {
+			t.Fatalf("BuildChoiceTable(%s) returned nil", test.root)
+		}
+		for _, name := range test.want {
+			call := target.SyscallMap[name]
 			if !ct.Generatable(call.ID) {
 				t.Fatalf("%s scaffold call %q is not generatable", test.root, name)
 			}
@@ -3153,6 +2964,10 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
 	}
+	target, err = target.ApplyTargetProfile(target, "afd")
+	if err != nil {
+		t.Fatalf("ApplyTargetProfile(afd): %v", err)
+	}
 	tests := []struct {
 		root string
 		want []string
@@ -3161,7 +2976,6 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 			root: "NtDeviceIoControlFile$afd_start_listen_tcp",
 			want: []string{
 				"NtCreateFile$afd_tcp_endpoint",
-				"NtDeviceIoControlFile$afd_bind_tcp_listener",
 				"NtDeviceIoControlFile$afd_start_listen_tcp",
 			},
 		},
@@ -3169,8 +2983,6 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 			root: "NtDeviceIoControlFile$afd_send_udp_peer",
 			want: []string{
 				"NtCreateFile$afd_udp_endpoint",
-				"NtDeviceIoControlFile$afd_bind_udp",
-				"NtDeviceIoControlFile$afd_connect_udp_loopback",
 				"NtDeviceIoControlFile$afd_send_udp_peer",
 			},
 		},
@@ -3178,8 +2990,6 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 			root: "NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock",
 			want: []string{
 				"NtCreateFile$afd_udp_endpoint",
-				"NtDeviceIoControlFile$afd_set_information_nonblock_udp_created",
-				"NtDeviceIoControlFile$afd_bind_udp_nonblock",
 				"NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock",
 			},
 		},
@@ -3187,8 +2997,6 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 			root: "NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock_irp",
 			want: []string{
 				"NtCreateFile$afd_udp_endpoint",
-				"NtDeviceIoControlFile$afd_set_information_nonblock_udp_created",
-				"NtDeviceIoControlFile$afd_bind_udp_nonblock",
 				"NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock_irp",
 			},
 		},
@@ -3196,8 +3004,6 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 			root: "NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock_sockaddr",
 			want: []string{
 				"NtCreateFile$afd_udp_endpoint",
-				"NtDeviceIoControlFile$afd_set_information_nonblock_udp_created",
-				"NtDeviceIoControlFile$afd_bind_udp_nonblock",
 				"NtDeviceIoControlFile$afd_send_datagram_udp_bound_nonblock_sockaddr",
 			},
 		},
