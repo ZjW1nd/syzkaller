@@ -33,6 +33,8 @@
 #define HYPERCALL_KAFL_SYZ_COV_RESET 42
 #define HYPERCALL_KAFL_SYZ_COV_DUMP 43
 #define HYPERCALL_KAFL_REQUEST_RELOAD 44
+#define HYPERCALL_KAFL_SYZ_COV_SESSION_BEGIN 45
+#define HYPERCALL_KAFL_SYZ_COV_SESSION_END 46
 
 #define KAFL_MODE_64 0
 #define HPRINTF_MAX_SIZE 0x1000
@@ -97,6 +99,20 @@ typedef struct {
 	uint32_t slot_id;
 	uint64_t flags;
 } __attribute__((packed)) kafl_syz_cov_cmd_t;
+
+typedef struct {
+	uint32_t version;
+	uint32_t size;
+	uint64_t session_id;
+	uint32_t call_index;
+	uint32_t slot_id;
+	uint64_t flags;
+	uint64_t tid;
+	uint64_t teb;
+} __attribute__((packed)) kafl_syz_cov_session_cmd_t;
+
+#define SYZ_COV_SESSION_VERSION 3u
+#define SYZ_COV_FLAG_REQUEST_RESET (1ull << 63)
 
 typedef struct {
 	uint32_t magic;

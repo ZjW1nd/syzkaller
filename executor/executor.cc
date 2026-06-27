@@ -289,6 +289,7 @@ static bool flag_threaded;
 static bool flag_comparisons;
 
 static uint64 request_id;
+static std::atomic<uint64> nyx_cov_session_seq{1};
 static rpc::RequestType request_type;
 static uint64 all_call_signal;
 static bool all_extra_signal;
@@ -2857,7 +2858,7 @@ static int nyx_mode_loop(int argc, char** argv)
 
 		cov_cmd.call_index = 0;
 		cov_cmd.slot_id = 0;
-		cov_cmd.flags = 0;
+		cov_cmd.flags = SYZ_COV_FLAG_REQUEST_RESET;
 
 #if SYZ_NYX_WINDOWS_DEMO && !SYZ_NYX_USE_GENERIC_PATH
 		nyx_hprintf("nyx demo direct path forced calls=%u prog=%u\n",
@@ -2878,6 +2879,7 @@ static int nyx_mode_loop(int argc, char** argv)
 		nyx_hprintf("nyx exec stage=pre_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_cov_reset", meta->request_id, msg->num_calls());
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd);
+		cov_cmd.flags = 0;
 		nyx_hprintf("nyx exec stage=post_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_cov_reset", meta->request_id, msg->num_calls());
 		nyx_hprintf("nyx exec stage=pre_execute_one request=%lld\n", (long long)meta->request_id);
@@ -3014,6 +3016,22 @@ static bool is_windows_nyx_vnet_call(const call_t* call)
 			      strcmp(call->name, "syz_extract_tcp_res$windows") == 0 ||
 			      strcmp(call->name, "syz_extract_tcp_res$windows_synack") == 0);
 }
+
+static void nyx_init_syz_cov_session_cmd(kafl_syz_cov_session_cmd_t* cmd, thread_t* th)
+{
+	uint64 seq = nyx_cov_session_seq.fetch_add(1, std::memory_order_relaxed);
+	memset(cmd, 0, sizeof(*cmd));
+	cmd->version = SYZ_COV_SESSION_VERSION;
+	cmd->size = sizeof(*cmd);
+	cmd->session_id = (request_id << 32) ^ ((uint64)(uint32)th->call_index << 16) ^ seq;
+	if (cmd->session_id == 0)
+		cmd->session_id = seq ? seq : 1;
+	cmd->call_index = (uint32)th->call_index;
+	cmd->slot_id = 0;
+	cmd->flags = 0;
+	cmd->tid = GetCurrentThreadId();
+	cmd->teb = __readgsqword(0x30) & 0xFFFFFFFF;
+}
 #endif
 
 void execute_call(thread_t* th)
@@ -3056,24 +3074,37 @@ void execute_call(thread_t* th)
 		failmsg("nyx_prepare_syscall failed", "call=%d name=%s", th->call_num,
 			call->name ? call->name : "<null>");
 #endif
+	kafl_syz_cov_session_cmd_t cov_session_cmd = {};
+	bool nyx_use_session_cov = cover_collection_required();
 	if (is_windows_nyx_vnet_call(call)) {
 		nyx_log_exec_stage("execute_call_vnet_no_acquire", th->id, th->call_num, th->num_args);
 		NONFAILING(th->res = execute_syscall(call, th->args));
 		nyx_log_exec_stage("execute_call_vnet_done", th->id, th->call_num, (uint64)th->res, errno);
 		goto windows_nyx_call_done;
 	}
-	nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
-	{
-		kafl_syz_cov_cmd_t cov_cmd_ = {(uint32)th->call_index, 0, 0};
-		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd_);
+	if (nyx_use_session_cov) {
+		nyx_log_exec_stage("execute_call_pre_cov_session_begin", th->id, th->call_num, th->num_args);
+		nyx_init_syz_cov_session_cmd(&cov_session_cmd, th);
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_SESSION_BEGIN,
+			      (uint64_t)(uintptr_t)&cov_session_cmd);
+	} else {
+		nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
+		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE,
+			      ((uint64_t)GetCurrentThreadId() << 32) |
+				      (__readgsqword(0x30) & 0xFFFFFFFF));
 	}
-	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
 #endif
 	NONFAILING(th->res = execute_syscall(call, th->args));
 #if GOOS_windows
-	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
-	nyx_log_thread_stage("execute_call_after_release", th, (uint64)th->res, errno);
-	// Per-call coverage is dumped by the RELEASE handler in QEMU.
+	if (nyx_use_session_cov) {
+		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_SESSION_END,
+			      (uint64_t)(uintptr_t)&cov_session_cmd);
+		nyx_log_thread_stage("execute_call_after_cov_session_end", th, (uint64)th->res, errno);
+	} else {
+		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
+		nyx_log_thread_stage("execute_call_after_release", th, (uint64)th->res, errno);
+	}
+	// Per-call coverage is dumped by the QEMU session END handler.
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE
 	nyx_log_thread_stage("execute_call_pre_finish_syscall", th, (uint64)th->res, errno);
 	nyx_finish_syscall(call, th->args);
