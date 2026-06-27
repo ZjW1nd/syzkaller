@@ -32,11 +32,18 @@ func writeCoverageDump(t *testing.T, path string, records []nyxCovDumpRecord) {
 		t.Fatal(err)
 	}
 	for _, rec := range records {
-		raw := nyxCovRecord{
-			CallIndex: rec.CallIndex,
-			SlotID:    rec.SlotID,
-			Flags:     rec.Flags,
-			PCCount:   uint32(len(rec.PCs)),
+		raw := nyxCovRecordV3{
+			CallIndex:        rec.CallIndex,
+			SlotID:           rec.SlotID,
+			Flags:            rec.Flags,
+			PCCount:          uint32(len(rec.PCs)),
+			SessionID:        rec.SessionID,
+			Tid:              rec.Tid,
+			Teb:              rec.Teb,
+			SourceID:         rec.SourceID,
+			ChunkIndex:       rec.ChunkIndex,
+			CPUMask:          rec.CPUMask,
+			SourceGeneration: rec.SourceGeneration,
 		}
 		if err := binary.Write(buf, binary.LittleEndian, &raw); err != nil {
 			t.Fatal(err)
@@ -299,6 +306,95 @@ func TestParseCoverageDumpMultipleRecords(t *testing.T) {
 	}
 }
 
+func TestParseCoverageDumpV3Metadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syz_cov.bin")
+	want := []nyxCovDumpRecord{
+		{
+			CallIndex:        1,
+			SlotID:           2,
+			Flags:            3,
+			SessionID:        0x1234,
+			Tid:              0x55,
+			Teb:              0x6677,
+			SourceID:         4,
+			ChunkIndex:       5,
+			CPUMask:          1 << 3,
+			SourceGeneration: 9,
+			PCs:              []uint64{0xaa, 0xbb},
+		},
+	}
+	writeCoverageDump(t, path, want)
+
+	got, _, err := parseCoverageDump(path)
+	if err != nil {
+		t.Fatalf("parseCoverageDump failed: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d records, want 1", len(got))
+	}
+	if got[0].CallIndex != want[0].CallIndex ||
+		got[0].SlotID != want[0].SlotID ||
+		got[0].Flags != want[0].Flags ||
+		got[0].SessionID != want[0].SessionID ||
+		got[0].Tid != want[0].Tid ||
+		got[0].Teb != want[0].Teb ||
+		got[0].SourceID != want[0].SourceID ||
+		got[0].ChunkIndex != want[0].ChunkIndex ||
+		got[0].CPUMask != want[0].CPUMask ||
+		got[0].SourceGeneration != want[0].SourceGeneration {
+		t.Fatalf("metadata mismatch: got %+v want %+v", got[0], want[0])
+	}
+	if !uint64SlicesEqual(got[0].PCs, want[0].PCs) {
+		t.Fatalf("pcs mismatch: got %#v want %#v", got[0].PCs, want[0].PCs)
+	}
+}
+
+func TestParseCoverageDumpV2Compatibility(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "syz_cov_v2.bin")
+	buf := new(bytes.Buffer)
+	hdr := nyxCovHeader{
+		Magic:       nyxCovMagic,
+		Version:     2,
+		RecordCount: 1,
+	}
+	rec := nyxCovRecord{
+		CallIndex: 7,
+		SlotID:    8,
+		Flags:     9,
+		PCCount:   1,
+	}
+	if err := binary.Write(buf, binary.LittleEndian, &hdr); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(buf, binary.LittleEndian, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(buf, binary.LittleEndian, uint64(0xdead)); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Write(buf, binary.LittleEndian, uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, comps, err := parseCoverageDump(path)
+	if err != nil {
+		t.Fatalf("parseCoverageDump failed: %v", err)
+	}
+	if len(got) != 1 || len(comps) != 0 {
+		t.Fatalf("got records=%d comps=%d, want records=1 comps=0", len(got), len(comps))
+	}
+	if got[0].CallIndex != rec.CallIndex || got[0].SlotID != rec.SlotID ||
+		got[0].Flags != rec.Flags || !uint64SlicesEqual(got[0].PCs, []uint64{0xdead}) {
+		t.Fatalf("v2 record mismatch: got %+v", got[0])
+	}
+	if got[0].SessionID != 0 || got[0].SourceID != 0 || got[0].CPUMask != 0 {
+		t.Fatalf("v2 metadata should be zero: got %+v", got[0])
+	}
+}
+
 func TestParseCoverageDumpRejectsBadMagic(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "syz_cov.bin")
 	buf := new(bytes.Buffer)
@@ -473,6 +569,75 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 	}
 	if got := res.Info.Calls[2].Signal; len(got) != 2 || got[0] != 0x30 || got[1] != 0x40 {
 		t.Fatalf("call 2 signal mismatch: %#v", got)
+	}
+}
+
+func TestInjectCoverageInterleavedConcurrentRecords(t *testing.T) {
+	req := &flatrpc.ExecRequest{
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags: flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagCollectSignal,
+		},
+	}
+	res := &flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(3),
+	}
+	execMsg := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type:  flatrpc.ExecutorMessagesRawExecResult,
+			Value: res,
+		},
+	}
+	covRecords := []nyxCovDumpRecord{
+		{CallIndex: 1, PCs: []uint64{0x101, 0x102}},
+		{CallIndex: 0, PCs: []uint64{0x201}},
+		{CallIndex: 1, PCs: []uint64{0x103}},
+		{CallIndex: 2, PCs: []uint64{0x301, 0x302}},
+	}
+
+	if err := injectCoverage(req, execMsg, false, false, moduleRangeCanonicalizer{}, covRecords, nil); err != nil {
+		t.Fatalf("injectCoverage failed: %v", err)
+	}
+	if want := []uint64{0x101, 0x102, 0x103}; !uint64SlicesEqual(res.Info.Calls[1].Cover, want) {
+		t.Fatalf("call 1 cover mismatch: got %#v want %#v", res.Info.Calls[1].Cover, want)
+	}
+	if want := []uint64{0x201}; !uint64SlicesEqual(res.Info.Calls[0].Cover, want) {
+		t.Fatalf("call 0 cover mismatch: got %#v want %#v", res.Info.Calls[0].Cover, want)
+	}
+	if want := []uint64{0x301, 0x302}; !uint64SlicesEqual(res.Info.Calls[2].Cover, want) {
+		t.Fatalf("call 2 cover mismatch: got %#v want %#v", res.Info.Calls[2].Cover, want)
+	}
+}
+
+func TestInjectCoverageDoesNotCreateCrossRecordEdges(t *testing.T) {
+	req := &flatrpc.ExecRequest{
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags: flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagCollectSignal,
+		},
+	}
+	res := &flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(1),
+	}
+	execMsg := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type:  flatrpc.ExecutorMessagesRawExecResult,
+			Value: res,
+		},
+	}
+	covRecords := []nyxCovDumpRecord{
+		{CallIndex: 0, PCs: []uint64{0x1001, 0x2017}},
+		{CallIndex: 0, PCs: []uint64{0x3033}},
+	}
+	if err := injectCoverage(req, execMsg, true, false, moduleRangeCanonicalizer{}, covRecords, nil); err != nil {
+		t.Fatalf("injectCoverage failed: %v", err)
+	}
+	wantSignal := append(pcsToSignal(covRecords[0].PCs, true),
+		pcsToSignal(covRecords[1].PCs, true)...)
+	if !uint64SlicesEqual(res.Info.Calls[0].Signal, wantSignal) {
+		t.Fatalf("signal mismatch: got %#v want %#v", res.Info.Calls[0].Signal, wantSignal)
+	}
+	crossRecordSignal := pcsToSignal([]uint64{0x1001, 0x2017, 0x3033}, true)
+	if uint64SlicesEqual(res.Info.Calls[0].Signal, crossRecordSignal) {
+		t.Fatalf("signal unexpectedly contains cross-record edge: %#v", res.Info.Calls[0].Signal)
 	}
 }
 

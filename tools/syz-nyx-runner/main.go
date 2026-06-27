@@ -472,11 +472,47 @@ type nyxCovRecord struct {
 	Reserved  uint32
 }
 
+type nyxCovRecordV3 struct {
+	CallIndex        uint32
+	SlotID           uint32
+	Flags            uint64
+	PCCount          uint32
+	Reserved         uint32
+	SessionID        uint64
+	Tid              uint64
+	Teb              uint64
+	SourceID         uint32
+	ChunkIndex       uint32
+	CPUMask          uint64
+	SourceGeneration uint64
+}
+
+type nyxCovRecordMeta struct {
+	CallIndex        uint32
+	SlotID           uint32
+	Flags            uint64
+	PCCount          uint32
+	SessionID        uint64
+	Tid              uint64
+	Teb              uint64
+	SourceID         uint32
+	ChunkIndex       uint32
+	CPUMask          uint64
+	SourceGeneration uint64
+}
+
 type nyxCovDumpRecord struct {
-	CallIndex uint32
-	SlotID    uint32
-	Flags     uint64
-	PCs       []uint64
+	CallIndex        uint32
+	SlotID           uint32
+	Flags            uint64
+	SessionID        uint64
+	Tid              uint64
+	Teb              uint64
+	SourceID         uint32
+	ChunkIndex       uint32
+	CPUMask          uint64
+	SourceGeneration uint64
+	PCs              []uint64
 }
 
 type moduleCoverageSlotSummary struct {
@@ -540,15 +576,22 @@ type nyxCompEntry struct {
 }
 
 type nyxCovCompRecord struct {
-	CallIndex uint32
-	SlotID    uint32
-	Flags     uint64
-	Comps     []nyxCompEntry
+	CallIndex        uint32
+	SlotID           uint32
+	Flags            uint64
+	SessionID        uint64
+	Tid              uint64
+	Teb              uint64
+	SourceID         uint32
+	ChunkIndex       uint32
+	CPUMask          uint64
+	SourceGeneration uint64
+	Comps            []nyxCompEntry
 }
 
 const (
 	nyxCovMagic        = 0x564f4353
-	nyxCovVersion      = 2
+	nyxCovVersion      = 3
 	nyxCovVersionMinV1 = 1
 )
 
@@ -1892,6 +1935,10 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 		return nil
 	}
 	callCover := make(map[uint32][]uint64)
+	callSignal := make(map[uint32][]uint64)
+	callSignalSeen := make(map[uint32]map[uint64]struct{})
+	collectCover := msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectCover != 0
+	collectSignal := msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectSignal != 0
 	for _, rec := range covRecords {
 		if int(rec.CallIndex) >= len(res.Info.Calls) {
 			return fmt.Errorf("coverage record for call %d out of range (%d calls)",
@@ -1901,16 +1948,31 @@ func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
 		if len(pcs) == 0 {
 			continue
 		}
-		callCover[rec.CallIndex] = append(callCover[rec.CallIndex], pcs...)
+		if collectCover {
+			callCover[rec.CallIndex] = append(callCover[rec.CallIndex], pcs...)
+		}
+		if collectSignal {
+			seen := callSignalSeen[rec.CallIndex]
+			if seen == nil {
+				seen = make(map[uint64]struct{})
+				callSignalSeen[rec.CallIndex] = seen
+			}
+			for _, sig := range pcsToSignal(pcs, coverEdges) {
+				if _, ok := seen[sig]; ok {
+					continue
+				}
+				seen[sig] = struct{}{}
+				callSignal[rec.CallIndex] = append(callSignal[rec.CallIndex], sig)
+			}
+		}
 	}
 	for callIndex, pcs := range callCover {
 		call := res.Info.Calls[callIndex]
-		if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectCover != 0 {
-			call.Cover = append(call.Cover[:0], pcs...)
-		}
-		if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectSignal != 0 {
-			call.Signal = append(call.Signal[:0], pcsToSignal(pcs, coverEdges)...)
-		}
+		call.Cover = append(call.Cover[:0], pcs...)
+	}
+	for callIndex, signal := range callSignal {
+		call := res.Info.Calls[callIndex]
+		call.Signal = append(call.Signal[:0], signal...)
 	}
 	if msg.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectComps != 0 {
 		total := 0
@@ -1974,6 +2036,46 @@ func readCompEntry(data []byte) (nyxCompEntry, error) {
 	}, nil
 }
 
+func readCovRecordMeta(data []byte, off int, version uint16, truncErr string) (nyxCovRecordMeta, int, error) {
+	if version >= 3 {
+		if off+binary.Size(nyxCovRecordV3{}) > len(data) {
+			return nyxCovRecordMeta{}, off, errors.New(truncErr)
+		}
+		var rec nyxCovRecordV3
+		if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
+			return nyxCovRecordMeta{}, off, err
+		}
+		off += binary.Size(rec)
+		return nyxCovRecordMeta{
+			CallIndex:        rec.CallIndex,
+			SlotID:           rec.SlotID,
+			Flags:            rec.Flags,
+			PCCount:          rec.PCCount,
+			SessionID:        rec.SessionID,
+			Tid:              rec.Tid,
+			Teb:              rec.Teb,
+			SourceID:         rec.SourceID,
+			ChunkIndex:       rec.ChunkIndex,
+			CPUMask:          rec.CPUMask,
+			SourceGeneration: rec.SourceGeneration,
+		}, off, nil
+	}
+	if off+binary.Size(nyxCovRecord{}) > len(data) {
+		return nyxCovRecordMeta{}, off, errors.New(truncErr)
+	}
+	var rec nyxCovRecord
+	if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
+		return nyxCovRecordMeta{}, off, err
+	}
+	off += binary.Size(rec)
+	return nyxCovRecordMeta{
+		CallIndex: rec.CallIndex,
+		SlotID:    rec.SlotID,
+		Flags:     rec.Flags,
+		PCCount:   rec.PCCount,
+	}, off, nil
+}
+
 func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1998,14 +2100,11 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, err
 	off := binary.Size(hdr)
 	records := make([]nyxCovDumpRecord, 0, hdr.RecordCount)
 	for range hdr.RecordCount {
-		if off+binary.Size(nyxCovRecord{}) > len(data) {
-			return nil, nil, errors.New("coverage record truncated")
-		}
-		var rec nyxCovRecord
-		if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
+		rec, next, err := readCovRecordMeta(data, off, hdr.Version, "coverage record truncated")
+		if err != nil {
 			return nil, nil, err
 		}
-		off += binary.Size(rec)
+		off = next
 		pcs := make([]uint64, rec.PCCount)
 		for i := range pcs {
 			if off+8 > len(data) {
@@ -2015,10 +2114,17 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, err
 			off += 8
 		}
 		records = append(records, nyxCovDumpRecord{
-			CallIndex: rec.CallIndex,
-			SlotID:    rec.SlotID,
-			Flags:     rec.Flags,
-			PCs:       pcs,
+			CallIndex:        rec.CallIndex,
+			SlotID:           rec.SlotID,
+			Flags:            rec.Flags,
+			SessionID:        rec.SessionID,
+			Tid:              rec.Tid,
+			Teb:              rec.Teb,
+			SourceID:         rec.SourceID,
+			ChunkIndex:       rec.ChunkIndex,
+			CPUMask:          rec.CPUMask,
+			SourceGeneration: rec.SourceGeneration,
+			PCs:              pcs,
 		})
 	}
 	var compRecords []nyxCovCompRecord
@@ -2030,16 +2136,16 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, err
 		off += 4
 		compRecords = make([]nyxCovCompRecord, 0, compRecordCount)
 		for i := uint32(0); i < compRecordCount; i++ {
-			if off+binary.Size(nyxCovRecord{}) > len(data) {
-				return nil, nil, errors.New("comp record header truncated")
-			}
-			var rec nyxCovRecord
-			if err := binary.Read(bytes.NewReader(data[off:off+binary.Size(rec)]), binary.LittleEndian, &rec); err != nil {
+			rec, next, err := readCovRecordMeta(data, off, hdr.Version, "comp record header truncated")
+			if err != nil {
 				return nil, nil, err
 			}
-			off += binary.Size(rec)
+			off = next
 			comps := make([]nyxCompEntry, rec.PCCount)
 			for j := range comps {
+				if off+28 > len(data) {
+					return nil, nil, errors.New("comp body truncated")
+				}
 				ce, err := readCompEntry(data[off : off+28])
 				if err != nil {
 					return nil, nil, err
@@ -2048,10 +2154,17 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, err
 				off += 28
 			}
 			compRecords = append(compRecords, nyxCovCompRecord{
-				CallIndex: rec.CallIndex,
-				SlotID:    rec.SlotID,
-				Flags:     rec.Flags,
-				Comps:     comps,
+				CallIndex:        rec.CallIndex,
+				SlotID:           rec.SlotID,
+				Flags:            rec.Flags,
+				SessionID:        rec.SessionID,
+				Tid:              rec.Tid,
+				Teb:              rec.Teb,
+				SourceID:         rec.SourceID,
+				ChunkIndex:       rec.ChunkIndex,
+				CPUMask:          rec.CPUMask,
+				SourceGeneration: rec.SourceGeneration,
+				Comps:            comps,
 			})
 		}
 	}
