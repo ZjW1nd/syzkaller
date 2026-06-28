@@ -44,6 +44,10 @@
 
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
 
+#ifndef SYZ_NYX_TRACE_EXEC
+#define SYZ_NYX_TRACE_EXEC 0
+#endif
+
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
@@ -415,7 +419,7 @@ struct thread_t {
 static thread_t threads[kMaxThreads];
 static thread_t* last_scheduled;
 // Threads use this variable to access information about themselves.
-static __thread struct thread_t* current_thread;
+static thread_local thread_t* current_thread;
 
 static cover_t extra_cov;
 static bool coverage_initialized;
@@ -997,9 +1001,17 @@ static intptr_t SYSCALLAPI WSARecvMsg(intptr_t s, intptr_t msg, intptr_t bytes,
 static const uint64 kWindowsWorkerIdleYields = 1 << 15;
 static const uint64 kWindowsWorkerIdleWaitMs = 2;
 
+#if SYZ_NYX_TRACE_EXEC && !SYZ_NYX_WINDOWS_DEMO
+#define nyx_trace_hprintf(...) nyx_hprintf(__VA_ARGS__)
+#else
+#define nyx_trace_hprintf(...) \
+	do {                   \
+	} while (0)
+#endif
+
 static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 {
-#if SYZ_NYX_WINDOWS_DEMO
+#if SYZ_NYX_WINDOWS_DEMO || !SYZ_NYX_TRACE_EXEC
 	(void)prog_data;
 	(void)prog_size;
 	return;
@@ -1046,9 +1058,9 @@ static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 }
 
 static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, uint64 a2 = 0,
-			       uint64 a3 = 0)
+				       uint64 a3 = 0)
 {
-#if SYZ_NYX_WINDOWS_DEMO
+#if SYZ_NYX_WINDOWS_DEMO || !SYZ_NYX_TRACE_EXEC
 	(void)stage;
 	(void)a0;
 	(void)a1;
@@ -1083,7 +1095,7 @@ static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, 
 static void nyx_log_thread_stage(const char* stage, const thread_t* th, uint64 a0 = 0,
 				 uint64 a1 = 0, uint64 a2 = 0, uint64 a3 = 0)
 {
-#if SYZ_NYX_WINDOWS_DEMO
+#if SYZ_NYX_WINDOWS_DEMO || !SYZ_NYX_TRACE_EXEC
 	(void)stage;
 	(void)th;
 	(void)a0;
@@ -2738,12 +2750,17 @@ static int nyx_mode_loop(int argc, char** argv)
 			    (unsigned)header->body_size,
 			    (int)payload->size);
 		if (header->kind == SYZ_NYX_KIND_HANDSHAKE) {
-			nyx_hprintf("nyx handshake body ready body=%u total=%d\n",
-				    (unsigned)header->body_size,
-				    (int)payload->size);
+			const bool repeated_handshake = have_handshake;
+			if (!repeated_handshake) {
+				nyx_hprintf("nyx handshake body ready body=%u total=%d\n",
+					    (unsigned)header->body_size,
+					    (int)payload->size);
+			}
 			auto* msg = flatbuffers::GetRoot<rpc::SnapshotHandshake>(body);
-			nyx_hprintf("nyx handshake root parsed body=%u\n",
-				    (unsigned)header->body_size);
+			if (!repeated_handshake) {
+				nyx_hprintf("nyx handshake root parsed body=%u\n",
+					    (unsigned)header->body_size);
+			}
 			hs = {
 			    .magic = kInMagic,
 			    .use_cover_edges = msg->cover_edges(),
@@ -2755,30 +2772,38 @@ static int nyx_mode_loop(int argc, char** argv)
 			    .program_timeout_ms = static_cast<uint64>(msg->program_timeout_ms()),
 			    .slowdown_scale = static_cast<uint64>(msg->slowdown()),
 			};
-			nyx_hprintf("nyx handshake begin env=0x%llx features=0x%llx slowdown=%llu timeouts=%llu/%llu\n",
-				    (unsigned long long)msg->env_flags(),
-				    (unsigned long long)msg->features(),
-				    (unsigned long long)msg->slowdown(),
-				    (unsigned long long)msg->syscall_timeout_ms(),
-				    (unsigned long long)msg->program_timeout_ms());
+			if (!repeated_handshake) {
+				nyx_hprintf("nyx handshake begin env=0x%llx features=0x%llx slowdown=%llu timeouts=%llu/%llu\n",
+					    (unsigned long long)msg->env_flags(),
+					    (unsigned long long)msg->features(),
+					    (unsigned long long)msg->slowdown(),
+					    (unsigned long long)msg->syscall_timeout_ms(),
+					    (unsigned long long)msg->program_timeout_ms());
+			}
 			parse_handshake(hs);
 			setup_coverage();
 #if SYZ_NYX_WINDOWS_SUBMIT_CR3
 			uint64_t cr3 = 0;
 			if (nyx_query_cr3(&cr3)) {
-				nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
-					    (unsigned long long)cr3);
+				if (!repeated_handshake) {
+					nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
+						    (unsigned long long)cr3);
+				}
 				nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
 			} else {
-				nyx_hprintf("nyx handshake query_cr3 unavailable\n");
+				if (!repeated_handshake)
+					nyx_hprintf("nyx handshake query_cr3 unavailable\n");
 			}
 #else
-			nyx_hprintf("nyx handshake submit_cr3 disabled at build time\n");
+			if (!repeated_handshake)
+				nyx_hprintf("nyx handshake submit_cr3 disabled at build time\n");
 #endif
 			have_handshake = true;
-			nyx_hprintf("nyx handshake dumping ack\n");
+			if (!repeated_handshake)
+				nyx_hprintf("nyx handshake dumping ack\n");
 			nyx_dump_ack();
-			nyx_hprintf("nyx handshake ack dumped\n");
+			if (!repeated_handshake)
+				nyx_hprintf("nyx handshake ack dumped\n");
 			continue;
 		}
 
@@ -2838,10 +2863,10 @@ static int nyx_mode_loop(int argc, char** argv)
 		};
 		parse_execute(req);
 		input_data = const_cast<uint8*>(msg->prog_data() ? msg->prog_data()->Data() : nullptr);
-		nyx_hprintf("nyx exec req=%lld proc=%d body=%u prog=%u calls=%d threaded=%d exec_flags=0x%llx\n",
-			    (long long)meta->request_id, meta->proc_id, header->body_size,
-			    msg->prog_data() ? msg->prog_data()->size() : 0, msg->num_calls(),
-			    flag_threaded, (unsigned long long)req.exec_flags);
+		nyx_trace_hprintf("nyx exec req=%lld proc=%d body=%u prog=%u calls=%d threaded=%d exec_flags=0x%llx\n",
+				  (long long)meta->request_id, meta->proc_id, header->body_size,
+				  msg->prog_data() ? msg->prog_data()->size() : 0, msg->num_calls(),
+				  flag_threaded, (unsigned long long)req.exec_flags);
 		nyx_log_exec_preview(input_data, msg->prog_data() ? msg->prog_data()->size() : 0);
 
 		memset(results, 0, sizeof(results));
@@ -2867,32 +2892,32 @@ static int nyx_mode_loop(int argc, char** argv)
 		auto demo_result = nyx_demo_execute_request(output_data, meta->proc_id,
 							    meta->request_id, freshness++,
 							    msg, &cov_cmd);
-		nyx_finish_exec_payload(meta, msg->num_calls());
 		nyx_dump_exec_result(NYX_RESULT_BASENAME, demo_result);
+		nyx_finish_exec_payload(meta, msg->num_calls());
 		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
 			    (long long)meta->request_id, (unsigned)demo_result.size());
 		continue;
 #endif
-		nyx_hprintf("nyx generic branch selected calls=%u\n", msg->num_calls());
+		nyx_trace_hprintf("nyx generic branch selected calls=%u\n", msg->num_calls());
 
 		uint64_t exec_start = current_time_ms();
-		nyx_hprintf("nyx exec stage=pre_cov_reset request=%lld\n", (long long)meta->request_id);
+		nyx_trace_hprintf("nyx exec stage=pre_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_cov_reset", meta->request_id, msg->num_calls());
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_RESET, (uint64_t)(uintptr_t)&cov_cmd);
 		cov_cmd.flags = 0;
-		nyx_hprintf("nyx exec stage=post_cov_reset request=%lld\n", (long long)meta->request_id);
+		nyx_trace_hprintf("nyx exec stage=post_cov_reset request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_cov_reset", meta->request_id, msg->num_calls());
-		nyx_hprintf("nyx exec stage=pre_execute_one request=%lld\n", (long long)meta->request_id);
+		nyx_trace_hprintf("nyx exec stage=pre_execute_one request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_execute_one", meta->request_id, msg->num_calls());
 		execute_one();
-		nyx_hprintf("nyx exec stage=post_execute_one request=%lld\n", (long long)meta->request_id);
+		nyx_trace_hprintf("nyx exec stage=post_execute_one request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_execute_one", meta->request_id, msg->num_calls(),
 				   output_data->completed.load(std::memory_order_relaxed));
-		nyx_hprintf("nyx exec stage=post_release request=%lld\n", (long long)meta->request_id);
-		nyx_hprintf("nyx exec returned request=%lld\n", (long long)meta->request_id);
+		nyx_trace_hprintf("nyx exec stage=post_release request=%lld\n", (long long)meta->request_id);
+		nyx_trace_hprintf("nyx exec returned request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_cov_dump", meta->request_id, msg->num_calls());
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_DUMP, (uint64_t)(uintptr_t)&cov_cmd);
-		nyx_hprintf("nyx cov dumped request=%lld\n", (long long)meta->request_id);
+		nyx_trace_hprintf("nyx cov dumped request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_cov_dump", meta->request_id, msg->num_calls(),
 				   output_data->completed.load(std::memory_order_relaxed));
 
@@ -2903,14 +2928,14 @@ static int nyx_mode_loop(int argc, char** argv)
 					    freshness++, 0, false, nullptr);
 		nyx_log_exec_stage("nyx_post_finish_output", meta->request_id, result.size(),
 				   output_data->completed.load(std::memory_order_relaxed));
-		nyx_log_exec_stage("nyx_pre_finish_payload", meta->request_id, msg->num_calls());
-		nyx_finish_exec_payload(meta, msg->num_calls());
-		nyx_log_exec_stage("nyx_post_finish_payload", meta->request_id, msg->num_calls());
 		nyx_log_exec_stage("nyx_pre_result_dump", meta->request_id, result.size());
 		bool dumped = nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
 		nyx_log_exec_stage("nyx_post_result_dump", meta->request_id, result.size(), dumped);
-		nyx_hprintf("nyx result dumped request=%lld bytes=%u\n",
-			    (long long)meta->request_id, (unsigned)result.size());
+		nyx_trace_hprintf("nyx result dumped request=%lld bytes=%u\n",
+				  (long long)meta->request_id, (unsigned)result.size());
+		nyx_log_exec_stage("nyx_pre_finish_payload", meta->request_id, msg->num_calls());
+		nyx_finish_exec_payload(meta, msg->num_calls());
+		nyx_log_exec_stage("nyx_post_finish_payload", meta->request_id, msg->num_calls());
 	}
 }
 #endif

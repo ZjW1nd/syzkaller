@@ -857,6 +857,8 @@ func hprintfStage(msg string) string {
 		return "result_dump"
 	case strings.HasPrefix(msg, "nyx result requesting reload"):
 		return "request_reload"
+	case strings.HasPrefix(msg, "nyx request boundary reload ready"):
+		return "request_boundary_reload_ready"
 	case strings.HasPrefix(msg, "nyx handshake"):
 		return "handshake"
 	case strings.HasPrefix(msg, "nyx module range"):
@@ -1451,15 +1453,21 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	steps := 0
 	deadline := time.Now().Add(vm.execWaitTimeout())
 	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
+	reloadRequested := false
+	reloadBoundarySettled := false
 	for {
 		if data, err := os.ReadFile(resultPath); err == nil {
-			vm.debugLogf("runner exec result observed before step=%d", steps)
-			vm.recordTrace("runner", "exec_result_file", requestID, traceFields("step", steps, "bytes", len(data)))
-			msg, err := parseExecResult(data)
-			if err != nil {
-				return nil, err
+			if reloadRequested && !reloadBoundarySettled {
+				vm.debugLogf("runner exec result ready at step=%d but reload boundary is still pending", steps)
+			} else {
+				vm.debugLogf("runner exec result observed before step=%d", steps)
+				vm.recordTrace("runner", "exec_result_file", requestID, traceFields("step", steps, "bytes", len(data)))
+				msg, err := parseExecResult(data)
+				if err != nil {
+					return nil, err
+				}
+				return msg, nil
 			}
-			return msg, nil
 		}
 		if time.Now().After(deadline) {
 			log.Logf(0, "runner exec wait deadline expired after %d steps; synthesizing hanged result", steps)
@@ -1484,22 +1492,41 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		}
 		steps++
 		vm.recordAuxTrace("exec_step", requestID)
+		postState := vm.aux.state()
+		postExecDone := vm.aux.execDone()
+		postExecCode := vm.aux.execCode()
+		postMisc := string(vm.aux.misc())
+		postMiscTrimmed := strings.TrimSpace(postMisc)
 		vm.debugLogf("runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
-			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
-			strings.TrimSpace(string(vm.aux.misc())))
+			steps, postState, postExecDone, postExecCode,
+			postMiscTrimmed)
 		if vm.aux.pageFault() {
 			vm.recordAuxTrace("page_fault", requestID)
 			vm.aux.dumpPage(vm.aux.pageAddr())
 			continue
 		}
-		switch vm.aux.execCode() {
+		if postExecCode == nyxRCHprintf {
+			stage := hprintfStage(postMiscTrimmed)
+			if stage == "request_reload" {
+				reloadRequested = true
+			}
+			if reloadRequested && stage == "request_boundary_reload_ready" {
+				reloadBoundarySettled = true
+				vm.debugLogf("runner exec reload boundary settled at step=%d via %s", steps, stage)
+			}
+		}
+		if reloadRequested && postExecDone && postExecCode == nyxRCSuccess && postMiscTrimmed == "" {
+			reloadBoundarySettled = true
+			vm.debugLogf("runner exec reload boundary settled at step=%d", steps)
+		}
+		switch postExecCode {
 		case nyxRCCrash, nyxRCSanitizer:
 			vm.recordAuxTrace("exec_crash", requestID)
-			return nil, vm.makeCrashError(vm.aux.execCode(), req)
+			return nil, vm.makeCrashError(postExecCode, req)
 		case nyxRCHprintf:
 			vm.recordHprintfTrace(requestID)
 			vm.recordModuleRangesFromAux()
-			vm.debugLogf("nyx hprintf: %s", string(vm.aux.misc()))
+			vm.debugLogf("nyx hprintf: %s", postMisc)
 			continue
 		case nyxRCTimeout:
 			log.Logf(0, "runner exec timeout at step=%d; synthesizing hanged result", steps)
@@ -1507,9 +1534,9 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			return synthesizeHangedResult(req), nil
 		case nyxRCAbort:
 			vm.recordAuxTrace("exec_abort", requestID)
-			return nil, fmt.Errorf("guest abort: %s", string(vm.aux.misc()))
+			return nil, fmt.Errorf("guest abort: %s", postMisc)
 		}
-		if vm.aux.execDone() {
+		if postExecDone {
 			vm.debugLogf("runner exec observed exec_done at step=%d but result file is not present yet", steps)
 			vm.recordAuxTrace("exec_done_without_result", requestID)
 		}

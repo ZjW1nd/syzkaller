@@ -179,7 +179,7 @@ static inline uint64_t nyx_hypercall(uint64_t p1, uint64_t p2)
 
 static inline void nyx_hprintf(const char* fmt, ...)
 {
-	static char buf[HPRINTF_MAX_SIZE] __attribute__((aligned(4096)));
+	static thread_local char buf[HPRINTF_MAX_SIZE] __attribute__((aligned(4096)));
 	va_list args;
 	va_start(args, fmt);
 	vsnprintf(buf, sizeof(buf), fmt, args);
