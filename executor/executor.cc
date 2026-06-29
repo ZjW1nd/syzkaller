@@ -995,6 +995,7 @@ static intptr_t SYSCALLAPI WSARecvMsg(intptr_t s, intptr_t msg, intptr_t bytes,
 #if GOOS_windows
 static const uint64 kWindowsWorkerIdleYields = 1 << 15;
 static const uint64 kWindowsWorkerIdleWaitMs = 2;
+static const uint64 kWindowsWorkerIdleDrainWaitMs = 50;
 
 static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 {
@@ -1127,6 +1128,24 @@ static int windows_yield_until_event(event_t* ev, uint64 max_yields, uint64 max_
 			Sleep(0);
 	}
 	return event_isset(ev);
+}
+
+static void windows_drain_worker_idle_before_nyx_result()
+{
+	if (!flag_threaded)
+		return;
+	for (int i = 0; i < kMaxThreads; i++) {
+		thread_t* th = &threads[i];
+		if (!th->created || th->executing)
+			continue;
+		nyx_log_thread_stage("nyx_worker_idle_drain_begin", th,
+				     event_isset(&th->idle), th->handoff_seq,
+				     th->worker_wait_seq);
+		int idle_seen = windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,
+							  kWindowsWorkerIdleDrainWaitMs);
+		nyx_log_thread_stage("nyx_worker_idle_drain_done", th, idle_seen,
+				     event_isset(&th->idle), th->worker_wait_seq);
+	}
 }
 #endif
 
@@ -2886,6 +2905,9 @@ static int nyx_mode_loop(int argc, char** argv)
 		nyx_hprintf("nyx exec stage=post_execute_one request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_post_execute_one", meta->request_id, msg->num_calls(),
 				   output_data->completed.load(std::memory_order_relaxed));
+#if GOOS_windows
+		windows_drain_worker_idle_before_nyx_result();
+#endif
 		nyx_hprintf("nyx exec stage=post_release request=%lld\n", (long long)meta->request_id);
 		nyx_hprintf("nyx exec returned request=%lld\n", (long long)meta->request_id);
 		nyx_log_exec_stage("nyx_pre_cov_dump", meta->request_id, msg->num_calls());

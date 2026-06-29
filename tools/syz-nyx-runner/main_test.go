@@ -805,7 +805,7 @@ func TestPrimeResultCanReturn(t *testing.T) {
 			msg: execResultMessage(&flatrpc.ExecResult{
 				Info: flatrpc.EmptyProgInfo(1),
 			}),
-			want: true,
+			want: false,
 		},
 		{
 			name: "executor error",

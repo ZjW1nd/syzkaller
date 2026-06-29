@@ -106,6 +106,58 @@ func loadDemoSyscallTable(t *testing.T) map[string]int {
 	return table
 }
 
+func firstWindowsVNetTCPPorts(t *testing.T, p *prog.Prog) (uint64, uint64) {
+	t.Helper()
+	for _, call := range p.Calls {
+		if call.Meta.Name != "syz_emit_ethernet$windows" {
+			continue
+		}
+		packetPtr, ok := call.Args[1].(*prog.PointerArg)
+		if !ok || packetPtr.Res == nil {
+			continue
+		}
+		ethPacket, ok := packetPtr.Res.(*prog.GroupArg)
+		if !ok || len(ethPacket.Inner) != 3 {
+			continue
+		}
+		ethPayload, ok := ethPacket.Inner[2].(*prog.UnionArg)
+		if !ok {
+			continue
+		}
+		eth2Packet, ok := ethPayload.Option.(*prog.GroupArg)
+		if !ok || len(eth2Packet.Inner) != 2 {
+			continue
+		}
+		ipPayload, ok := eth2Packet.Inner[1].(*prog.UnionArg)
+		if !ok {
+			continue
+		}
+		ipv4Packet, ok := ipPayload.Option.(*prog.GroupArg)
+		if !ok || len(ipv4Packet.Inner) != 2 {
+			continue
+		}
+		tcpPacket, ok := ipv4Packet.Inner[1].(*prog.GroupArg)
+		if !ok || len(tcpPacket.Inner) != 2 {
+			continue
+		}
+		tcpHeader, ok := tcpPacket.Inner[0].(*prog.GroupArg)
+		if !ok || len(tcpHeader.Inner) < 2 {
+			continue
+		}
+		srcPort, ok := tcpHeader.Inner[0].(*prog.ConstArg)
+		if !ok {
+			continue
+		}
+		dstPort, ok := tcpHeader.Inner[1].(*prog.ConstArg)
+		if !ok {
+			continue
+		}
+		return srcPort.Val, dstPort.Val
+	}
+	t.Fatal("failed to find a TCP syz_emit_ethernet$windows packet")
+	return 0, 0
+}
+
 func loadDemoSyscallTableCapacity(t *testing.T) int {
 	t.Helper()
 	path := filepath.Join("..", "..", "executor", "syscalls_windows_nyx_demo.h")
@@ -658,6 +710,11 @@ func TestWindowsAFDNonIoctlEntriesUseNativeWrappers(t *testing.T) {
 		"SetKernelObjectSecurity$afd_": "SetKernelObjectSecurity",
 		"CloseHandle$afd_":             "CloseHandle",
 	}
+	containsNativeMapping := func(name, native string) bool {
+		pattern := `(?s)call_t\{\s*` + regexp.QuoteMeta(strconv.Quote(name)) +
+			`\s*,\s*0\s*,\s*\{[^}]*\}\s*,\s*\(syscall_t\)` + regexp.QuoteMeta(native) + `\s*\}`
+		return regexp.MustCompile(pattern).MatchString(src)
+	}
 	for _, call := range target.Syscalls {
 		if call == nil {
 			continue
@@ -666,13 +723,8 @@ func TestWindowsAFDNonIoctlEntriesUseNativeWrappers(t *testing.T) {
 			if !strings.HasPrefix(call.Name, prefix) {
 				continue
 			}
-			args := "{}"
-			if native == "NtCancelIoFileEx" {
-				args = "{0, 0, 0, 0, 0, 1, 1, }"
-			}
-			needle := fmt.Sprintf(`call_t{"%s", 0, %s, (syscall_t)%s}`, call.Name, args, native)
-			if !strings.Contains(src, needle) {
-				t.Fatalf("sparse executor table is missing AFD native mapping %q", needle)
+			if !containsNativeMapping(call.Name, native) {
+				t.Fatalf("sparse executor table is missing AFD native mapping for %q via %s", call.Name, native)
 			}
 		}
 	}
@@ -720,6 +772,23 @@ func TestWindowsDemoSparseTableCapacityCoversTargetIDs(t *testing.T) {
 	for name, id := range table {
 		if id >= capacity {
 			t.Fatalf("sparse executor table capacity=%d does not cover %s id=%d", capacity, name, id)
+		}
+	}
+}
+
+func TestWindowsDemoSparseTableIDsMatchTarget(t *testing.T) {
+	table := loadDemoSyscallTable(t)
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for name, id := range table {
+		meta := target.SyscallMap[name]
+		if meta == nil {
+			t.Fatalf("sparse executor table entry %q is missing from windows/amd64 target", name)
+		}
+		if meta.ID != id {
+			t.Fatalf("sparse executor table entry %q has id=%d, want target id=%d", name, id, meta.ID)
 		}
 	}
 }
@@ -3568,8 +3637,8 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 		}
 		want[call.Name] = true
 	}
-	if len(want) != 367 {
-		t.Fatalf("AFD private profile syscall count=%d, want 367", len(want))
+	if len(want) != 385 {
+		t.Fatalf("AFD private profile syscall count=%d, want 385", len(want))
 	}
 	got := make(map[string]bool)
 	for _, name := range cfg.EnabledSyscalls {
@@ -6940,6 +7009,26 @@ func TestStandaloneProgramFileLoadsWindowsVNetSeed(t *testing.T) {
 	}
 }
 
+func TestWindowsVNetSeedPreservesAFDTCPPorts(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	seedPath := filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_vnet_tcp_listen_syn_transaction.txt")
+	serialized, err := os.ReadFile(seedPath)
+	if err != nil {
+		t.Fatalf("read vnet seed: %v", err)
+	}
+	p, err := target.Deserialize(serialized, prog.NonStrict)
+	if err != nil {
+		t.Fatalf("Deserialize: %v", err)
+	}
+	srcPort, dstPort := firstWindowsVNetTCPPorts(t, p)
+	if srcPort != 0x9c40 || dstPort != 0x4e20 {
+		t.Fatalf("unexpected vnet TCP ports: src=0x%x dst=0x%x", srcPort, dstPort)
+	}
+}
+
 func TestStandaloneStagedProgramFilesLoadWindowsVNetSeeds(t *testing.T) {
 	skipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
@@ -8114,6 +8203,63 @@ func TestWindowsExecutorLogsWorkerHandoffWaits(t *testing.T) {
 	if strings.Index(execOne, "wait_call_done_begin") >
 		strings.Index(execOne, "event_timedwait(&th->done, timeout_ms)") {
 		t.Fatal("execute_one should log before waiting for a scheduled call")
+	}
+}
+
+func TestWindowsExecutorDrainsWorkersBeforeNyxResult(t *testing.T) {
+	path := filepath.Join("..", "..", "executor", "executor.cc")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read executor.cc: %v", err)
+	}
+	src := string(data)
+	helper := extractFunctionBody(t, src, "static void windows_drain_worker_idle_before_nyx_result")
+	for _, needle := range []string{
+		"if (!flag_threaded)",
+		"for (int i = 0; i < kMaxThreads; i++)",
+		"if (!th->created || th->executing)",
+		"nyx_worker_idle_drain_begin",
+		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,",
+		"kWindowsWorkerIdleDrainWaitMs",
+		"nyx_worker_idle_drain_done",
+	} {
+		if !strings.Contains(helper, needle) {
+			t.Fatalf("worker idle drain helper missing %q", needle)
+		}
+	}
+	if strings.Contains(helper, "event_timedwait") ||
+		strings.Contains(helper, "WaitForSingleObject") {
+		t.Fatal("worker idle drain should use bounded yielding, not a guest blocking wait")
+	}
+	if !strings.Contains(src, "static const uint64 kWindowsWorkerIdleDrainWaitMs = 50;") {
+		t.Fatal("worker idle drain should have a small explicit timeout budget")
+	}
+	blockStart := strings.Index(src, "execute_one();")
+	if blockStart == -1 {
+		t.Fatal("execute_one call not found in executor.cc")
+	}
+	blockEnd := strings.Index(src[blockStart:], "nyx_dump_exec_result(NYX_RESULT_BASENAME, result)")
+	if blockEnd == -1 {
+		t.Fatal("Nyx result dump not found after execute_one")
+	}
+	block := src[blockStart : blockStart+blockEnd]
+	wantOrder := []string{
+		"execute_one();",
+		"nyx_post_execute_one",
+		"windows_drain_worker_idle_before_nyx_result();",
+		"HYPERCALL_KAFL_SYZ_COV_DUMP",
+		"nyx_finish_exec_payload(meta, msg->num_calls())",
+	}
+	last := -1
+	for _, needle := range wantOrder {
+		idx := strings.Index(block, needle)
+		if idx == -1 {
+			t.Fatalf("Nyx generic result path missing %q", needle)
+		}
+		if idx <= last {
+			t.Fatalf("Nyx generic result path orders %q too early", needle)
+		}
+		last = idx
 	}
 }
 

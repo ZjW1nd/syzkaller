@@ -3029,6 +3029,63 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 	}
 }
 
+func TestWindowsAFDPrivatePendingReceiveSeedsInjectAfterPendingIRP(t *testing.T) {
+	target, err := prog.GetTarget("windows", "amd64")
+	if err != nil {
+		t.Fatalf("GetTarget: %v", err)
+	}
+	for _, test := range []struct {
+		file    string
+		pending string
+	}{
+		{
+			file:    "test/nyx_afd_private_deep_tcp_vnet_accept_receive_pending.txt",
+			pending: "NtDeviceIoControlFile$afd_receive_accept_pending",
+		},
+		{
+			file:    "test/nyx_afd_private_deep_udp_vnet_receive_pending.txt",
+			pending: "NtDeviceIoControlFile$afd_receive_datagram_udp_bound_pending",
+		},
+	} {
+		data, err := os.ReadFile(test.file)
+		if err != nil {
+			t.Fatalf("ReadFile(%s): %v", test.file, err)
+		}
+		text := string(data)
+		if strings.Contains(text, "WSA") || strings.Contains(text, "socket$") {
+			t.Fatalf("%s should remain direct AFD-only", test.file)
+		}
+		p, err := target.Deserialize(data, prog.NonStrict)
+		if err != nil {
+			t.Fatalf("Deserialize(%s): %v", test.file, err)
+		}
+		if _, err := p.SerializeForExec(); err != nil {
+			t.Fatalf("SerializeForExec(%s): %v", test.file, err)
+		}
+		pending := -1
+		payload := -1
+		for i, call := range p.Calls {
+			if call.Meta == nil {
+				continue
+			}
+			switch call.Meta.Name {
+			case test.pending:
+				pending = i
+			case "syz_emit_ethernet$windows":
+				if pending != -1 {
+					payload = i
+				}
+			}
+		}
+		if pending == -1 {
+			t.Fatalf("%s is missing %s", test.file, test.pending)
+		}
+		if payload == -1 {
+			t.Fatalf("%s should inject vnet payload after posting pending receive", test.file)
+		}
+	}
+}
+
 func generateWindowsProgramFromRoot(target *prog.Target, root *prog.Syscall, seed int64, ncalls int) *prog.Prog {
 	clone := target.Clone()
 	clone.Bias.SelectGeneratedCall = func(_ *prog.Prog, insertionPoint int, _ int, ct *prog.ChoiceTable) int {

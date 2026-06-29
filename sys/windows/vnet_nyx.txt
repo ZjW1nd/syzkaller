@@ -14,18 +14,10 @@ win_vnet_tcp_seq_value [
 	literal	int32be
 ]
 
-win_vnet_tcp_port [
-	afd		sock_port
-	tcp_peer	const[0x9c40, int16be]
-]
-
-win_vnet_udp_port [
-	afd		sock_port
-	udp_recv	const[0x4e26, int16be]
-	udp_fast	const[0x4e27, int16be]
-	udp_msg		const[0x4e28, int16be]
-	udp_peer	const[0x9c40, int16be]
-]
+type win_vnet_tcp_peer_port int16be[40000:40063]
+type win_vnet_tcp_local_port int16be[20000:20004]
+type win_vnet_udp_peer_port int16be[20006:20063]
+type win_vnet_udp_local_port int16be[20006:20016]
 
 win_vnet_tcp_resources {
 	seq	win_vnet_tcp_seq_num
@@ -147,8 +139,8 @@ win_vnet_ipv4_packet [
 win_vnet_tcp_flags = 0x01, 0x02, 0x04, 0x08, 0x10, 0x20
 
 win_vnet_tcp_header {
-	src_port	win_vnet_tcp_port
-	dst_port	win_vnet_tcp_port
+	src_port	win_vnet_tcp_peer_port
+	dst_port	win_vnet_tcp_local_port
 	seq_num		win_vnet_tcp_seq_value
 	ack_num		win_vnet_tcp_seq_value
 	ns		int8:1
@@ -166,8 +158,8 @@ win_vnet_tcp_packet {
 } [packed]
 
 win_vnet_udp_packet {
-	src_port	win_vnet_udp_port
-	dst_port	win_vnet_udp_port
+	src_port	win_vnet_udp_peer_port
+	dst_port	win_vnet_udp_local_port
 	length		len[parent, int16be]
 	csum		csum[parent, pseudo, 17, int16be]
 	payload	array[int8]
