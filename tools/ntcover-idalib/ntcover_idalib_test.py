@@ -3,10 +3,13 @@
 # Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
 import importlib.util
+import json
 import os
+import sys
 import tempfile
 import types
 import unittest
+from unittest import mock
 
 
 SCRIPT = os.path.join(os.path.dirname(__file__), "ntcover_idalib.py")
@@ -96,6 +99,37 @@ class NtCoverIdalibTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no segments"):
             ntcover.check_database_segments([], "afd.sys.i64")
 
+    def test_ida_install_dir_candidates_include_config_dir(self):
+        with tempfile.TemporaryDirectory() as install_dir, tempfile.TemporaryDirectory() as config_dir:
+            config_path = os.path.join(config_dir, "ida-config.json")
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump({"Paths": {"ida-install-dir": install_dir}}, f)
+            original = ntcover.IDA_CONFIG_PATH
+            ntcover.IDA_CONFIG_PATH = config_path
+            try:
+                got = list(ntcover.ida_install_dir_candidates(""))
+            finally:
+                ntcover.IDA_CONFIG_PATH = original
+
+            self.assertEqual(got, [install_dir])
+
+    def test_accept_ida_eula_writes_supported_registry_keys_and_restores_idadir(self):
+        writes = []
+        fake_registry = types.SimpleNamespace(reg_write_int=lambda key, value: writes.append((key, value)))
+        original_idadir = os.environ.get("IDADIR")
+        os.environ["IDADIR"] = "/tmp/original-idadir"
+        try:
+            with mock.patch.dict(sys.modules, {"ida_registry": fake_registry}):
+                ntcover.accept_ida_eula("/tmp/new-idadir")
+        finally:
+            if original_idadir is None:
+                os.environ.pop("IDADIR", None)
+            else:
+                os.environ["IDADIR"] = original_idadir
+
+        self.assertEqual(writes, [(key, 1) for key in ntcover.SUPPORTED_EULA_KEYS])
+        self.assertEqual(os.environ.get("IDADIR"), original_idadir)
+
     def test_raw_snapshot_writes_lighthouse_export(self):
         raw = {
             "module": {"name": "afd.sys", "base": "0x1000", "size": "0x2000"},
@@ -139,26 +173,88 @@ class NtCoverIdalibTest(unittest.TestCase):
                 idalib_python="",
             )
             seen = {}
-            original = ntcover.analyze_with_ida
+            original = ntcover.analyze_with_ida_subprocess
 
-            def fake_analyze(path, got_raw, offsets, lighthouse, decompile, idalib_python):
+            def fake_analyze(path, got_raw, offsets, decompile, idalib_python):
                 seen["path"] = path
                 self.assertNotEqual(path, idb_path)
                 self.assertTrue(path.startswith(output_dir + os.sep))
                 self.assertTrue(os.path.exists(path))
                 with open(path, "rb") as f:
                     self.assertEqual(f.read(), b"idb")
-                return ntcover.raw_snapshot(got_raw, offsets, lighthouse)
+                return ntcover.raw_snapshot(got_raw, offsets, [])
 
-            ntcover.analyze_with_ida = fake_analyze
+            ntcover.analyze_with_ida_subprocess = fake_analyze
             try:
                 snapshot = ntcover.build_snapshot(args, raw)
             finally:
-                ntcover.analyze_with_ida = original
+                ntcover.analyze_with_ida_subprocess = original
 
             self.assertEqual(snapshot["covered_offsets"], [0x10])
             self.assertIn("path", seen)
             self.assertFalse(os.path.exists(seen["path"]))
+
+    def test_ida_worker_failure_falls_back_to_raw_snapshot(self):
+        raw = {
+            "module": {"name": "afd.sys", "base": "0x1000", "size": "0x2000"},
+            "offsets": ["0x20", "0x10"],
+        }
+        with tempfile.TemporaryDirectory() as output_dir:
+            idb_path = os.path.join(output_dir, "source.i64")
+            with open(idb_path, "wb") as f:
+                f.write(b"idb")
+            args = types.SimpleNamespace(
+                manager="",
+                module="afd.sys",
+                idb=idb_path,
+                output_dir=output_dir,
+                no_decompile=True,
+                raw_only_on_ida_error=True,
+                idalib_python="",
+            )
+            original = ntcover.analyze_with_ida_subprocess
+
+            def fake_analyze(path, got_raw, offsets, decompile, idalib_python):
+                raise RuntimeError("idalib exited")
+
+            ntcover.analyze_with_ida_subprocess = fake_analyze
+            try:
+                snapshot = ntcover.build_snapshot(args, raw)
+            finally:
+                ntcover.analyze_with_ida_subprocess = original
+
+            self.assertEqual(snapshot["covered_offsets"], [0x10, 0x20])
+            self.assertEqual(snapshot["lighthouse"], ["afd.sys+10", "afd.sys+20"])
+
+    def test_ida_worker_failure_raises_without_raw_only_flag(self):
+        raw = {
+            "module": {"name": "afd.sys", "base": "0x1000", "size": "0x2000"},
+            "offsets": ["0x20", "0x10"],
+        }
+        with tempfile.TemporaryDirectory() as output_dir:
+            idb_path = os.path.join(output_dir, "source.i64")
+            with open(idb_path, "wb") as f:
+                f.write(b"idb")
+            args = types.SimpleNamespace(
+                manager="",
+                module="afd.sys",
+                idb=idb_path,
+                output_dir=output_dir,
+                no_decompile=True,
+                raw_only_on_ida_error=False,
+                idalib_python="",
+            )
+            original = ntcover.analyze_with_ida_subprocess
+
+            def fake_analyze(path, got_raw, offsets, decompile, idalib_python):
+                raise RuntimeError("idalib exited")
+
+            ntcover.analyze_with_ida_subprocess = fake_analyze
+            try:
+                with self.assertRaisesRegex(RuntimeError, "idalib exited"):
+                    ntcover.build_snapshot(args, raw)
+            finally:
+                ntcover.analyze_with_ida_subprocess = original
 
 
 if __name__ == "__main__":

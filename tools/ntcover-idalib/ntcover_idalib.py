@@ -4,11 +4,13 @@
 
 import argparse
 import bisect
+import contextlib
 import datetime
 import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -20,6 +22,7 @@ import urllib.request
 TOOL_NAME = "ntcover-idalib"
 DEFAULT_IDALIB_PYTHON = "/home/user/ida-pro-9.3/idalib/python"
 IDA_CONFIG_PATH = os.path.expanduser("~/.idapro/ida-config.json")
+SUPPORTED_EULA_KEYS = ("EULA 90", "EULA 91", "EULA 92", "EULA 93", "EULA 94")
 
 
 def http_json(method, url, payload=None):
@@ -29,8 +32,19 @@ def http_json(method, url, payload=None):
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        raw = resp.read()
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as err:
+        detail = ""
+        try:
+            detail = err.read().decode("utf-8", errors="replace").strip()
+        except Exception:
+            detail = ""
+        message = f"HTTP {err.code} {err.reason}"
+        if detail:
+            message += f": {detail}"
+        raise RuntimeError(message) from err
     if not raw:
         return None
     return json.loads(raw.decode("utf-8"))
@@ -77,18 +91,50 @@ def ensure_idalib_python_path(path):
         sys.path.insert(0, path)
 
 
+def ida_install_dir_from_config():
+    if not os.path.exists(IDA_CONFIG_PATH):
+        return ""
+    try:
+        with open(IDA_CONFIG_PATH, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError, TypeError):
+        return ""
+    install_dir = config.get("Paths", {}).get("ida-install-dir", "")
+    if not install_dir:
+        return ""
+    install_dir = os.path.abspath(install_dir)
+    return install_dir if os.path.isdir(install_dir) else ""
+
+
+@contextlib.contextmanager
+def temporary_idadir(path):
+    previous = os.environ.get("IDADIR")
+    try:
+        if path:
+            os.environ["IDADIR"] = path
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("IDADIR", None)
+        else:
+            os.environ["IDADIR"] = previous
+
+
 def check_idalib_environment(idb_path, idalib_python=DEFAULT_IDALIB_PYTHON):
     ensure_idalib_python_path(idalib_python)
     if not os.path.exists(IDA_CONFIG_PATH):
         raise RuntimeError(f"missing IDA config: {IDA_CONFIG_PATH}")
     if idb_path and not os.path.exists(idb_path):
         raise RuntimeError(f"IDB does not exist: {idb_path}")
-    try:
-        import idapro
-    except ImportError as err:
-        raise RuntimeError(
-            f"failed to import idapro; set PYTHONPATH or --idalib-python to IDA's idalib/python directory"
-        ) from err
+    install_dir = next(ida_install_dir_candidates(idalib_python), "")
+    with temporary_idadir(install_dir):
+        try:
+            import idapro
+        except ImportError as err:
+            raise RuntimeError(
+                f"failed to import idapro; set PYTHONPATH or --idalib-python to IDA's idalib/python directory"
+            ) from err
+        accept_ida_eula(install_dir)
     return idapro
 
 
@@ -247,6 +293,107 @@ def copy_idb_to_scratch(idb_path, output_dir):
             pass
         raise
     return scratch_path
+
+
+def ida_install_dir_candidates(idalib_python):
+    candidates = []
+    if idalib_python:
+        path = os.path.abspath(idalib_python)
+        if os.path.basename(path) == "python" and os.path.basename(os.path.dirname(path)) == "idalib":
+            candidates.append(os.path.dirname(os.path.dirname(path)))
+    config_dir = ida_install_dir_from_config()
+    if config_dir:
+        candidates.append(config_dir)
+    env_dir = os.environ.get("IDADIR")
+    if env_dir:
+        candidates.append(os.path.abspath(env_dir))
+    seen = set()
+    for path in candidates:
+        if os.path.isdir(path) and path not in seen:
+            seen.add(path)
+            yield path
+
+
+def accept_ida_eula(install_dir):
+    if not install_dir:
+        return
+    with temporary_idadir(install_dir):
+        import ida_registry
+
+        for key in SUPPORTED_EULA_KEYS:
+            ida_registry.reg_write_int(key, 1)
+
+
+def hexlic_candidates(idalib_python):
+    seen = set()
+    search_dirs = [os.path.expanduser("~/.idapro")]
+    search_dirs.extend(ida_install_dir_candidates(idalib_python))
+    for directory in search_dirs:
+        if directory in seen or not os.path.isdir(directory):
+            continue
+        seen.add(directory)
+        for name in sorted(os.listdir(directory)):
+            if name.lower().endswith(".hexlic"):
+                yield os.path.join(directory, name)
+
+
+def ida_failure_hint(idalib_python):
+    if any(True for _ in hexlic_candidates(idalib_python)):
+        return ""
+    ida_reg = os.path.expanduser("~/.idapro/ida.reg")
+    search_dirs = [os.path.expanduser("~/.idapro")]
+    search_dirs.extend(ida_install_dir_candidates(idalib_python))
+    unique_dirs = []
+    for directory in search_dirs:
+        if directory not in unique_dirs:
+            unique_dirs.append(directory)
+    if os.path.exists(ida_reg):
+        return (
+            f"no .hexlic license file found in {', '.join(unique_dirs)}; "
+            f"only legacy ida.reg is present at {ida_reg}"
+        )
+    return f"no .hexlic license file found in {', '.join(unique_dirs)}"
+
+
+def analyze_with_ida_subprocess(idb_path, raw, offsets, decompile, idalib_python=DEFAULT_IDALIB_PYTHON):
+    with tempfile.TemporaryDirectory(prefix="ntcover-worker-") as work_dir:
+        raw_path = os.path.join(work_dir, "raw.json")
+        snapshot_path = os.path.join(work_dir, "snapshot.json")
+        with open(raw_path, "w", encoding="utf-8") as f:
+            json.dump(raw, f, sort_keys=True)
+        cmd = [
+            sys.executable,
+            os.path.abspath(__file__),
+            "--ida-worker",
+            "--idb",
+            idb_path,
+            "--raw-file",
+            raw_path,
+            "--snapshot-out",
+            snapshot_path,
+        ]
+        if idalib_python:
+            cmd.extend(["--idalib-python", idalib_python])
+        if not decompile:
+            cmd.append("--no-decompile")
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            detail = proc.stderr.strip() or proc.stdout.strip()
+            message = f"IDA worker failed with exit code {proc.returncode}"
+            if detail:
+                message += f": {detail}"
+            hint = ida_failure_hint(idalib_python)
+            if hint:
+                message += f" ({hint})"
+            raise RuntimeError(message)
+        with open(snapshot_path, encoding="utf-8") as f:
+            return json.load(f)
 
 
 def block_has_offset(offsets, start, end):
@@ -420,13 +567,13 @@ def build_snapshot(args, raw=None):
     if args.idb:
         idb_path = copy_idb_to_scratch(args.idb, args.output_dir)
         try:
-            snapshot = analyze_with_ida(
-                idb_path, raw, offsets, lighthouse, not args.no_decompile, args.idalib_python
+            snapshot = analyze_with_ida_subprocess(
+                idb_path, raw, offsets, not args.no_decompile, args.idalib_python
             )
         except Exception as err:
             if not args.raw_only_on_ida_error:
                 raise
-            print(f"IDA analysis failed, uploading raw-only snapshot: {err}", file=sys.stderr)
+            print(f"IDA analysis unavailable, uploading raw-only snapshot: {err}", file=sys.stderr)
             snapshot = raw_snapshot(raw, offsets, lighthouse)
         finally:
             try:
@@ -466,9 +613,10 @@ def run_loop(args):
 
 
 def parse_args(argv):
+    ida_worker = "--ida-worker" in argv
     parser = argparse.ArgumentParser(description="Analyze NTsyzkaller binary coverage with idalib.")
-    parser.add_argument("--manager", required=True, help="syz-manager URL, for example http://127.0.0.1:56741")
-    parser.add_argument("--module", required=True, help="target module name, for example afd.sys")
+    parser.add_argument("--manager", required=not ida_worker, help="syz-manager URL, for example http://127.0.0.1:56741")
+    parser.add_argument("--module", required=not ida_worker, help="target module name, for example afd.sys")
     parser.add_argument("--idb", help="IDA database path. If omitted, only raw module offsets are exported.")
     parser.add_argument("--output-dir", default=".", help="directory for Lighthouse module+offset output")
     parser.add_argument(
@@ -485,11 +633,34 @@ def parse_args(argv):
         action="store_true",
         help="fall back to module+offset export if idalib/Hex-Rays analysis fails",
     )
+    parser.add_argument("--ida-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--raw-file", help=argparse.SUPPRESS)
+    parser.add_argument("--snapshot-out", help=argparse.SUPPRESS)
     return parser.parse_args(argv)
+
+
+def run_ida_worker(args):
+    try:
+        if not args.raw_file or not args.snapshot_out or not args.idb:
+            raise RuntimeError("worker mode requires --raw-file, --snapshot-out, and --idb")
+        with open(args.raw_file, encoding="utf-8") as f:
+            raw = json.load(f)
+        offsets = parse_hex_list(raw.get("offsets", []))
+        snapshot = analyze_with_ida(
+            args.idb, raw, offsets, [], not args.no_decompile, args.idalib_python
+        )
+        with open(args.snapshot_out, "w", encoding="utf-8") as f:
+            json.dump(snapshot, f, sort_keys=True)
+    except Exception as err:
+        print(f"{TOOL_NAME} ida-worker: {err}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv):
     args = parse_args(argv)
+    if args.ida_worker:
+        return run_ida_worker(args)
     if args.once:
         try:
             run_once(args)
