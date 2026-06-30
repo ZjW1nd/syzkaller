@@ -7809,11 +7809,14 @@ func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 		}
 		log := strings.Index(block, "nyx_hprintf(\"nyx result dumped request=%lld bytes=%u\\n\"")
 		if log == -1 {
+			log = strings.Index(block, "nyx_trace_hprintf(\"nyx result dumped request=%lld bytes=%u\\n\"")
+		}
+		if log == -1 {
 			t.Fatalf("%s: result-dumped log not found", label)
 		}
-		if !(finish < dump && dump < log) {
-			t.Fatalf("%s: expected finish < dump < result-log, got finish=%d dump=%d log=%d",
-				label, finish, dump, log)
+		if !(dump < finish && dump < log) {
+			t.Fatalf("%s: expected result dump before finish/log, got dump=%d finish=%d log=%d",
+				label, dump, finish, log)
 		}
 	}
 	helper := extractFunctionBody(t, src, "static void nyx_finish_exec_payload")

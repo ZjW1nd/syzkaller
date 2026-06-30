@@ -545,12 +545,19 @@ type coverageDebugStreamEvent struct {
 }
 
 type coverageDebugStreamCall struct {
-	CallIndex uint32   `json:"call_index"`
-	CallName  string   `json:"call_name,omitempty"`
-	SlotID    uint32   `json:"slot_id"`
-	Module    string   `json:"module,omitempty"`
-	PCs       []string `json:"pcs"`
-	Offsets   []string `json:"offsets,omitempty"`
+	CallIndex        uint32   `json:"call_index"`
+	CallName         string   `json:"call_name,omitempty"`
+	SlotID           uint32   `json:"slot_id"`
+	SessionID        string   `json:"session_id,omitempty"`
+	Tid              string   `json:"tid,omitempty"`
+	Teb              string   `json:"teb,omitempty"`
+	SourceID         uint32   `json:"source_id,omitempty"`
+	ChunkIndex       uint32   `json:"chunk_index,omitempty"`
+	CPUMask          string   `json:"cpu_mask,omitempty"`
+	SourceGeneration uint64   `json:"source_generation,omitempty"`
+	Module           string   `json:"module,omitempty"`
+	PCs              []string `json:"pcs"`
+	Offsets          []string `json:"offsets,omitempty"`
 }
 
 type moduleRuntimeRange struct {
@@ -596,7 +603,8 @@ const (
 )
 
 type qemuAux struct {
-	data []byte
+	data   []byte
+	frozen []byte
 }
 
 func openAux(path string) (*qemuAux, error) {
@@ -624,16 +632,40 @@ func (a *qemuAux) close() {
 	_ = unix.Munmap(a.data)
 }
 
+func (a *qemuAux) view() []byte {
+	if len(a.frozen) != 0 {
+		return a.frozen
+	}
+	return a.data
+}
+
+func (a *qemuAux) freeze() {
+	if len(a.data) == 0 {
+		a.frozen = nil
+		return
+	}
+	if cap(a.frozen) < len(a.data) {
+		a.frozen = make([]byte, len(a.data))
+	} else {
+		a.frozen = a.frozen[:len(a.data)]
+	}
+	copy(a.frozen, a.data)
+}
+
+func (a *qemuAux) clearFreeze() {
+	a.frozen = nil
+}
+
 func (a *qemuAux) state() uint8 {
-	return a.data[nyxStateOffset]
+	return a.view()[nyxStateOffset]
 }
 
 func (a *qemuAux) execDone() bool {
-	return a.data[nyxResultExecDoneOffset] != 0
+	return a.view()[nyxResultExecDoneOffset] != 0
 }
 
 func (a *qemuAux) execCode() uint8 {
-	return a.data[nyxResultExecCodeOffset]
+	return a.view()[nyxResultExecCodeOffset]
 }
 
 // reloaded reports whether nyx restored the root snapshot during the last
@@ -641,27 +673,29 @@ func (a *qemuAux) execCode() uint8 {
 // the VM is already back at the primed root snapshot, so no full VM restart is
 // needed to recover from a hanged request.
 func (a *qemuAux) reloaded() bool {
-	return a.data[nyxResultReloadedOffset] != 0
+	return a.view()[nyxResultReloadedOffset] != 0
 }
 
 func (a *qemuAux) ptOverflow() bool {
-	return a.data[nyxResultPtOverflowOff] != 0
+	return a.view()[nyxResultPtOverflowOff] != 0
 }
 
 func (a *qemuAux) pageFault() bool {
-	return a.data[nyxResultPageFaultOff] != 0
+	return a.view()[nyxResultPageFaultOff] != 0
 }
 
 func (a *qemuAux) pageAddr() uint64 {
-	return binary.LittleEndian.Uint64(a.data[nyxResultPageAddrOff : nyxResultPageAddrOff+8])
+	view := a.view()
+	return binary.LittleEndian.Uint64(view[nyxResultPageAddrOff : nyxResultPageAddrOff+8])
 }
 
 func (a *qemuAux) misc() []byte {
-	mlen := binary.LittleEndian.Uint16(a.data[nyxMiscOffset : nyxMiscOffset+2])
-	if nyxMiscOffset+2+int(mlen) > len(a.data) {
-		mlen = uint16(len(a.data) - nyxMiscOffset - 2)
+	view := a.view()
+	mlen := binary.LittleEndian.Uint16(view[nyxMiscOffset : nyxMiscOffset+2])
+	if nyxMiscOffset+2+int(mlen) > len(view) {
+		mlen = uint16(len(view) - nyxMiscOffset - 2)
 	}
-	return append([]byte{}, a.data[nyxMiscOffset+2:nyxMiscOffset+2+int(mlen)]...)
+	return append([]byte{}, view[nyxMiscOffset+2:nyxMiscOffset+2+int(mlen)]...)
 }
 
 func (a *qemuAux) clearTransientResult() {
@@ -737,6 +771,7 @@ type nyxVM struct {
 
 	qemuPath               string
 	qemuArgs               []string
+	qemuVCPUCount          int
 	image                  string
 	memoryMB               int
 	debug                  bool
@@ -868,6 +903,48 @@ func hprintfStage(msg string) string {
 	}
 }
 
+func parseQemuSMPValue(raw string) int {
+	if raw == "" {
+		return 1
+	}
+	parts := strings.Split(raw, ",")
+	if n, err := strconv.Atoi(parts[0]); err == nil && n > 0 {
+		return n
+	}
+	for _, part := range parts {
+		if strings.HasPrefix(part, "cpus=") {
+			if n, err := strconv.Atoi(strings.TrimPrefix(part, "cpus=")); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 1
+}
+
+func qemuVCPUCount(args []string) int {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "-smp" && i+1 < len(args) {
+			return parseQemuSMPValue(args[i+1])
+		}
+		if strings.HasPrefix(arg, "-smp=") {
+			return parseQemuSMPValue(strings.TrimPrefix(arg, "-smp="))
+		}
+	}
+	return 1
+}
+
+func effectiveKeepState(vm *nyxVM, keepState bool) bool {
+	if !keepState {
+		return false
+	}
+	if vm == nil || vm.qemuVCPUCount <= 1 {
+		return true
+	}
+	log.Logf(0, "runner disabling keep-state for SMP guest: qemu_vcpus=%d", vm.qemuVCPUCount)
+	return false
+}
+
 func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image string, memoryMB int, payloadSize, bitmapSize int, debug bool, hardTimeout time.Duration, moduleRanges []moduleRangeSpec, windowsMinidump bool, windowsMinidumpTimeout int) *nyxVM {
 	payloadSize = alignUp(payloadSize, nyxPageSize)
 	return &nyxVM{
@@ -886,6 +963,7 @@ func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image stri
 		bitmapSize:             bitmapSize,
 		qemuPath:               qemuPath,
 		qemuArgs:               qemuArgs,
+		qemuVCPUCount:          qemuVCPUCount(qemuArgs),
 		image:                  image,
 		memoryMB:               memoryMB,
 		debug:                  debug,
@@ -1351,24 +1429,73 @@ func (vm *nyxVM) runQemu() error {
 }
 
 func (vm *nyxVM) runQemuWithTimeout(timeout time.Duration) error {
+	return vm.runQemuWithTimeoutAndProbe(timeout, 50*time.Millisecond)
+}
+
+func (vm *nyxVM) runQemuWithTimeoutAndProbe(timeout, probeWindow time.Duration) error {
 	requestID := vm.traceReqID
 	vm.recordTrace("qemu", "kvm_run_begin", requestID, traceFields("timeout_ms", timeout.Milliseconds()))
+	if vm.aux != nil {
+		vm.aux.clearFreeze()
+	}
 	started := time.Now()
+	var deadline time.Time
 	if timeout > 0 {
-		if err := vm.control.SetDeadline(time.Now().Add(timeout)); err != nil {
+		deadline = time.Now().Add(timeout)
+		if err := vm.control.SetDeadline(deadline); err != nil {
 			return err
 		}
 		defer vm.control.SetDeadline(time.Time{})
 	}
+	var ack [1]byte
+	probeDeadline := time.Now().Add(probeWindow)
+	if !deadline.IsZero() && deadline.Before(probeDeadline) {
+		probeDeadline = deadline
+	}
+	if err := vm.control.SetReadDeadline(probeDeadline); err == nil {
+		n, err := vm.control.Read(ack[:])
+		_ = vm.control.SetReadDeadline(deadline)
+		if err == nil && n == len(ack) {
+			if vm.aux != nil {
+				vm.aux.freeze()
+			}
+			vm.debugLogf("runner qemu pending ping consumed duration_ms=%d", time.Since(started).Milliseconds())
+			vm.recordTrace("qemu", "kvm_run_pending_ping", requestID,
+				traceFields("duration_ms", time.Since(started).Milliseconds()))
+			vm.debugLogf("runner qemu pending release write begin")
+			if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
+				return err
+			}
+			vm.debugLogf("runner qemu pending release write done")
+			vm.recordTrace("qemu", "kvm_run_end", requestID,
+				traceFields("duration_ms", time.Since(started).Milliseconds(), "pending_ping", true))
+			return nil
+		}
+		if err != nil && !isTimeoutError(err) {
+			fields := traceFields("duration_ms", time.Since(started).Milliseconds())
+			fields["error"] = err.Error()
+			vm.debugLogf("runner qemu pending ping read done duration_ms=%d err=%v",
+				time.Since(started).Milliseconds(), err)
+			vm.recordTrace("qemu", "kvm_run_pending_ping_error", requestID, fields)
+			return err
+		}
+	} else {
+		_ = vm.control.SetReadDeadline(deadline)
+	}
+	vm.debugLogf("runner qemu release write begin")
 	if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
 		return err
 	}
-	var ack [1]byte
+	vm.debugLogf("runner qemu release write done; waiting ack")
 	_, err := vm.control.Read(ack[:])
+	if err == nil && vm.aux != nil {
+		vm.aux.freeze()
+	}
 	fields := traceFields("duration_ms", time.Since(started).Milliseconds())
 	if err != nil {
 		fields["error"] = err.Error()
 	}
+	vm.debugLogf("runner qemu ack read done duration_ms=%d err=%v", time.Since(started).Milliseconds(), err)
 	vm.recordTrace("qemu", "kvm_run_end", requestID, fields)
 	return err
 }
@@ -1482,7 +1609,11 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		vm.debugLogf("runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
-		if err := vm.runQemuWithTimeout(remaining); err != nil {
+		probeWindow := 50 * time.Millisecond
+		if steps == 0 {
+			probeWindow = 300 * time.Millisecond
+		}
+		if err := vm.runQemuWithTimeoutAndProbe(remaining, probeWindow); err != nil {
 			if isTimeoutError(err) {
 				log.Logf(0, "runner exec qemu step timeout at step=%d; synthesizing hanged result", steps)
 				vm.recordAuxTrace("exec_step_timeout", requestID)
@@ -3158,6 +3289,17 @@ func summarizeCallFeedback(calls []*flatrpc.CallInfo, callNames []string) []call
 }
 
 func logModuleCoverage(requestID int64, execData []byte, covRecords []nyxCovDumpRecord, kernel64Bit bool, ranges []moduleRuntimeRange) {
+	callNames := execCallNames(execData)
+	for _, rec := range covRecords {
+		pcs := filterCoveragePCs(rec.PCs, kernel64Bit)
+		if len(pcs) == 0 {
+			continue
+		}
+		log.Logf(0, "runner coverage record: id=%d call=%d name=%s slot=%d session=0x%x source=%d chunk=%d cpu_mask=0x%x gen=%d tid=0x%x teb=0x%x pcs=%d",
+			requestID, rec.CallIndex, callNameForIndex(callNames, rec.CallIndex),
+			rec.SlotID, rec.SessionID, rec.SourceID, rec.ChunkIndex,
+			rec.CPUMask, rec.SourceGeneration, rec.Tid, rec.Teb, len(pcs))
+	}
 	for _, row := range summarizeModuleCoverageBySlot(covRecords, kernel64Bit, ranges) {
 		log.Logf(0, "runner module coverage: id=%d slot=%d records=%d pcs=%d",
 			requestID, row.SlotID, row.Records, row.PCs)
@@ -3182,12 +3324,9 @@ func buildCoverageDebugStreamEvent(requestID int64, execData []byte, covRecords 
 			continue
 		}
 		if len(ranges) == 0 {
-			event.Calls = append(event.Calls, coverageDebugStreamCall{
-				CallIndex: rec.CallIndex,
-				CallName:  callNameForIndex(callNames, rec.CallIndex),
-				SlotID:    rec.SlotID,
-				PCs:       hexUint64List(pcs),
-			})
+			row := coverageDebugCallFromRecord(rec, callNames, rec.SlotID)
+			row.PCs = hexUint64List(pcs)
+			event.Calls = append(event.Calls, row)
 			continue
 		}
 		byModule := make(map[string]*coverageDebugStreamCall)
@@ -3199,12 +3338,9 @@ func buildCoverageDebugStreamEvent(requestID int64, execData []byte, covRecords 
 				key := fmt.Sprintf("%d/%s", rng.SlotID, moduleRangeKey(rng))
 				row := byModule[key]
 				if row == nil {
-					row = &coverageDebugStreamCall{
-						CallIndex: rec.CallIndex,
-						CallName:  callNameForIndex(callNames, rec.CallIndex),
-						SlotID:    rng.SlotID,
-						Module:    rng.Name,
-					}
+					newRow := coverageDebugCallFromRecord(rec, callNames, rng.SlotID)
+					newRow.Module = rng.Name
+					row = &newRow
 					byModule[key] = row
 				}
 				row.PCs = append(row.PCs, fmt.Sprintf("0x%x", pc))
@@ -3221,6 +3357,30 @@ func buildCoverageDebugStreamEvent(requestID int64, execData []byte, covRecords 
 		}
 	}
 	return event
+}
+
+func coverageDebugCallFromRecord(rec nyxCovDumpRecord, callNames []string, slotID uint32) coverageDebugStreamCall {
+	row := coverageDebugStreamCall{
+		CallIndex:        rec.CallIndex,
+		CallName:         callNameForIndex(callNames, rec.CallIndex),
+		SlotID:           slotID,
+		SourceID:         rec.SourceID,
+		ChunkIndex:       rec.ChunkIndex,
+		SourceGeneration: rec.SourceGeneration,
+	}
+	if rec.SessionID != 0 {
+		row.SessionID = fmt.Sprintf("0x%x", rec.SessionID)
+	}
+	if rec.Tid != 0 {
+		row.Tid = fmt.Sprintf("0x%x", rec.Tid)
+	}
+	if rec.Teb != 0 {
+		row.Teb = fmt.Sprintf("0x%x", rec.Teb)
+	}
+	if rec.CPUMask != 0 {
+		row.CPUMask = fmt.Sprintf("0x%x", rec.CPUMask)
+	}
+	return row
 }
 
 func appendCoverageDebugStream(path string, event coverageDebugStreamEvent) error {
@@ -3577,7 +3737,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 		id:                index,
 		vm:                vm,
 		connectReply:      connectReply,
-		keepState:         keepState,
+		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
 	}
 	if rounds < 0 {
@@ -3673,7 +3833,7 @@ func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepS
 		id:                index,
 		vm:                vm,
 		connectReply:      connectReply,
-		keepState:         keepState,
+		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
 	}
 	if rounds < 0 {
@@ -3727,7 +3887,7 @@ func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPa
 		id:                index,
 		vm:                vm,
 		connectReply:      connectReply,
-		keepState:         keepState,
+		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
 	}
 	stages := []struct {
@@ -3821,7 +3981,7 @@ func runStandaloneExecStaged(index int, vm *nyxVM, firstProgramPath, secondProgr
 		id:                index,
 		vm:                vm,
 		connectReply:      connectReply,
-		keepState:         keepState,
+		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
 	}
 	stages := []struct {
@@ -4624,7 +4784,7 @@ func main() {
 		return
 	}
 	r := newRunner(index, flag.Arg(1), flag.Arg(2), vm)
-	r.keepState = *keepState
+	r.keepState = effectiveKeepState(vm, *keepState)
 	r.coverageDebugPath = *coverageDebugStream
 	r.slowTrace = &slowTraceConfig{
 		dir:       resolvedSlowTraceDir,
