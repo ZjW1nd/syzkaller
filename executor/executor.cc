@@ -48,6 +48,10 @@
 #define SYZ_NYX_TRACE_EXEC 0
 #endif
 
+#ifndef SYZ_NYX_TRACE_COV
+#define SYZ_NYX_TRACE_COV 0
+#endif
+
 #ifndef __has_feature
 #define __has_feature(x) 0
 #endif
@@ -1006,6 +1010,14 @@ static const uint64 kWindowsWorkerIdleWaitMs = 2;
 #else
 #define nyx_trace_hprintf(...) \
 	do {                   \
+	} while (0)
+#endif
+
+#if GOOS_windows && SYZ_NYX_TRACE_COV && !SYZ_NYX_WINDOWS_DEMO
+#define nyx_cov_trace_hprintf(...) nyx_hprintf(__VA_ARGS__)
+#else
+#define nyx_cov_trace_hprintf(...) \
+	do {                       \
 	} while (0)
 #endif
 
@@ -3112,6 +3124,13 @@ void execute_call(thread_t* th)
 		nyx_init_syz_cov_session_cmd(&cov_session_cmd, th);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_SESSION_BEGIN,
 			      (uint64_t)(uintptr_t)&cov_session_cmd);
+		nyx_cov_trace_hprintf("nyx cov trace stage=after_session_begin request=%llu tid=%lu session=0x%llx call_index=%d call_num=%d call_name=%s\n",
+				      (unsigned long long)request_id,
+				      (unsigned long)GetCurrentThreadId(),
+				      (unsigned long long)cov_session_cmd.session_id,
+				      th->call_index,
+				      th->call_num,
+				      call->name ? call->name : "<null>");
 	} else {
 		nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE,
@@ -3119,11 +3138,36 @@ void execute_call(thread_t* th)
 				      (__readgsqword(0x30) & 0xFFFFFFFF));
 	}
 #endif
+	nyx_cov_trace_hprintf("nyx cov trace stage=before_execute_syscall request=%llu tid=%lu call_index=%d call_num=%d call_name=%s\n",
+			      (unsigned long long)request_id,
+			      (unsigned long)GetCurrentThreadId(),
+			      th->call_index,
+			      th->call_num,
+			      call->name ? call->name : "<null>");
 	NONFAILING(th->res = execute_syscall(call, th->args));
+	nyx_cov_trace_hprintf("nyx cov trace stage=after_execute_syscall request=%llu tid=%lu call_index=%d call_num=%d res=0x%llx errno=%d\n",
+			      (unsigned long long)request_id,
+			      (unsigned long)GetCurrentThreadId(),
+			      th->call_index,
+			      th->call_num,
+			      (unsigned long long)th->res,
+			      errno);
 #if GOOS_windows
 	if (nyx_use_session_cov) {
+		nyx_cov_trace_hprintf("nyx cov trace stage=before_session_end request=%llu tid=%lu session=0x%llx call_index=%d call_num=%d\n",
+				      (unsigned long long)request_id,
+				      (unsigned long)GetCurrentThreadId(),
+				      (unsigned long long)cov_session_cmd.session_id,
+				      th->call_index,
+				      th->call_num);
 		nyx_hypercall(HYPERCALL_KAFL_SYZ_COV_SESSION_END,
 			      (uint64_t)(uintptr_t)&cov_session_cmd);
+		nyx_cov_trace_hprintf("nyx cov trace stage=after_session_end request=%llu tid=%lu session=0x%llx call_index=%d call_num=%d\n",
+				      (unsigned long long)request_id,
+				      (unsigned long)GetCurrentThreadId(),
+				      (unsigned long long)cov_session_cmd.session_id,
+				      th->call_index,
+				      th->call_num);
 		nyx_log_thread_stage("execute_call_after_cov_session_end", th, (uint64)th->res, errno);
 	} else {
 		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
