@@ -213,7 +213,9 @@ static char windows_net_injection_target_adapter_name[64];
 #define SYZ_WINDOWS_NET_INJECTION_PEER_IPV4 0xac1400bb
 #define SYZ_WINDOWS_NET_INJECTION_LOCAL_IPV4_MASK 0xffffff00
 #define SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT 20000
+#define SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT_MAX 20004
 #define SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT 40000
+#define SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT_MAX 40063
 #define SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN 0x02
 #define SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK 0x10
 #define SYZ_WINDOWS_TAP_IOCTL_SET_MEDIA_STATUS CTL_CODE(FILE_DEVICE_UNKNOWN, 6, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -1363,8 +1365,10 @@ static bool windows_net_injection_parse_tcp_frame(const char* data, size_t lengt
 	bool is_synack = (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) == (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK);
 	if (src_ip != SYZ_WINDOWS_NET_INJECTION_LOCAL_IPV4 ||
 	    dst_ip != SYZ_WINDOWS_NET_INJECTION_PEER_IPV4 ||
-	    src_port != SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT ||
-	    dst_port != SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT ||
+	    src_port < SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT ||
+	    src_port > SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT_MAX ||
+	    dst_port < SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT ||
+	    dst_port > SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT_MAX ||
 	    (!is_syn && !is_synack)) {
 		windows_nyx_log("windows net injection %s non-target tcp src=0x%x dst=0x%x sport=%u dport=%u flags=0x%02x attempt=%d\n",
 				owner, src_ip, dst_ip, src_port, dst_port, flags, attempt);

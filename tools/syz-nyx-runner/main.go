@@ -3545,7 +3545,7 @@ func primeResultCanReturn(msg *flatrpc.ExecutorMessage) bool {
 	if !ok || res == nil || res.Error != "" {
 		return false
 	}
-	return res.Info != nil
+	return execResultHasCoverage(msg)
 }
 
 func execResultHanged(msg *flatrpc.ExecutorMessage) bool {
