@@ -1581,20 +1581,9 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	deadline := time.Now().Add(vm.execWaitTimeout())
 	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
 	reloadRequested := false
-	reloadBoundarySettled := false
 	for {
-		if data, err := os.ReadFile(resultPath); err == nil {
-			if reloadRequested && !reloadBoundarySettled {
-				vm.debugLogf("runner exec result ready at step=%d but reload boundary is still pending", steps)
-			} else {
-				vm.debugLogf("runner exec result observed before step=%d", steps)
-				vm.recordTrace("runner", "exec_result_file", requestID, traceFields("step", steps, "bytes", len(data)))
-				msg, err := parseExecResult(data)
-				if err != nil {
-					return nil, err
-				}
-				return msg, nil
-			}
+		if msg, ok, err := vm.readExecResultIfReady(resultPath, requestID, steps, reloadRequested); ok || err != nil {
+			return msg, err
 		}
 		if time.Now().After(deadline) {
 			log.Logf(0, "runner exec wait deadline expired after %d steps; synthesizing hanged result", steps)
@@ -1641,14 +1630,6 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			if stage == "request_reload" {
 				reloadRequested = true
 			}
-			if reloadRequested && stage == "request_boundary_reload_ready" {
-				reloadBoundarySettled = true
-				vm.debugLogf("runner exec reload boundary settled at step=%d via %s", steps, stage)
-			}
-		}
-		if reloadRequested && postExecDone && postExecCode == nyxRCSuccess && postMiscTrimmed == "" {
-			reloadBoundarySettled = true
-			vm.debugLogf("runner exec reload boundary settled at step=%d", steps)
 		}
 		switch postExecCode {
 		case nyxRCCrash, nyxRCSanitizer:
@@ -1672,6 +1653,24 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			vm.recordAuxTrace("exec_done_without_result", requestID)
 		}
 	}
+}
+
+func (vm *nyxVM) readExecResultIfReady(resultPath string, requestID int64, steps int, reloadRequested bool) (*flatrpc.ExecutorMessage, bool, error) {
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		return nil, false, nil
+	}
+	if reloadRequested {
+		vm.recordTrace("runner", "exec_result_before_reload_boundary", requestID,
+			traceFields("step", steps, "bytes", len(data)))
+	}
+	vm.debugLogf("runner exec result observed before step=%d", steps)
+	vm.recordTrace("runner", "exec_result_file", requestID, traceFields("step", steps, "bytes", len(data)))
+	msg, err := parseExecResult(data)
+	if err != nil {
+		return nil, true, err
+	}
+	return msg, true, nil
 }
 
 func (vm *nyxVM) executeIdle(sleepMs int) (*flatrpc.ExecutorMessage, error) {
