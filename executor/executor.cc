@@ -3143,6 +3143,7 @@ void execute_call(thread_t* th)
 #endif
 	kafl_syz_cov_session_cmd_t cov_session_cmd = {};
 	bool nyx_use_session_cov = cover_collection_required();
+	bool nyx_use_legacy_boundary = !nyx_use_session_cov && !flag_threaded;
 	if (is_windows_nyx_vnet_call(call)) {
 		nyx_log_exec_stage("execute_call_vnet_no_acquire", th->id, th->call_num, th->num_args);
 		NONFAILING(th->res = execute_syscall(call, th->args));
@@ -3161,11 +3162,13 @@ void execute_call(thread_t* th)
 				      th->call_index,
 				      th->call_num,
 				      call->name ? call->name : "<null>");
-	} else {
+	} else if (nyx_use_legacy_boundary) {
 		nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE,
 			      ((uint64_t)GetCurrentThreadId() << 32) |
 				      (__readgsqword(0x30) & 0xFFFFFFFF));
+	} else {
+		nyx_log_exec_stage("execute_call_no_cov_threaded_no_acquire", th->id, th->call_num, th->num_args);
 	}
 #endif
 	nyx_cov_trace_hprintf("nyx cov trace stage=before_execute_syscall request=%llu tid=%lu call_index=%d call_num=%d call_name=%s\n",
@@ -3199,9 +3202,11 @@ void execute_call(thread_t* th)
 				      th->call_index,
 				      th->call_num);
 		nyx_log_thread_stage("execute_call_after_cov_session_end", th, (uint64)th->res, errno);
-	} else {
+	} else if (nyx_use_legacy_boundary) {
 		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 		nyx_log_thread_stage("execute_call_after_release", th, (uint64)th->res, errno);
+	} else {
+		nyx_log_thread_stage("execute_call_no_cov_threaded_no_release", th, (uint64)th->res, errno);
 	}
 	// Per-call coverage is dumped by the QEMU session END handler.
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE

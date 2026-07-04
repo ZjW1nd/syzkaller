@@ -2517,6 +2517,20 @@ type runner struct {
 	lastCompletedReq  *flatrpc.ExecRequest
 }
 
+const maxVMRestartAttempts = 3
+
+type fatalRunnerError struct {
+	err error
+}
+
+func (err *fatalRunnerError) Error() string {
+	return err.err.Error()
+}
+
+func (err *fatalRunnerError) Unwrap() error {
+	return err.err
+}
+
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
 	return &runner{id: id, addr: addr, port: port, vm: vm}
 }
@@ -3107,6 +3121,7 @@ func (r *runner) handleHangedRequest(reqID int64) {
 func (r *runner) restartVM(reason string) error {
 	log.Logf(0, "runner restarting VM: %s", reason)
 	if err := r.vm.restart(); err != nil {
+		log.Logf(0, "runner VM restart failed: %s: %v", reason, err)
 		return err
 	}
 	r.handshakeReady = false
@@ -3115,7 +3130,24 @@ func (r *runner) restartVM(reason string) error {
 	r.lastSandboxArg = 0
 	r.lastCompletedReq = nil
 	r.needRestart = false
+	log.Logf(0, "runner VM restart completed: %s", reason)
 	return nil
+}
+
+func (r *runner) restartVMWithRetries(reason string) error {
+	var lastErr error
+	for attempt := 1; attempt <= maxVMRestartAttempts; attempt++ {
+		attemptReason := fmt.Sprintf("%s (attempt %d/%d)", reason, attempt, maxVMRestartAttempts)
+		if err := r.restartVM(attemptReason); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return &fatalRunnerError{
+		err: fmt.Errorf("VM restart failed after %d attempts while %s: %w",
+			maxVMRestartAttempts, reason, lastErr),
+	}
 }
 
 func requestNeedsCoveragePriming(req *flatrpc.ExecRequest) bool {
@@ -3516,7 +3548,7 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
 	}
 	if r.needRestart {
-		if err := r.restartVM("recovering from previous hanged request"); err != nil {
+		if err := r.restartVMWithRetries("recovering from previous hanged request"); err != nil {
 			return nil, err
 		}
 	}
@@ -3717,10 +3749,15 @@ func (r *runner) loop() error {
 				return err
 			}
 			execMsg, err := r.runRequest(req)
+			stopAfterSend := false
+			var fatalErr *fatalRunnerError
 			if err != nil {
 				var crashErr *nyxCrashError
 				if errors.As(err, &crashErr) {
 					_, _ = os.Stderr.Write(crashErr.report)
+				}
+				if errors.As(err, &fatalErr) {
+					stopAfterSend = true
 				}
 				execMsg = synthesizeErrorResult(req, err)
 			}
@@ -3730,6 +3767,9 @@ func (r *runner) loop() error {
 					return nil
 				}
 				return err
+			}
+			if stopAfterSend {
+				return fatalErr
 			}
 		case *flatrpc.StateRequest:
 			r.vm.debugLogf("runner received StateRequest")
