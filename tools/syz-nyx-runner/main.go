@@ -3201,15 +3201,10 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		r.markForRestart(fmt.Sprintf("request %d failed: %v", req.Id, err))
 		return nil, err
 	}
-	if !r.keepState {
-		// The pending root reload is consumed by the next payload release. The
-		// root snapshot is taken before the executor receives the syzkaller
-		// handshake, so the next payload must be a handshake.
-		r.handshakeReady = false
-		r.coveragePrimed = false
-		r.lastEnvFlags = 0
-		r.lastSandboxArg = 0
-	}
+	// The pending root reload is consumed by the next payload release.
+	// After the fuzz root is sealed at post-handshake, steady-state reloads
+	// restore the configured guest anchor; PT priming stays valid for the VM
+	// session and is only reset on handshake/restart/reconnect.
 	covRecords, compRecords, covErr := parseCoverageDump(r.vm.coverPath)
 	if covErr == nil {
 		covErr = injectCoverage(req, execMsg, r.connectReply.CoverEdges,
@@ -3234,6 +3229,18 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 			log.Logf(0, "runner exec hanged and coverage dump is absent; continuing without coverage")
 		} else {
 			return nil, covErr
+		}
+	}
+	if !prime {
+		if module, ok := missingRequiredModuleCoverage(req, execMsg, r.vm.moduleRanges); ok {
+			err := fmt.Errorf("coverage infrastructure unavailable: request %d targets required module %q but produced no coverage records", req.Id, module)
+			r.vm.recordTrace("runner", "coverage_health_fail", req.Id, traceFields(
+				"label", requestLabel,
+				"module", module,
+				"duration_ms", duration.Milliseconds(),
+			))
+			r.maybeDumpSlowTrace(req, requestLabel, started, duration, execMsg, err)
+			return nil, err
 		}
 	}
 	if execResultHanged(execMsg) {
@@ -3525,6 +3532,10 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		if primeResultCanReturn(primeMsg) {
 			return primeMsg, nil
 		}
+		log.Logf(0, "runner coverage prime requires replay: id=%d %s", req.Id, primeResultDetails(primeMsg))
+		if err := r.ensureHandshake(req); err != nil {
+			return nil, err
+		}
 		log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
 		return r.executeRequestOnce(req, false)
 	}
@@ -3532,6 +3543,24 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		r.coveragePrimed = true
 	}
 	return r.executeRequestOnce(req, false)
+}
+
+func primeResultDetails(msg *flatrpc.ExecutorMessage) string {
+	if msg == nil || msg.Msg == nil {
+		return "result=nil hanged=false valid=false calls=0 covered_calls=0 error=<nil>"
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res == nil {
+		return "result=non_exec hanged=false valid=false calls=0 covered_calls=0 error=<nil>"
+	}
+	calls := 0
+	covered := 0
+	if res.Info != nil {
+		calls = len(res.Info.Calls)
+		covered = countNonEmptyCover(res.Info.Calls)
+	}
+	return fmt.Sprintf("hanged=%v valid=%v calls=%d covered_calls=%d error=%q",
+		res.Hanged, res.Error == "", calls, covered, res.Error)
 }
 
 func primeResultCanReturn(msg *flatrpc.ExecutorMessage) bool {
@@ -3564,6 +3593,57 @@ func countNonEmptyCover(calls []*flatrpc.CallInfo) int {
 		}
 	}
 	return n
+}
+
+func missingRequiredModuleCoverage(req *flatrpc.ExecRequest, msg *flatrpc.ExecutorMessage, ranges []moduleRangeSpec) (string, bool) {
+	if req == nil || msg == nil || msg.Msg == nil || !requestNeedsCoveragePriming(req) {
+		return "", false
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res == nil || res.Info == nil || res.Hanged || res.Error != "" {
+		return "", false
+	}
+	if countNonEmptyCover(res.Info.Calls) != 0 {
+		return "", false
+	}
+	return requestTargetedRequiredModule(req.Data, ranges)
+}
+
+func requestTargetedRequiredModule(execData []byte, ranges []moduleRangeSpec) (string, bool) {
+	callNames := execCallNames(execData)
+	if len(callNames) == 0 {
+		return "", false
+	}
+	for _, rng := range ranges {
+		if !rng.Required {
+			continue
+		}
+		token := moduleCallNameToken(rng.Pattern)
+		if token == "" {
+			continue
+		}
+		for _, name := range callNames {
+			if strings.Contains(strings.ToLower(name), token) {
+				return rng.Pattern, true
+			}
+		}
+	}
+	return "", false
+}
+
+func moduleCallNameToken(pattern string) string {
+	token := strings.ToLower(filepath.Base(pattern))
+	if ext := filepath.Ext(token); ext != "" {
+		token = strings.TrimSuffix(token, ext)
+	}
+	if idx := strings.IndexAny(token, "*?["); idx >= 0 {
+		token = token[:idx]
+	}
+	token = strings.Trim(token, ".-_")
+	if len(token) < 3 {
+		return ""
+	}
+	return token
 }
 
 func progExecCallCountOrPanic(data []byte) int {

@@ -7531,6 +7531,30 @@ func TestRunnerSuccessPathLogsAreDebugOnly(t *testing.T) {
 	}
 }
 
+func TestRunnerCoveragePrimingReplayRehandshakes(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	runRequest := extractFunctionBody(t, string(mainData), "func (r *runner) runRequest")
+	primeIdx := strings.Index(runRequest, "primeMsg, err := r.executeRequestOnce(req, true)")
+	if primeIdx == -1 {
+		t.Fatal("runRequest missing coverage priming execution")
+	}
+	afterPrime := runRequest[primeIdx:]
+	ensureIdx := strings.Index(afterPrime, "if err := r.ensureHandshake(req); err != nil")
+	replayLogIdx := strings.Index(afterPrime, `log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage`)
+	replayExecIdx := strings.Index(afterPrime, "return r.executeRequestOnce(req, false)")
+	if ensureIdx == -1 || replayLogIdx == -1 || replayExecIdx == -1 {
+		t.Fatalf("runRequest priming replay path missing ensure/replay sequence: ensure=%d log=%d exec=%d",
+			ensureIdx, replayLogIdx, replayExecIdx)
+	}
+	if !(ensureIdx < replayLogIdx && replayLogIdx < replayExecIdx) {
+		t.Fatalf("runRequest must re-handshake before coverage priming replay: ensure=%d log=%d exec=%d",
+			ensureIdx, replayLogIdx, replayExecIdx)
+	}
+}
+
 func TestRunnerDoesNotDrainReloadBeforeNextPayload(t *testing.T) {
 	mainData, err := os.ReadFile("main.go")
 	if err != nil {
@@ -7553,6 +7577,19 @@ func TestRunnerDoesNotDrainReloadBeforeNextPayload(t *testing.T) {
 	handle := extractFunctionBody(t, mainSrc, "func (r *runner) executeRequestOnce")
 	if !strings.Contains(handle, "The pending root reload is consumed by the next payload release") {
 		t.Fatal("executeRequestOnce should document that reload is deferred until the next payload is written")
+	}
+	if !strings.Contains(handle, "fuzz root is sealed") {
+		t.Fatal("executeRequestOnce should document post-handshake fuzz root sealing")
+	}
+	for _, bad := range []string{
+		"r.handshakeReady = false",
+		"r.lastEnvFlags = 0",
+		"r.lastSandboxArg = 0",
+		"r.coveragePrimed = false",
+	} {
+		if strings.Contains(handle, bad) {
+			t.Fatalf("executeRequestOnce should not reset session state after each exec: %q", bad)
+		}
 	}
 }
 
@@ -8671,6 +8708,30 @@ func TestWindowsNyxExecutorBuildEnablesNetInjection(t *testing.T) {
 	} {
 		if !strings.Contains(string(data), needle) {
 			t.Fatalf("Windows Nyx executor build should include %q for vnet pseudo-syscalls", needle)
+		}
+	}
+}
+
+func TestOfflineNyxOverlayEnablesAutoLogon(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "guest-vm", "prepare-nyx-overlay-offline.sh")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read prepare-nyx-overlay-offline.sh: %v", err)
+	}
+	src := string(data)
+	for _, needle := range []string{
+		`AUTO_LOGON="${AUTO_LOGON:-1}"`,
+		`"AutoAdminLogon"="1"`,
+		`"ForceAutoLogon"="1"`,
+		`"DefaultUserName"="$AUTO_LOGON_USER"`,
+		`"DefaultPassword"="$AUTO_LOGON_PASSWORD"`,
+		`"NTsyzkallerNyxExecutor"="D:\\\\WINDOWS\\\\system32\\\\cmd.exe /c D:\\\\ntsyz-nyx-autostart.cmd"`,
+		`executor-launcher-started.txt`,
+		`nyx-autostart.cmd.log`,
+		`ntsyz-nyx-autostart.cmd`,
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("offline Nyx overlay script should contain %q", needle)
 		}
 	}
 }

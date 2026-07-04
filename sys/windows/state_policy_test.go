@@ -819,6 +819,42 @@ func TestWindowsAFDTargetProfilePrefersSameLineageCollidePair(t *testing.T) {
 	t.Fatal("generated program is missing WSARecv$accept")
 }
 
+func TestWindowsAFDTargetProfileBlocksPrivateStateCollide(t *testing.T) {
+	profiled := windowsPolicyTestAFDTarget(t)
+	p := windowsPolicyTestDeserialize(t, profiled,
+		"NtCreateFile$afd_tcp_endpoint(&(0x7f0000000000)=<r0=>0xffffffffffffffff, 0xc0100000, &(0x7f00000000c0)={0x30, 0x0, 0x0, &(0x7f0000000080)={0x16, 0x18, 0x0, &(0x7f0000000040)}}, &(0x7f0000000100)={@Status=0x7f, 0x75f}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000000140), 0x34)\n"+
+			"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created(r0, 0x0, 0x0, 0x0, &(0x7f0000000180)={@Status=0x2, 0x8}, 0x1203b, &(0x7f00000001c0)={0x2, 0x0, 0x1}, 0x10, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_bind_tcp_nonblock(r0, 0x0, 0x0, 0x0, &(0x7f0000000200)={@Status=0x8001, 0x80000000}, 0x12003, &(0x7f0000000240), 0x14, &(0x7f0000000280), 0x10)\n")
+	for seed := int64(0); seed < 64; seed++ {
+		collided := prog.AssignRandomAsync(p, rand.New(rand.NewSource(seed)))
+		if collided.Calls[1].Props.Async {
+			t.Fatalf("AFD nonblock state transition became async:\n%s", collided.Serialize())
+		}
+		if collided.Calls[2].Props.Async {
+			t.Fatalf("AFD bind state transition became async:\n%s", collided.Serialize())
+		}
+	}
+	if _, err := prog.DupCallCollide(p, rand.New(rand.NewSource(0))); err == nil {
+		t.Fatal("duplicate-collide should reject private AFD state transitions")
+	}
+	if _, err := prog.DoubleExecCollide(p, rand.New(rand.NewSource(0))); err == nil {
+		t.Fatal("double-exec collide should reject private AFD state transitions")
+	}
+
+	withProps := p.Clone()
+	withProps.Calls[1].Props.Async = true
+	withProps.Calls[1].Props.Rerun = 32
+	withProps.Calls[2].Props.Rerun = 32
+	sanitized, changed := prog.SanitizeCollidePropsForTarget(withProps)
+	if !changed {
+		t.Fatal("expected sanitizer to clear private AFD state collide props")
+	}
+	if sanitized.Calls[1].Props.Async || sanitized.Calls[1].Props.Rerun != 0 ||
+		sanitized.Calls[2].Props.Rerun != 0 {
+		t.Fatalf("sanitizer left private AFD collide props:\n%s", sanitized.Serialize())
+	}
+}
+
 func TestWindowsAFDTargetProfileScoresCorpusResourcesByLineage(t *testing.T) {
 	windowsSkipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")

@@ -914,6 +914,56 @@ func TestRequestNeedsCoveragePriming(t *testing.T) {
 	}
 }
 
+func TestMissingRequiredModuleCoverageForTargetedRequest(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	execData := serializeWindowsTestProgramForExec(t,
+		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_query_readonly.txt"))
+	req := &flatrpc.ExecRequest{
+		Data: execData,
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags: flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagCollectSignal,
+		},
+	}
+	msg := execResultMessage(&flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(progExecCallCountOrPanic(execData)),
+	})
+	module, ok := missingRequiredModuleCoverage(req, msg, []moduleRangeSpec{
+		{Pattern: "afd.sys", Required: true},
+	})
+	if !ok || module != "afd.sys" {
+		t.Fatalf("missingRequiredModuleCoverage()=%q,%v want afd.sys,true", module, ok)
+	}
+	if res := msg.Msg.Value.(*flatrpc.ExecResult); len(res.Info.Calls) != 0 {
+		res.Info.Calls[0].Cover = []uint64{0x10}
+	}
+	if module, ok := missingRequiredModuleCoverage(req, msg, []moduleRangeSpec{
+		{Pattern: "afd.sys", Required: true},
+	}); ok {
+		t.Fatalf("missingRequiredModuleCoverage()=%q,true after coverage injection", module)
+	}
+	if module, ok := missingRequiredModuleCoverage(req, execResultMessage(&flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(progExecCallCountOrPanic(execData)),
+	}), []moduleRangeSpec{{Pattern: "ntoskrnl.exe", Required: true}}); ok {
+		t.Fatalf("missingRequiredModuleCoverage()=%q,true for non-targeted required module", module)
+	}
+}
+
+func TestModuleCallNameToken(t *testing.T) {
+	tests := map[string]string{
+		"afd.sys":      "afd",
+		"win32k*.sys":  "win32k",
+		"ntoskrnl.exe": "ntoskrnl",
+		"C:/x/foo.sys": "foo",
+		"*.sys":        "",
+		"io.sys":       "",
+	}
+	for pattern, want := range tests {
+		if got := moduleCallNameToken(pattern); got != want {
+			t.Fatalf("moduleCallNameToken(%q)=%q want %q", pattern, got, want)
+		}
+	}
+}
+
 func TestExecProgramIsMultiCallWindowsVNet(t *testing.T) {
 	skipLegacyAfdWinsockArchived(t)
 	vnet := serializeWindowsTestProgramForExec(t,

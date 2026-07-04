@@ -2726,6 +2726,7 @@ static int nyx_mode_loop(int argc, char** argv)
 	nyx_host_config_t host_cfg = {};
 	if (!nyx_fetch_host_config(&host_cfg))
 		fail("failed to fetch Nyx host config");
+	nyx_pin_protocol_thread(&host_cfg, "host_config");
 
 	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
@@ -2761,10 +2762,12 @@ static int nyx_mode_loop(int argc, char** argv)
 	std::vector<uint8_t> output_mem;
 	uint64_t freshness = 1;
 	bool have_handshake = false;
+	uint64_t last_handshake_cr3 = 0;
 	handshake_req hs = {};
 	kafl_syz_cov_cmd_t cov_cmd = {};
 
 	for (;;) {
+		nyx_pin_protocol_thread(&host_cfg, "next_payload");
 		nyx_hypercall(HYPERCALL_KAFL_NEXT_PAYLOAD, 0);
 		if (payload->size < (int32_t)sizeof(nyx_msg_header_t))
 			fail("Nyx payload too small");
@@ -2816,11 +2819,15 @@ static int nyx_mode_loop(int argc, char** argv)
 #if SYZ_NYX_WINDOWS_SUBMIT_CR3
 			uint64_t cr3 = 0;
 			if (nyx_query_cr3(&cr3)) {
-				if (!repeated_handshake) {
+				const bool cr3_changed = !repeated_handshake ||
+							 cr3 != last_handshake_cr3;
+				if (!repeated_handshake || cr3_changed) {
 					nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
 						    (unsigned long long)cr3);
 				}
-				nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
+				if (cr3_changed)
+					nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
+				last_handshake_cr3 = cr3;
 			} else {
 				if (!repeated_handshake)
 					nyx_hprintf("nyx handshake query_cr3 unavailable\n");
@@ -2830,6 +2837,7 @@ static int nyx_mode_loop(int argc, char** argv)
 				nyx_hprintf("nyx handshake submit_cr3 disabled at build time\n");
 #endif
 			have_handshake = true;
+			nyx_pin_protocol_thread(&host_cfg, "handshake");
 			if (!repeated_handshake)
 				nyx_hprintf("nyx handshake dumping ack\n");
 			nyx_dump_ack();
