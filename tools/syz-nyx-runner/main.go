@@ -1581,8 +1581,10 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	deadline := time.Now().Add(vm.execWaitTimeout())
 	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
 	reloadRequested := false
+	reloadBoundarySettled := false
 	for {
-		if msg, ok, err := vm.readExecResultIfReady(resultPath, requestID, steps, reloadRequested); ok || err != nil {
+		msg, ok, err := vm.readExecResultIfReady(resultPath, requestID, steps, reloadRequested, reloadBoundarySettled)
+		if ok || err != nil {
 			return msg, err
 		}
 		if time.Now().After(deadline) {
@@ -1620,16 +1622,24 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		vm.debugLogf("runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, postState, postExecDone, postExecCode,
 			postMiscTrimmed)
-		if vm.aux.pageFault() {
-			vm.recordAuxTrace("page_fault", requestID)
-			vm.aux.dumpPage(vm.aux.pageAddr())
-			continue
-		}
 		if postExecCode == nyxRCHprintf {
 			stage := hprintfStage(postMiscTrimmed)
 			if stage == "request_reload" {
 				reloadRequested = true
 			}
+			if reloadRequested && stage == "request_boundary_reload_ready" {
+				reloadBoundarySettled = true
+				vm.debugLogf("runner exec reload boundary settled at step=%d via %s", steps, stage)
+			}
+		}
+		if reloadRequested && postExecDone && postExecCode == nyxRCSuccess && postMiscTrimmed == "" {
+			reloadBoundarySettled = true
+			vm.debugLogf("runner exec reload boundary settled at step=%d", steps)
+		}
+		if vm.aux.pageFault() {
+			vm.recordAuxTrace("page_fault", requestID)
+			vm.aux.dumpPage(vm.aux.pageAddr())
+			continue
 		}
 		switch postExecCode {
 		case nyxRCCrash, nyxRCSanitizer:
@@ -1655,14 +1665,16 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	}
 }
 
-func (vm *nyxVM) readExecResultIfReady(resultPath string, requestID int64, steps int, reloadRequested bool) (*flatrpc.ExecutorMessage, bool, error) {
+func (vm *nyxVM) readExecResultIfReady(resultPath string, requestID int64, steps int, reloadRequested bool, reloadBoundarySettled bool) (*flatrpc.ExecutorMessage, bool, error) {
 	data, err := os.ReadFile(resultPath)
 	if err != nil {
 		return nil, false, nil
 	}
-	if reloadRequested {
+	if reloadRequested && !reloadBoundarySettled {
 		vm.recordTrace("runner", "exec_result_before_reload_boundary", requestID,
 			traceFields("step", steps, "bytes", len(data)))
+		vm.debugLogf("runner exec result ready at step=%d but reload boundary is still pending", steps)
+		return nil, false, nil
 	}
 	vm.debugLogf("runner exec result observed before step=%d", steps)
 	vm.recordTrace("runner", "exec_result_file", requestID, traceFields("step", steps, "bytes", len(data)))

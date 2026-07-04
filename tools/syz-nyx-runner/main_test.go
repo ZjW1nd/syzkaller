@@ -1047,7 +1047,7 @@ func execResultMessage(res *flatrpc.ExecResult) *flatrpc.ExecutorMessage {
 	}
 }
 
-func TestReadExecResultReturnsBeforeReloadBoundary(t *testing.T) {
+func TestReadExecResultWaitsForReloadBoundary(t *testing.T) {
 	path := filepath.Join(t.TempDir(), nyxExecResult)
 	want := execResultMessage(&flatrpc.ExecResult{
 		Id:   123,
@@ -1063,22 +1063,34 @@ func TestReadExecResultReturnsBeforeReloadBoundary(t *testing.T) {
 	}
 
 	vm := &nyxVM{trace: newTraceRecorder(8)}
-	got, ok, err := vm.readExecResultIfReady(path, 123, 3, true)
+	got, ok, err := vm.readExecResultIfReady(path, 123, 3, true, false)
 	if err != nil {
 		t.Fatalf("readExecResultIfReady: %v", err)
 	}
+	if ok || got != nil {
+		t.Fatalf("result returned before reload boundary: ok=%v got=%#v", ok, got)
+	}
+	tail := vm.trace.Tail("runner", 0)
+	if len(tail) != 1 || tail[0].Stage != "exec_result_before_reload_boundary" {
+		t.Fatalf("bad trace tail before boundary: %#v", tail)
+	}
+
+	got, ok, err = vm.readExecResultIfReady(path, 123, 4, true, true)
+	if err != nil {
+		t.Fatalf("readExecResultIfReady after boundary: %v", err)
+	}
 	if !ok {
-		t.Fatal("ready result was not returned")
+		t.Fatal("ready result was not returned after reload boundary")
 	}
 	res, ok := got.Msg.Value.(*flatrpc.ExecResult)
 	if !ok || res.Id != 123 {
 		t.Fatalf("bad result: %#v", got)
 	}
-	tail := vm.trace.Tail("runner", 0)
+	tail = vm.trace.Tail("runner", 0)
 	if len(tail) != 2 ||
 		tail[0].Stage != "exec_result_before_reload_boundary" ||
 		tail[1].Stage != "exec_result_file" {
-		t.Fatalf("bad trace tail: %#v", tail)
+		t.Fatalf("bad trace tail after boundary: %#v", tail)
 	}
 }
 
