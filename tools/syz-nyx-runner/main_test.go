@@ -1094,6 +1094,25 @@ func TestReadExecResultWaitsForReloadBoundary(t *testing.T) {
 	}
 }
 
+func TestHprintfStagePayloadHeader(t *testing.T) {
+	if got := hprintfStage("nyx payload header kind=2 body=88 total=100"); got != "payload_header" {
+		t.Fatalf("hprintfStage payload header = %q", got)
+	}
+}
+
+func TestClearPayloadResetsSharedLength(t *testing.T) {
+	vm := &nyxVM{payloadMM: make([]byte, 16)}
+	if err := vm.setPayload([]byte("abcd")); err != nil {
+		t.Fatalf("setPayload: %v", err)
+	}
+	if got := vm.clearPayload(); got != 4 {
+		t.Fatalf("clearPayload returned old length %d", got)
+	}
+	if got := binary.LittleEndian.Uint32(vm.payloadMM[:4]); got != 0 {
+		t.Fatalf("payload length after clear = %d", got)
+	}
+}
+
 func TestExecResultHasCoverage(t *testing.T) {
 	withCoverage := &flatrpc.ExecutorMessage{
 		Msg: &flatrpc.ExecutorMessages{

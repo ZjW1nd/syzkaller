@@ -894,6 +894,8 @@ func hprintfStage(msg string) string {
 		return "request_reload"
 	case strings.HasPrefix(msg, "nyx request boundary reload ready"):
 		return "request_boundary_reload_ready"
+	case strings.HasPrefix(msg, "nyx payload header"):
+		return "payload_header"
 	case strings.HasPrefix(msg, "nyx handshake"):
 		return "handshake"
 	case strings.HasPrefix(msg, "nyx module range"):
@@ -1462,6 +1464,7 @@ func (vm *nyxVM) runQemuWithTimeoutAndProbe(timeout, probeWindow time.Duration) 
 			vm.debugLogf("runner qemu pending ping consumed duration_ms=%d", time.Since(started).Milliseconds())
 			vm.recordTrace("qemu", "kvm_run_pending_ping", requestID,
 				traceFields("duration_ms", time.Since(started).Milliseconds()))
+			vm.clearPayloadIfAuxRequestsReload(requestID, "exec_payload_cleared_for_reload_pre_release")
 			vm.debugLogf("runner qemu pending release write begin")
 			if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
 				return err
@@ -1482,6 +1485,7 @@ func (vm *nyxVM) runQemuWithTimeoutAndProbe(timeout, probeWindow time.Duration) 
 	} else {
 		_ = vm.control.SetReadDeadline(deadline)
 	}
+	vm.clearPayloadIfAuxRequestsReload(requestID, "exec_payload_cleared_for_reload_pre_release")
 	vm.debugLogf("runner qemu release write begin")
 	if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
 		return err
@@ -1510,6 +1514,27 @@ func (vm *nyxVM) setPayload(payload []byte) error {
 		vm.payloadMM[i] = 0
 	}
 	return nil
+}
+
+func (vm *nyxVM) clearPayload() uint32 {
+	if len(vm.payloadMM) >= 4 {
+		oldLen := binary.LittleEndian.Uint32(vm.payloadMM[:4])
+		binary.LittleEndian.PutUint32(vm.payloadMM[:4], 0)
+		_ = unix.Msync(vm.payloadMM, unix.MS_SYNC)
+		return oldLen
+	}
+	return 0
+}
+
+func (vm *nyxVM) clearPayloadIfAuxRequestsReload(requestID int64, stage string) {
+	if vm.aux == nil || vm.aux.execCode() != nyxRCHprintf {
+		return
+	}
+	if hprintfStage(cleanAuxMessage(vm.aux.misc())) != "request_reload" {
+		return
+	}
+	oldLen := vm.clearPayload()
+	vm.recordTrace("runner", stage, requestID, traceFields("payload_bytes", oldLen))
 }
 
 func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
@@ -1604,6 +1629,9 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		if steps == 0 {
 			probeWindow = 300 * time.Millisecond
 		}
+		if reloadRequested && !reloadBoundarySettled {
+			probeWindow = time.Second
+		}
 		if err := vm.runQemuWithTimeoutAndProbe(remaining, probeWindow); err != nil {
 			if isTimeoutError(err) {
 				log.Logf(0, "runner exec qemu step timeout at step=%d; synthesizing hanged result", steps)
@@ -1628,6 +1656,10 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 				reloadRequested = true
 			}
 			if reloadRequested && stage == "request_boundary_reload_ready" {
+				reloadBoundarySettled = true
+				vm.debugLogf("runner exec reload boundary settled at step=%d via %s", steps, stage)
+			}
+			if reloadRequested && stage == "payload_header" {
 				reloadBoundarySettled = true
 				vm.debugLogf("runner exec reload boundary settled at step=%d via %s", steps, stage)
 			}
