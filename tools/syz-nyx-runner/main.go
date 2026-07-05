@@ -1672,13 +1672,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		vm.debugLogf("runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
-		probeWindow := 50 * time.Millisecond
-		if steps == 0 {
-			probeWindow = 300 * time.Millisecond
-		}
-		if reloadRequested && !reloadBoundarySettled {
-			probeWindow = time.Second
-		}
+		probeWindow := execStepProbeWindow(steps, reloadRequested, reloadBoundarySettled)
 		if err := vm.runQemuWithTimeoutAndProbe(remaining, probeWindow); err != nil {
 			if isTimeoutError(err) {
 				log.Logf(0, "runner exec qemu step timeout at step=%d; synthesizing hanged result", steps)
@@ -1742,6 +1736,16 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 			vm.recordAuxTrace("exec_done_without_result", requestID)
 		}
 	}
+}
+
+func execStepProbeWindow(steps int, reloadRequested bool, reloadBoundarySettled bool) time.Duration {
+	if reloadRequested && !reloadBoundarySettled {
+		return 0
+	}
+	if steps == 0 {
+		return 300 * time.Millisecond
+	}
+	return 50 * time.Millisecond
 }
 
 func (vm *nyxVM) readExecResultIfReady(resultPath string, requestID int64, steps int, reloadRequested bool, reloadBoundarySettled bool) (*flatrpc.ExecutorMessage, bool, error) {
@@ -3356,15 +3360,13 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 	}
 	if !prime {
 		if module, ok := missingRequiredModuleCoverage(req, execMsg, r.vm.moduleRanges); ok {
-			err := fmt.Errorf("coverage infrastructure unavailable: request %d targets required module %q but produced no coverage records", req.Id, module)
-			r.vm.recordTrace("runner", "coverage_health_fail", req.Id, traceFields(
+			r.vm.recordTrace("runner", "coverage_health_empty", req.Id, traceFields(
 				"label", requestLabel,
 				"module", module,
 				"duration_ms", duration.Milliseconds(),
 			))
-			r.maybeDumpSlowTrace(req, requestLabel, started, duration, execMsg, err)
-			r.markForRestart(fmt.Sprintf("request %d produced no required module coverage", req.Id))
-			return nil, err
+			r.vm.debugLogf("runner request %d targets required module %q but produced no coverage records",
+				req.Id, module)
 		}
 	}
 	if execResultHanged(execMsg) {

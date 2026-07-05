@@ -1100,6 +1100,21 @@ func TestReadExecResultWaitsForReloadBoundary(t *testing.T) {
 	}
 }
 
+func TestExecStepProbeWindowReleasesImmediatelyForReloadBoundary(t *testing.T) {
+	if got := execStepProbeWindow(0, false, false); got != 300*time.Millisecond {
+		t.Fatalf("first step probe window = %s", got)
+	}
+	if got := execStepProbeWindow(2, false, false); got != 50*time.Millisecond {
+		t.Fatalf("normal step probe window = %s", got)
+	}
+	if got := execStepProbeWindow(2, true, false); got != 0 {
+		t.Fatalf("reload boundary probe window = %s, want immediate release", got)
+	}
+	if got := execStepProbeWindow(3, true, true); got != 50*time.Millisecond {
+		t.Fatalf("settled reload probe window = %s", got)
+	}
+}
+
 func TestHprintfStagePayloadHeader(t *testing.T) {
 	if got := hprintfStage("nyx payload header kind=2 body=88 total=100"); got != "payload_header" {
 		t.Fatalf("hprintfStage payload header = %q", got)
