@@ -3919,7 +3919,7 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 	}
 }
 
-func TestWindowsAfdPrivateSeedsScheduleForStartupReplay(t *testing.T) {
+func TestWindowsAfdPrivateSeedsExcludeFullSmokeCorpusFromStartupReplay(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3929,17 +3929,23 @@ func TestWindowsAfdPrivateSeedsScheduleForStartupReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile: %v", err)
 	}
-	matches := windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
-		cfg.Experimental.SeedExcludePrefixes)
-	if len(matches) == 0 {
-		t.Fatal("private AFD seed prefix matched no seeds")
+	allMatches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	selected := make(map[string]bool)
+	for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes) {
+		selected[filepath.Base(path)] = true
 	}
-	fullSeeds := 0
-	var unscheduled []string
-	for _, path := range matches {
+	if len(selected) == 0 {
+		t.Fatal("private AFD seed prefix selected no startup replay seeds")
+	}
+	excludedFullSeeds := 0
+	for _, path := range allMatches {
 		base := filepath.Base(path)
 		if !strings.HasPrefix(base, "nyx_afd_private_full_") {
 			continue
+		}
+		if selected[base] {
+			t.Fatalf("private AFD startup replay still selects generated full smoke seed %s", base)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -3957,17 +3963,10 @@ func TestWindowsAfdPrivateSeedsScheduleForStartupReplay(t *testing.T) {
 			t.Fatalf("%s has invalid semantic state: %+v\n%s",
 				base, st.Violations, p.Serialize())
 		}
-		fullSeeds++
-		if !target.RuntimePolicy.ShouldScheduleProgram("seed", p) {
-			unscheduled = append(unscheduled, base)
-		}
+		excludedFullSeeds++
 	}
-	if fullSeeds == 0 {
-		t.Fatal("private AFD config matched no nyx_afd_private_full_ seeds")
-	}
-	if len(unscheduled) != 0 {
-		t.Fatalf("%d private AFD full seeds are not scheduled for startup replay, first: %s",
-			len(unscheduled), strings.Join(unscheduled[:min(len(unscheduled), 10)], ", "))
+	if excludedFullSeeds == 0 {
+		t.Fatal("private AFD config matched no generated full smoke seeds to exclude")
 	}
 }
 
