@@ -732,15 +732,10 @@ func deriveHardTimeout(programTimeoutMs int32, fallback time.Duration) time.Dura
 		return fallback
 	}
 	programTimeout := time.Duration(programTimeoutMs) * time.Millisecond
-	slack := programTimeout
-	if slack < 10*time.Second {
-		slack = 10 * time.Second
-	}
-	hardTimeout := programTimeout + slack
-	if hardTimeout > fallback {
+	if programTimeout > fallback {
 		return fallback
 	}
-	return hardTimeout
+	return programTimeout
 }
 
 func applyStandaloneHardTimeout(vm *nyxVM, programTimeoutMs int) time.Duration {
@@ -2594,22 +2589,21 @@ func execCallNames(data []byte) []string {
 }
 
 type runner struct {
-	id                    int
-	addr                  string
-	port                  string
-	vm                    *nyxVM
-	conn                  *flatrpc.Conn
-	connectReply          *flatrpc.ConnectReply
-	handshakeReady        bool
-	coveragePrimed        bool
-	lastEnvFlags          flatrpc.ExecEnv
-	lastSandboxArg        int64
-	needRestart           bool
-	coveragePrimeRestarts int
-	keepState             bool
-	coverageDebugPath     string
-	slowTrace             *slowTraceConfig
-	lastCompletedReq      *flatrpc.ExecRequest
+	id                int
+	addr              string
+	port              string
+	vm                *nyxVM
+	conn              *flatrpc.Conn
+	connectReply      *flatrpc.ConnectReply
+	handshakeReady    bool
+	coveragePrimed    bool
+	lastEnvFlags      flatrpc.ExecEnv
+	lastSandboxArg    int64
+	needRestart       bool
+	keepState         bool
+	coverageDebugPath string
+	slowTrace         *slowTraceConfig
+	lastCompletedReq  *flatrpc.ExecRequest
 }
 
 const maxVMRestartAttempts = 3
@@ -3659,15 +3653,9 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return primeMsg, nil
 		}
 		log.Logf(0, "runner coverage prime requires replay: id=%d %s", req.Id, primeResultDetails(primeMsg))
-		if module, ok := requestTargetedConfiguredModule(req.Data, r.vm.moduleRanges); ok &&
-			r.coveragePrimeRestarts < maxVMRestartAttempts {
-			r.coveragePrimeRestarts++
-			log.Logf(0, "runner coverage prime produced no module coverage for %q; restarting VM before replay (attempt %d/%d)",
-				module, r.coveragePrimeRestarts, maxVMRestartAttempts)
-			if err := r.restartVMWithRetries("coverage priming produced no module coverage"); err != nil {
-				return nil, err
-			}
-			return r.runRequest(req)
+		if module, ok := requestTargetedConfiguredModule(req.Data, r.vm.moduleRanges); ok {
+			log.Logf(0, "runner coverage prime produced no module coverage for %q; replaying without VM restart",
+				module)
 		}
 		if err := r.ensureHandshake(req); err != nil {
 			return nil, err

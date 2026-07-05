@@ -1292,7 +1292,7 @@ func TestPackModuleRangeConfig(t *testing.T) {
 
 func TestDeriveHardTimeoutUsesProgramTimeout(t *testing.T) {
 	got := deriveHardTimeout(5000, 3*time.Minute)
-	want := 15 * time.Second
+	want := 5 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
@@ -1386,7 +1386,7 @@ func TestDeriveHardTimeoutFallsBackWithoutProgramTimeout(t *testing.T) {
 func TestApplyStandaloneHardTimeoutUsesProgramTimeout(t *testing.T) {
 	vm := &nyxVM{hardTimeout: 3 * time.Minute}
 	got := applyStandaloneHardTimeout(vm, 60000)
-	want := 2 * time.Minute
+	want := 1 * time.Minute
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
@@ -1416,9 +1416,9 @@ func TestHardTimeoutWithSlackUsesMinimum(t *testing.T) {
 }
 
 func TestExecWaitTimeoutHonorsDerivedShortProgramTimeout(t *testing.T) {
-	vm := &nyxVM{hardTimeout: 15 * time.Second}
+	vm := &nyxVM{hardTimeout: 5 * time.Second}
 	got := vm.execWaitTimeout()
-	want := 20 * time.Second
+	want := 10 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
