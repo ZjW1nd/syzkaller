@@ -946,6 +946,12 @@ func TestMissingRequiredModuleCoverageForTargetedRequest(t *testing.T) {
 	}), []moduleRangeSpec{{Pattern: "ntoskrnl.exe", Required: true}}); ok {
 		t.Fatalf("missingRequiredModuleCoverage()=%q,true for non-targeted required module", module)
 	}
+	if module, ok := requestTargetedConfiguredModule(execData, []moduleRangeSpec{
+		{Pattern: "ntoskrnl.exe", Required: true},
+		{Pattern: "afd.sys"},
+	}); !ok || module != "afd.sys" {
+		t.Fatalf("requestTargetedConfiguredModule()=%q,%v want afd.sys,true", module, ok)
+	}
 }
 
 func TestModuleCallNameToken(t *testing.T) {
@@ -1110,6 +1116,50 @@ func TestClearPayloadResetsSharedLength(t *testing.T) {
 	}
 	if got := binary.LittleEndian.Uint32(vm.payloadMM[:4]); got != 0 {
 		t.Fatalf("payload length after clear = %d", got)
+	}
+}
+
+func TestDrainPendingQemuPingsReleasesAllAvailablePings(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	vm := &nyxVM{
+		control: client,
+		trace:   newTraceRecorder(16),
+	}
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 2; i++ {
+			if _, err := server.Write([]byte{nyxInterfacePing}); err != nil {
+				done <- err
+				return
+			}
+			var release [1]byte
+			if _, err := server.Read(release[:]); err != nil {
+				done <- err
+				return
+			}
+			if release[0] != nyxInterfacePing {
+				done <- fmt.Errorf("release byte = %#x", release[0])
+				return
+			}
+		}
+		done <- nil
+	}()
+	if err := vm.drainPendingQemuPings(7, "test", 4, 20*time.Millisecond); err != nil {
+		t.Fatalf("drainPendingQemuPings: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var drained int
+	for _, entry := range vm.trace.Tail("qemu", 0) {
+		if entry.Stage == "kvm_run_drain_pending_ping" {
+			drained++
+		}
+	}
+	if drained != 2 {
+		t.Fatalf("drained pings = %d", drained)
 	}
 }
 

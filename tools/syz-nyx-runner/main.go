@@ -1450,40 +1450,46 @@ func (vm *nyxVM) runQemuWithTimeoutAndProbe(timeout, probeWindow time.Duration) 
 		defer vm.control.SetDeadline(time.Time{})
 	}
 	var ack [1]byte
+	if !deadline.IsZero() && time.Until(deadline) <= probeWindow {
+		probeWindow = 0
+	}
 	probeDeadline := time.Now().Add(probeWindow)
-	if !deadline.IsZero() && deadline.Before(probeDeadline) {
+	if probeWindow > 0 && !deadline.IsZero() && deadline.Before(probeDeadline) {
 		probeDeadline = deadline
 	}
-	if err := vm.control.SetReadDeadline(probeDeadline); err == nil {
-		n, err := vm.control.Read(ack[:])
-		_ = vm.control.SetReadDeadline(deadline)
-		if err == nil && n == len(ack) {
-			if vm.aux != nil {
-				vm.aux.freeze()
+	if probeWindow > 0 {
+		err := vm.control.SetReadDeadline(probeDeadline)
+		if err != nil {
+			_ = vm.control.SetReadDeadline(deadline)
+		} else {
+			n, err := vm.control.Read(ack[:])
+			_ = vm.control.SetReadDeadline(deadline)
+			if err == nil && n == len(ack) {
+				if vm.aux != nil {
+					vm.aux.freeze()
+				}
+				vm.debugLogf("runner qemu pending ping consumed duration_ms=%d", time.Since(started).Milliseconds())
+				vm.recordTrace("qemu", "kvm_run_pending_ping", requestID,
+					traceFields("duration_ms", time.Since(started).Milliseconds()))
+				vm.clearPayloadIfAuxRequestsReload(requestID, "exec_payload_cleared_for_reload_pre_release")
+				vm.debugLogf("runner qemu pending release write begin")
+				if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
+					return err
+				}
+				vm.debugLogf("runner qemu pending release write done")
+				vm.recordTrace("qemu", "kvm_run_end", requestID,
+					traceFields("duration_ms", time.Since(started).Milliseconds(), "pending_ping", true))
+				return nil
 			}
-			vm.debugLogf("runner qemu pending ping consumed duration_ms=%d", time.Since(started).Milliseconds())
-			vm.recordTrace("qemu", "kvm_run_pending_ping", requestID,
-				traceFields("duration_ms", time.Since(started).Milliseconds()))
-			vm.clearPayloadIfAuxRequestsReload(requestID, "exec_payload_cleared_for_reload_pre_release")
-			vm.debugLogf("runner qemu pending release write begin")
-			if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
+			if err != nil && !isTimeoutError(err) {
+				fields := traceFields("duration_ms", time.Since(started).Milliseconds())
+				fields["error"] = err.Error()
+				vm.debugLogf("runner qemu pending ping read done duration_ms=%d err=%v",
+					time.Since(started).Milliseconds(), err)
+				vm.recordTrace("qemu", "kvm_run_pending_ping_error", requestID, fields)
 				return err
 			}
-			vm.debugLogf("runner qemu pending release write done")
-			vm.recordTrace("qemu", "kvm_run_end", requestID,
-				traceFields("duration_ms", time.Since(started).Milliseconds(), "pending_ping", true))
-			return nil
 		}
-		if err != nil && !isTimeoutError(err) {
-			fields := traceFields("duration_ms", time.Since(started).Milliseconds())
-			fields["error"] = err.Error()
-			vm.debugLogf("runner qemu pending ping read done duration_ms=%d err=%v",
-				time.Since(started).Milliseconds(), err)
-			vm.recordTrace("qemu", "kvm_run_pending_ping_error", requestID, fields)
-			return err
-		}
-	} else {
-		_ = vm.control.SetReadDeadline(deadline)
 	}
 	vm.clearPayloadIfAuxRequestsReload(requestID, "exec_payload_cleared_for_reload_pre_release")
 	vm.debugLogf("runner qemu release write begin")
@@ -1502,6 +1508,44 @@ func (vm *nyxVM) runQemuWithTimeoutAndProbe(timeout, probeWindow time.Duration) 
 	vm.debugLogf("runner qemu ack read done duration_ms=%d err=%v", time.Since(started).Milliseconds(), err)
 	vm.recordTrace("qemu", "kvm_run_end", requestID, fields)
 	return err
+}
+
+func (vm *nyxVM) drainPendingQemuPings(requestID int64, reason string, max int, window time.Duration) error {
+	if max <= 0 || window <= 0 {
+		return nil
+	}
+	for i := 0; i < max; i++ {
+		started := time.Now()
+		if err := vm.control.SetReadDeadline(time.Now().Add(window)); err != nil {
+			return err
+		}
+		var ack [1]byte
+		n, err := vm.control.Read(ack[:])
+		_ = vm.control.SetReadDeadline(time.Time{})
+		if err != nil {
+			if isTimeoutError(err) {
+				return nil
+			}
+			vm.recordTrace("qemu", "kvm_run_drain_pending_ping_error", requestID,
+				traceFields("reason", reason, "index", i, "error", err.Error()))
+			return err
+		}
+		if n != len(ack) {
+			return io.ErrShortBuffer
+		}
+		if vm.aux != nil {
+			vm.aux.freeze()
+		}
+		vm.recordTrace("qemu", "kvm_run_drain_pending_ping", requestID,
+			traceFields("reason", reason, "index", i, "duration_ms", time.Since(started).Milliseconds()))
+		vm.clearPayloadIfAuxRequestsReload(requestID, "exec_payload_cleared_for_reload_pre_drain_release")
+		if _, err := vm.control.Write([]byte{nyxInterfacePing}); err != nil {
+			return err
+		}
+	}
+	vm.recordTrace("qemu", "kvm_run_drain_pending_ping_limit", requestID,
+		traceFields("reason", reason, "max", max))
+	return nil
 }
 
 func (vm *nyxVM) setPayload(payload []byte) error {
@@ -1596,6 +1640,9 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	vm.recordTrace("runner", "exec_payload_begin", requestID, traceFields(
 		"payload_bytes", len(payload),
 	))
+	if err := vm.drainPendingQemuPings(requestID, "before_exec_payload", 8, 10*time.Millisecond); err != nil {
+		return nil, err
+	}
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxExecResult))
 	_ = os.Remove(vm.coverPath)
 	vm.aux.clearTransientResult()
@@ -2543,21 +2590,22 @@ func execCallNames(data []byte) []string {
 }
 
 type runner struct {
-	id                int
-	addr              string
-	port              string
-	vm                *nyxVM
-	conn              *flatrpc.Conn
-	connectReply      *flatrpc.ConnectReply
-	handshakeReady    bool
-	coveragePrimed    bool
-	lastEnvFlags      flatrpc.ExecEnv
-	lastSandboxArg    int64
-	needRestart       bool
-	keepState         bool
-	coverageDebugPath string
-	slowTrace         *slowTraceConfig
-	lastCompletedReq  *flatrpc.ExecRequest
+	id                    int
+	addr                  string
+	port                  string
+	vm                    *nyxVM
+	conn                  *flatrpc.Conn
+	connectReply          *flatrpc.ConnectReply
+	handshakeReady        bool
+	coveragePrimed        bool
+	lastEnvFlags          flatrpc.ExecEnv
+	lastSandboxArg        int64
+	needRestart           bool
+	coveragePrimeRestarts int
+	keepState             bool
+	coverageDebugPath     string
+	slowTrace             *slowTraceConfig
+	lastCompletedReq      *flatrpc.ExecRequest
 }
 
 const maxVMRestartAttempts = 3
@@ -3315,6 +3363,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 				"duration_ms", duration.Milliseconds(),
 			))
 			r.maybeDumpSlowTrace(req, requestLabel, started, duration, execMsg, err)
+			r.markForRestart(fmt.Sprintf("request %d produced no required module coverage", req.Id))
 			return nil, err
 		}
 	}
@@ -3608,6 +3657,16 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return primeMsg, nil
 		}
 		log.Logf(0, "runner coverage prime requires replay: id=%d %s", req.Id, primeResultDetails(primeMsg))
+		if module, ok := requestTargetedConfiguredModule(req.Data, r.vm.moduleRanges); ok &&
+			r.coveragePrimeRestarts < maxVMRestartAttempts {
+			r.coveragePrimeRestarts++
+			log.Logf(0, "runner coverage prime produced no module coverage for %q; restarting VM before replay (attempt %d/%d)",
+				module, r.coveragePrimeRestarts, maxVMRestartAttempts)
+			if err := r.restartVMWithRetries("coverage priming produced no module coverage"); err != nil {
+				return nil, err
+			}
+			return r.runRequest(req)
+		}
 		if err := r.ensureHandshake(req); err != nil {
 			return nil, err
 		}
@@ -3685,12 +3744,20 @@ func missingRequiredModuleCoverage(req *flatrpc.ExecRequest, msg *flatrpc.Execut
 }
 
 func requestTargetedRequiredModule(execData []byte, ranges []moduleRangeSpec) (string, bool) {
+	return requestTargetedModule(execData, ranges, true)
+}
+
+func requestTargetedConfiguredModule(execData []byte, ranges []moduleRangeSpec) (string, bool) {
+	return requestTargetedModule(execData, ranges, false)
+}
+
+func requestTargetedModule(execData []byte, ranges []moduleRangeSpec, requiredOnly bool) (string, bool) {
 	callNames := execCallNames(execData)
 	if len(callNames) == 0 {
 		return "", false
 	}
 	for _, rng := range ranges {
-		if !rng.Required {
+		if requiredOnly && !rng.Required {
 			continue
 		}
 		token := moduleCallNameToken(rng.Pattern)
