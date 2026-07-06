@@ -158,14 +158,14 @@ static intptr_t SYSCALLAPI syz_kafl_bugcheck_trigger(intptr_t, intptr_t, intptr_
 	// collection inside the fuzzing loop.
 	SC_HANDLE scm = OpenSCManagerA(nullptr, nullptr, SC_MANAGER_CONNECT);
 	if (scm == nullptr) {
-		DWORD err = GetLastError();
-		windows_diag_log("syz_kafl_bugcheck_trigger OpenSCManagerA failed err=%lu\n", (unsigned long)err);
+		windows_diag_log("syz_kafl_bugcheck_trigger OpenSCManagerA failed err=%lu\n",
+				 (unsigned long)GetLastError());
 		return -1;
 	}
 	SC_HANDLE service = OpenServiceA(scm, "KaflBugcheckTrigger", SERVICE_START);
 	if (service == nullptr) {
-		DWORD err = GetLastError();
-		windows_diag_log("syz_kafl_bugcheck_trigger OpenServiceA failed err=%lu\n", (unsigned long)err);
+		windows_diag_log("syz_kafl_bugcheck_trigger OpenServiceA failed err=%lu\n",
+				 (unsigned long)GetLastError());
 		CloseServiceHandle(scm);
 		return -1;
 	}
@@ -197,6 +197,8 @@ static char windows_net_injection_target_adapter_name[64];
 #define SYZ_WINDOWS_NET_INJECTION_REFRESH_UNICAST_ENV "SYZ_WINDOWS_NET_INJECTION_REFRESH_UNICAST"
 #define SYZ_WINDOWS_NET_INJECTION_STATIC_NEIGHBOR_ENV "SYZ_WINDOWS_NET_INJECTION_STATIC_NEIGHBOR"
 #define SYZ_WINDOWS_NET_INJECTION_FIREWALL_ALLOW_ENV "SYZ_WINDOWS_NET_INJECTION_FIREWALL_ALLOW"
+#define SYZ_WINDOWS_NET_INJECTION_SKIP_INIT_IPV4_ENV "SYZ_WINDOWS_NET_INJECTION_SKIP_INIT_IPV4"
+#define SYZ_WINDOWS_NET_INJECTION_SKIP_FIREWALL_ENV "SYZ_WINDOWS_NET_INJECTION_SKIP_FIREWALL"
 #define SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS_ENV "SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS"
 #define SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV "SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS"
 #define SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS_ENV "SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS"
@@ -1092,6 +1094,16 @@ static void windows_net_injection_try_configure_local_ipv4()
 
 static void windows_net_injection_log_guest_net_state(const char* label)
 {
+	static int configure_during_log = -1;
+	if (configure_during_log < 0) {
+		char configure_in_log[8];
+		DWORD configure_in_log_len = GetEnvironmentVariableA("SYZ_WINDOWS_NET_INJECTION_CONFIGURE_IN_LOG",
+								     configure_in_log,
+								     sizeof(configure_in_log));
+		configure_during_log = configure_in_log_len > 0 &&
+				       configure_in_log_len < sizeof(configure_in_log) &&
+				       configure_in_log[0] == '1';
+	}
 	DWORD target_ifindex = windows_net_injection_target_ifindex();
 	ULONG if_table_size = 0;
 	DWORD if_status = GetIfTable(NULL, &if_table_size, TRUE);
@@ -1129,7 +1141,9 @@ static void windows_net_injection_log_guest_net_state(const char* label)
 					(unsigned long)row->dwOutErrors);
 			windows_net_injection_log_ip_interface_for_index(row->dwIndex, label);
 			windows_net_injection_log_unicast_ipv4_entry(row->dwIndex, label);
-			windows_net_injection_configure_static_neighbor(row->dwIndex, label);
+			if (configure_during_log) {
+				windows_net_injection_configure_static_neighbor(row->dwIndex, label);
+			}
 			windows_net_injection_log_neighbor_ipv4_table_for_index(row->dwIndex, label);
 			windows_net_injection_log_peer_route(row->dwIndex, label);
 		}
@@ -1511,14 +1525,31 @@ static void initialize_windows_net_injection()
 	}
 	debug("set windows TAP media status connected\n");
 	windows_nyx_log("set windows TAP media status connected\n");
-	windows_net_injection_try_configure_local_ipv4();
 	char firewall_allow[8];
 	DWORD firewall_allow_len = GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_FIREWALL_ALLOW_ENV,
 							   firewall_allow, sizeof(firewall_allow));
+	char skip_firewall[8];
+	DWORD skip_firewall_len = GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_SKIP_FIREWALL_ENV,
+							    skip_firewall, sizeof(skip_firewall));
+	bool skip_firewall_enabled = skip_firewall_len > 0 && skip_firewall_len < sizeof(skip_firewall) &&
+				     skip_firewall[0] == '1';
+	windows_nyx_log("windows net injection firewall allow enabled=%u skip=%u\n",
+			(firewall_allow_len > 0 && firewall_allow_len < sizeof(firewall_allow) &&
+			 firewall_allow[0] == '1') ? 1U : 0U,
+			skip_firewall_enabled ? 1U : 0U);
 	if (firewall_allow_len > 0 && firewall_allow_len < sizeof(firewall_allow) &&
-	    firewall_allow[0] == '1') {
-		windows_nyx_log("windows net injection firewall allow enabled\n");
+	    firewall_allow[0] == '1' && !skip_firewall_enabled) {
 		windows_net_injection_allow_firewall_tcp_inbound();
+	}
+	char skip_init_ipv4[8];
+	DWORD skip_init_ipv4_len = GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_SKIP_INIT_IPV4_ENV,
+							    skip_init_ipv4, sizeof(skip_init_ipv4));
+	bool skip_init_ipv4_enabled = skip_init_ipv4_len > 0 && skip_init_ipv4_len < sizeof(skip_init_ipv4) &&
+				       skip_init_ipv4[0] == '1';
+	windows_nyx_log("windows net injection init ipv4 configure enabled=%u\n",
+			skip_init_ipv4_enabled ? 0U : 1U);
+	if (!skip_init_ipv4_enabled) {
+		windows_net_injection_try_configure_local_ipv4();
 	}
 	windows_net_injection_log_guest_net_state("after-open");
 	DWORD settle_ms = windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS_ENV, 30000);
@@ -1597,8 +1628,8 @@ static long windows_net_injection_write(const void* data, DWORD length)
 		windows_nyx_log("windows net injection short write length=%u written=%u\n", length, written);
 		return -1;
 	}
-	debug("windows net injection wrote frame length=%u\n", length);
-	windows_nyx_log("windows net injection wrote frame length=%u\n", length);
+	debug("windows net injection tx wrote frame length=%u\n", length);
+	windows_nyx_log("windows net injection tx wrote frame length=%u\n", length);
 	DWORD settle_ms = windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV, 30000);
 	if (settle_ms != 0) {
 		windows_nyx_log("windows net injection post-write settle begin ms=%lu\n",

@@ -558,37 +558,12 @@ static intptr_t SYSCALLAPI DisconnectEx(intptr_t s, intptr_t overlapped, intptr_
 					intptr_t reserved, intptr_t, intptr_t, intptr_t,
 					intptr_t, intptr_t, intptr_t);
 
-static void windows_log_sockaddr_state(const char* op, SOCKET s, const struct sockaddr* addr,
-				       int namelen)
+static void windows_log_sockaddr_state(const char*, SOCKET, const struct sockaddr*, int)
 {
-	if (addr == nullptr) {
-		nyx_hprintf("windows socket state %s socket=0x%llx addr=null namelen=%d\n",
-			    op, (unsigned long long)s, namelen);
-		return;
-	}
-	if (namelen >= (int)sizeof(struct sockaddr_in) && addr->sa_family == AF_INET) {
-		const struct sockaddr_in* in = (const struct sockaddr_in*)addr;
-		uint32 ip = ntohl(in->sin_addr.s_addr);
-		nyx_hprintf("windows socket state %s socket=0x%llx family=AF_INET addr=%u.%u.%u.%u port=%u namelen=%d\n",
-			    op, (unsigned long long)s, (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-			    (ip >> 8) & 0xff, ip & 0xff, (unsigned)ntohs(in->sin_port),
-			    namelen);
-		return;
-	}
-	nyx_hprintf("windows socket state %s socket=0x%llx family=%u namelen=%d\n", op,
-		    (unsigned long long)s, (unsigned)addr->sa_family, namelen);
 }
 
-static void windows_log_getsockname_state(const char* op, SOCKET s)
+static void windows_log_getsockname_state(const char*, SOCKET)
 {
-	struct sockaddr_storage storage = {};
-	int len = sizeof(storage);
-	if (getsockname(s, (struct sockaddr*)&storage, &len) == 0) {
-		windows_log_sockaddr_state(op, s, (const struct sockaddr*)&storage, len);
-		return;
-	}
-	nyx_hprintf("windows socket state %s socket=0x%llx getsockname failed wsa=%d errno=%d\n",
-		    op, (unsigned long long)s, WSAGetLastError(), errno);
 }
 
 static int windows_wsa_error_to_errno(int wsa)
@@ -622,14 +597,10 @@ static intptr_t SYSCALLAPI windows_bind_state(intptr_t s, intptr_t addr, intptr_
 	errno = 0;
 	if (bind(socket, name, (int)namelen) == 0) {
 		windows_log_getsockname_state("bind result", socket);
-		nyx_hprintf("windows socket state bind ok socket=0x%llx\n",
-			    (unsigned long long)socket);
 		return s;
 	}
 	int wsa = WSAGetLastError();
 	errno = windows_wsa_error_to_errno(wsa);
-	nyx_hprintf("windows socket state bind failed socket=0x%llx wsa=%d errno=%d\n",
-		    (unsigned long long)socket, wsa, errno);
 	return -1;
 }
 
@@ -764,14 +735,10 @@ static intptr_t SYSCALLAPI windows_listen_state(intptr_t s, intptr_t backlog, in
 	errno = 0;
 	if (listen(socket, (int)backlog) == 0) {
 		windows_log_getsockname_state("listen result", socket);
-		nyx_hprintf("windows socket state listen ok socket=0x%llx backlog=%lld\n",
-			    (unsigned long long)socket, (long long)backlog);
 		return s;
 	}
 	int wsa = WSAGetLastError();
 	errno = windows_wsa_error_to_errno(wsa);
-	nyx_hprintf("windows socket state listen failed socket=0x%llx backlog=%lld wsa=%d errno=%d\n",
-		    (unsigned long long)socket, (long long)backlog, wsa, errno);
 	return -1;
 }
 
