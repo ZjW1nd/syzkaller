@@ -3750,13 +3750,31 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 			}
 			continue
 		}
+		if windowsAfdPrivateRequiresAsyncCall(call) {
+			if ct.DirectlyGeneratable(call.ID) {
+				t.Fatalf("%s requires async completion but remains a direct generation root", name)
+			}
+			continue
+		}
 		if !ct.DirectlyGeneratable(call.ID) {
 			t.Fatalf("%s is a non-SAN private AFD IOCTL but is not directly generatable", name)
 		}
 	}
 }
 
+func windowsAfdPrivateRequiresAsyncCall(call *prog.Syscall) bool {
+	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") ||
+		!strings.Contains(call.Name, "_pending") || len(call.Args) < 2 {
+		return false
+	}
+	res, ok := call.Args[1].Type.(*prog.ResourceType)
+	return ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE"
+}
+
 func windowsAfdPrivateConfigSyscall(name string) bool {
+	if windowsAfdPrivateConfigUnsupportedSyscall(name) {
+		return false
+	}
 	prefixes := []string{
 		"NtCreateFile$afd_",
 		"NtDeviceIoControlFile$afd_",
@@ -3779,6 +3797,18 @@ func windowsAfdPrivateConfigSyscall(name string) bool {
 		name == "syz_emit_ethernet$windows" ||
 		name == "syz_extract_tcp_res$windows" ||
 		name == "syz_extract_tcp_res$windows_synack"
+}
+
+func windowsAfdPrivateConfigUnsupportedSyscall(name string) bool {
+	switch name {
+	case "NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp_nonblock":
+		return true
+	default:
+		return false
+	}
 }
 
 func windowsIoctlCode(call *prog.Syscall) (uint64, bool) {
