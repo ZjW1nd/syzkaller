@@ -57,6 +57,7 @@ func applyWindowsTargetProfile(target *prog.Target, profile string) (*prog.Targe
 			}
 			return allowed
 		}
+		clone.CallRequiresAsync = windowsAFDCallRequiresAsync
 		clone.SemanticStateModel = windowsAFDSemanticStateModel
 		clone.RuntimePolicy = windowsRuntimePolicy(
 			prog.FocusedResourceRuntimePolicy(clone, clone.MinimumCollideCallRelevance))
@@ -68,7 +69,8 @@ func applyWindowsTargetProfile(target *prog.Target, profile string) (*prog.Targe
 
 func windowsAFDAllowProfileGenerationPrefix(target *prog.Target, prefix string) {
 	for _, call := range target.Syscalls {
-		if call != nil && strings.HasPrefix(call.Name, prefix) {
+		if call != nil && strings.HasPrefix(call.Name, prefix) &&
+			!windowsAFDSyscallRequiresAsync(call) {
 			windowsAFDAllowProfileGeneration(target, call.Name)
 		}
 	}
@@ -164,6 +166,9 @@ func windowsAFDAllowAsyncCollideCall(calls []*prog.Call, idx int) (bool, string)
 	if !windowsIsAFDProfileSurfaceCall(call.Meta) {
 		return true, ""
 	}
+	if windowsAFDSyscallRequiresAsync(call.Meta) {
+		return false, "afd_required_async"
+	}
 	if windowsAFDCallStateSensitive(name) && windowsAFDCallSharesStateResourceWithNext(calls, idx) {
 		return false, "shared_resource"
 	}
@@ -229,7 +234,7 @@ func windowsAFDFilterAsyncCollideIndices(calls []*prog.Call, indices []int) []in
 
 func windowsAFDCallMustStaySynchronous(name string) bool {
 	switch {
-	case strings.Contains(name, "_pending") || strings.Contains(name, "_irp"):
+	case strings.Contains(name, "_irp"):
 		return true
 	case strings.HasPrefix(name, "NtCreateFile$afd_"),
 		strings.HasPrefix(name, "NtCancelIoFileEx$afd_"),
@@ -252,6 +257,22 @@ func windowsAFDCallMustStaySynchronous(name string) bool {
 	default:
 		return false
 	}
+}
+
+func windowsAFDCallRequiresAsync(calls []*prog.Call, idx int) bool {
+	if idx < 0 || idx >= len(calls) || calls[idx] == nil || calls[idx].Meta == nil {
+		return false
+	}
+	return windowsAFDSyscallRequiresAsync(calls[idx].Meta)
+}
+
+func windowsAFDSyscallRequiresAsync(call *prog.Syscall) bool {
+	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") ||
+		!strings.Contains(call.Name, "_pending") || len(call.Args) < 2 {
+		return false
+	}
+	res, ok := call.Args[1].Type.(*prog.ResourceType)
+	return ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE"
 }
 
 func windowsAFDCallAllowsAsyncDataPath(name string) bool {
@@ -391,6 +412,9 @@ func windowsRuntimePolicy(base prog.RuntimePolicy) prog.RuntimePolicy {
 		if !windowsHasValidAFDNonblockState(p) {
 			return false
 		}
+		if !windowsHasValidAFDRequiredAsync(p) {
+			return false
+		}
 		if !windowsHasValidAFDPendingEventUse(p) {
 			return false
 		}
@@ -465,6 +489,70 @@ func windowsHasValidAFDNonblockState(p *prog.Prog) bool {
 		}
 	}
 	return true
+}
+
+func windowsHasValidAFDRequiredAsync(p *prog.Prog) bool {
+	if p == nil {
+		return true
+	}
+	for idx, call := range p.Calls {
+		if call == nil || call.Meta == nil || !windowsAFDCallRequiresAsync(p.Calls, idx) {
+			continue
+		}
+		if !call.Props.Async {
+			return false
+		}
+		if !windowsAFDRequiredAsyncHasResolver(p, idx) {
+			return false
+		}
+	}
+	return true
+}
+
+func windowsAFDRequiredAsyncHasResolver(p *prog.Prog, idx int) bool {
+	if p == nil || idx < 0 || idx >= len(p.Calls) || p.Calls[idx] == nil {
+		return false
+	}
+	root := windowsSemanticInputRoot(p.Calls[idx], 0)
+	if root == nil {
+		return false
+	}
+	for _, call := range p.Calls[idx+1:] {
+		if windowsAFDCallCanResolvePendingIO(call, root) {
+			return true
+		}
+	}
+	return false
+}
+
+func windowsAFDCallCanResolvePendingIO(call *prog.Call, pendingRoot *prog.ResultArg) bool {
+	if call == nil || call.Meta == nil {
+		return false
+	}
+	name := call.Meta.Name
+	switch name {
+	case "syz_emit_ethernet$windows":
+		return true
+	}
+	if strings.HasPrefix(name, "NtDeviceIoControlFile$afd_send_") {
+		return true
+	}
+	if pendingRoot == nil || !windowsAFDStateResourceRoots(call)[pendingRoot] {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(name, "NtCancelIoFileEx$afd_"),
+		strings.HasPrefix(name, "CancelIoEx$afd_"),
+		strings.HasPrefix(name, "CancelIo$afd_"),
+		strings.HasPrefix(name, "CloseHandle$afd_"):
+		return true
+	case strings.HasPrefix(name, "NtDeviceIoControlFile$afd_connect_"),
+		strings.HasPrefix(name, "NtDeviceIoControlFile$afd_accept_"),
+		strings.HasPrefix(name, "NtDeviceIoControlFile$afd_defer_accept_"):
+		return true
+	default:
+		return false
+	}
 }
 
 func windowsHasValidAFDPendingEventUse(p *prog.Prog) bool {

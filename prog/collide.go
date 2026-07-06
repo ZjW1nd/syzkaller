@@ -34,7 +34,7 @@ func AssignRandomAsync(origProg *Prog, rand *rand.Rand) *Prog {
 		preferred[idx] = true
 	}
 	usePreferred := len(preferred) != 0
-	for i := len(prog.Calls) - 1; i >= 0 && leftAsync > 0; i-- {
+	for i := len(prog.Calls) - 1; i >= 0; i-- {
 		call := prog.Calls[i]
 		producesUnassigned := false
 		consumes := make(map[*ResultArg]bool)
@@ -52,6 +52,16 @@ func AssignRandomAsync(origProg *Prog, rand *rand.Rand) *Prog {
 				consumes[res.Res] = true
 			}
 		})
+		if callRequiresAsync(prog.Calls, prog.Target, i) {
+			call.Props.Async = true
+			for res := range consumes {
+				unassigned[res] = true
+			}
+			if leftAsync > 0 {
+				leftAsync--
+			}
+			continue
+		}
 		forceSync := prog.Target.Helpers.AvoidCollidingAutomaticHelpers && prog.Target.CallIsAutomaticHelper(call.Meta)
 		if usePreferred && !preferred[i] {
 			forceSync = true
@@ -60,7 +70,7 @@ func AssignRandomAsync(origProg *Prog, rand *rand.Rand) *Prog {
 			forceSync = true
 		}
 		// Make async with a 66% chance (but never the last call).
-		if !forceSync && !producesUnassigned && i+1 != len(prog.Calls) && rand.Intn(3) != 0 {
+		if leftAsync > 0 && !forceSync && !producesUnassigned && i+1 != len(prog.Calls) && rand.Intn(3) != 0 {
 			call.Props.Async = true
 			for res := range consumes {
 				unassigned[res] = true
@@ -119,10 +129,24 @@ func canAsyncCollideCall(calls []*Call, target *Target, idx int) bool {
 	return target.AllowAsyncCollideCall(calls, idx)
 }
 
+func callRequiresAsync(calls []*Call, target *Target, idx int) bool {
+	if idx < 0 || idx >= len(calls) {
+		return false
+	}
+	if calls[idx] == nil || calls[idx].Meta == nil {
+		return false
+	}
+	if target == nil || target.CallRequiresAsync == nil {
+		return false
+	}
+	return target.CallRequiresAsync(calls, idx)
+}
+
 // SanitizeCollidePropsForTarget clears async/rerun properties that the target
 // no longer allows. It returns the original program when no changes are needed.
 func SanitizeCollidePropsForTarget(p *Prog) (*Prog, bool) {
-	if p == nil || p.Target == nil || p.Target.AllowAsyncCollideCall == nil {
+	if p == nil || p.Target == nil ||
+		p.Target.AllowAsyncCollideCall == nil && p.Target.CallRequiresAsync == nil {
 		return p, false
 	}
 	needsSanitize := false
@@ -130,7 +154,16 @@ func SanitizeCollidePropsForTarget(p *Prog) (*Prog, bool) {
 		if call == nil {
 			continue
 		}
-		if call.Props.Async && !canAsyncCollideCall(p.Calls, p.Target, i) {
+		requiresAsync := callRequiresAsync(p.Calls, p.Target, i)
+		if requiresAsync && !call.Props.Async {
+			needsSanitize = true
+			break
+		}
+		if call.Props.Async && !requiresAsync && !canAsyncCollideCall(p.Calls, p.Target, i) {
+			needsSanitize = true
+			break
+		}
+		if call.Props.Rerun != 0 && !canAsyncCollideCall(p.Calls, p.Target, i) {
 			needsSanitize = true
 			break
 		}
@@ -141,7 +174,14 @@ func SanitizeCollidePropsForTarget(p *Prog) (*Prog, bool) {
 	clone := p.Clone()
 	allowedRerun := make(map[int]bool)
 	for i, call := range clone.Calls {
-		if call == nil || !call.Props.Async || canAsyncCollideCall(clone.Calls, clone.Target, i) {
+		if call == nil {
+			continue
+		}
+		if callRequiresAsync(clone.Calls, clone.Target, i) {
+			call.Props.Async = true
+			continue
+		}
+		if !call.Props.Async || canAsyncCollideCall(clone.Calls, clone.Target, i) {
 			continue
 		}
 		call.Props.Async = false
