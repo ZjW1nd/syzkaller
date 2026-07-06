@@ -3643,7 +3643,8 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if err := r.ensureHandshake(req); err != nil {
 		return nil, err
 	}
-	if !r.coveragePrimed && requestNeedsCoveragePriming(req) {
+	requestNeedsCover := req.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectCover != 0
+	if requestNeedsCover && !r.coveragePrimed && requestNeedsCoveragePriming(req) {
 		primeMsg, err := r.executeRequestOnce(req, true)
 		if err != nil {
 			return nil, err
@@ -3663,7 +3664,7 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage: id=%d", req.Id)
 		return r.executeRequestOnce(req, false)
 	}
-	if requestNeedsCoveragePriming(req) {
+	if requestNeedsCover && requestNeedsCoveragePriming(req) {
 		r.coveragePrimed = true
 	}
 	return r.executeRequestOnce(req, false)
