@@ -732,10 +732,11 @@ func deriveHardTimeout(programTimeoutMs int32, fallback time.Duration) time.Dura
 		return fallback
 	}
 	programTimeout := time.Duration(programTimeoutMs) * time.Millisecond
-	if programTimeout > fallback {
+	timeout := hardTimeoutWithSlack(programTimeout)
+	if timeout > fallback {
 		return fallback
 	}
-	return programTimeout
+	return timeout
 }
 
 func applyStandaloneHardTimeout(vm *nyxVM, programTimeoutMs int) time.Duration {
@@ -1635,15 +1636,27 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	vm.recordTrace("runner", "exec_payload_begin", requestID, traceFields(
 		"payload_bytes", len(payload),
 	))
+	/* Set the payload BEFORE draining any pending pings.  QEMU's
+	 * sync_lock_wait_frontend is released by the ping drain, which means
+	 * the executor can read the shared payload buffer the instant we
+	 * send that release.  If the new payload is not yet written, the
+	 * executor runs the previous request's program (or an empty one),
+	 * causing a desync that eventually wedges both sides. */
+	if err := vm.setPayload(payload); err != nil {
+		return nil, err
+	}
 	if err := vm.drainPendingQemuPings(requestID, "before_exec_payload", 8, 10*time.Millisecond); err != nil {
+		return nil, err
+	}
+	/* drainPendingQemuPings may have cleared the payload if the aux
+	 * buffer showed a request_reload. Re-set it so the executor sees
+	 * the correct program when QEMU resumes. */
+	if err := vm.setPayload(payload); err != nil {
 		return nil, err
 	}
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxExecResult))
 	_ = os.Remove(vm.coverPath)
 	vm.aux.clearTransientResult()
-	if err := vm.setPayload(payload); err != nil {
-		return nil, err
-	}
 	steps := 0
 	deadline := time.Now().Add(vm.execWaitTimeout())
 	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
@@ -2629,6 +2642,11 @@ type slowTraceConfig struct {
 	threshold time.Duration
 	maxEvents int
 }
+
+// standaloneSlowTraceConfig is set in main when running standalone modes so
+// that runStandalone/runStandaloneExec/runStandaloneStaged/runStandaloneExecStaged
+// can emit slow trace artifacts identical to the manager runner path.
+var standaloneSlowTraceConfig *slowTraceConfig
 
 type slowTraceMetadata struct {
 	GeneratedAt     time.Time                `json:"generated_at"`
@@ -3960,6 +3978,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 		connectReply:      connectReply,
 		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
+		slowTrace:         standaloneSlowTraceConfig,
 	}
 	if rounds < 0 {
 		rounds = 1
@@ -4056,6 +4075,7 @@ func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepS
 		connectReply:      connectReply,
 		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
+		slowTrace:         standaloneSlowTraceConfig,
 	}
 	if rounds < 0 {
 		rounds = 1
@@ -4110,6 +4130,7 @@ func runStandaloneStaged(index int, vm *nyxVM, firstProgramPath, secondProgramPa
 		connectReply:      connectReply,
 		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
+		slowTrace:         standaloneSlowTraceConfig,
 	}
 	stages := []struct {
 		id    int64
@@ -4204,6 +4225,7 @@ func runStandaloneExecStaged(index int, vm *nyxVM, firstProgramPath, secondProgr
 		connectReply:      connectReply,
 		keepState:         effectiveKeepState(vm, keepState),
 		coverageDebugPath: coverageDebugPath,
+		slowTrace:         standaloneSlowTraceConfig,
 	}
 	stages := []struct {
 		id    int64
@@ -4971,6 +4993,11 @@ func main() {
 		applyStandaloneHardTimeout(vm, *standaloneProgramTimeoutMs)
 	}
 	standaloneCollectCover := !*standaloneNoCover
+	standaloneSlowTraceConfig = &slowTraceConfig{
+		dir:       resolvedSlowTraceDir,
+		threshold: time.Duration(*slowTraceThresholdMs) * time.Millisecond,
+		maxEvents: *slowTraceMaxEvents,
+	}
 	ctx := context.Background()
 	if err := vm.start(ctx); err != nil {
 		vm.close()
