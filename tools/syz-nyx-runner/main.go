@@ -1816,12 +1816,20 @@ func (vm *nyxVM) initWaitTimeout() time.Duration {
 
 func hardTimeoutWithSlack(timeout time.Duration) time.Duration {
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = 10 * time.Second
 	}
-	if timeout < 30*time.Second {
-		timeout = 30 * time.Second
+	/* The old 30s minimum was designed for Linux where the in-guest
+	 * per-syscall timer (hpet/kvmclock) reliably fires and the executor
+	 * exits on its own.  On Windows Nyx, the LAPIC timer may not fire
+	 * correctly after a snapshot restore, so the executor's 50ms
+	 * per-syscall timeout can silently fail and the program blocks
+	 * until the QEMU SIGALRM watchdog breaks it.  Lower the minimum
+	 * to 3s so a 5s program_timeout yields ~8s hard timeout instead
+	 * of the previous 35s, reducing the cost of each hung program. */
+	if timeout < 3*time.Second {
+		timeout = 3 * time.Second
 	}
-	return timeout + 5*time.Second
+	return timeout + 3*time.Second
 }
 
 func timeoutWithSlack(timeout time.Duration) time.Duration {
