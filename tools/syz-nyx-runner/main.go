@@ -77,7 +77,7 @@ const (
 	nyxModuleRangePatternSize   = 64
 	nyxMaxModuleRangeTargets    = 16
 	nyxModuleRangeConfigFile    = "syz_nyx_module_ranges.bin"
-	nyxInitMinTimeout           = 2 * time.Minute
+	nyxInitMinTimeout           = 3 * time.Minute
 	nyxManagerReconnectBackoff  = time.Second
 )
 
