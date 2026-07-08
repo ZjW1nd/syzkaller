@@ -845,11 +845,20 @@ func windowsSemanticRecordEventSelect(st *prog.SemanticState,
 		eventSelectBySocket[socket] = event
 		return
 	}
-	if !windowsSemanticPrivateEventSelectInfoNoEvent(call, 6) {
-		st.AddViolation(idx, call.Meta.Name+" with invalid no-event select info")
+	if call.Meta.Name == "NtDeviceIoControlFile$afd_event_select_accept_nonblock" {
+		if !windowsSemanticPrivateEventSelectInfoNoEvent(call, 6) {
+			st.AddViolation(idx, call.Meta.Name+" with invalid no-event select info")
+			return
+		}
+		eventSelectBySocket[socket] = nil
 		return
 	}
-	eventSelectBySocket[socket] = nil
+	event := windowsSemanticPrivateEventSelectInfoEvent(call, 6)
+	if event == nil {
+		st.AddViolation(idx, call.Meta.Name+" without event resource")
+		return
+	}
+	eventSelectBySocket[socket] = event
 }
 
 func windowsSemanticValidateEnumNetworkEvents(st *prog.SemanticState,
@@ -874,6 +883,10 @@ func windowsSemanticValidateEnumNetworkEvents(st *prog.SemanticState,
 			st.AddViolation(idx, call.Meta.Name+" without output buffer")
 			return
 		}
+		return
+	}
+	if call.Meta.Name == "NtDeviceIoControlFile$afd_enum_network_events_accept" && event == nil {
+		st.AddViolation(idx, call.Meta.Name+" without blocking event select")
 		return
 	}
 	if !windowsSemanticNullPointerArg(call, 6) ||
@@ -1625,6 +1638,7 @@ func windowsSemanticIsEventSelectCall(name string) bool {
 	switch name {
 	case "WSAEventSelect$tcp_nonblock",
 		"WSAEventSelect$accept_nonblock",
+		"NtDeviceIoControlFile$afd_event_select_accept",
 		"NtDeviceIoControlFile$afd_event_select_accept_nonblock":
 		return true
 	default:
@@ -1636,6 +1650,7 @@ func windowsSemanticIsEnumNetworkEventsCall(name string) bool {
 	switch name {
 	case "WSAEnumNetworkEvents$tcp_nonblock",
 		"WSAEnumNetworkEvents$accept_nonblock",
+		"NtDeviceIoControlFile$afd_enum_network_events_accept",
 		"NtDeviceIoControlFile$afd_enum_network_events_accept_nonblock":
 		return true
 	default:
@@ -1644,7 +1659,8 @@ func windowsSemanticIsEnumNetworkEventsCall(name string) bool {
 }
 
 func windowsSemanticIsPrivatePollCall(name string) bool {
-	return name == "NtDeviceIoControlFile$afd_poll_accept_nonblock"
+	return name == "NtDeviceIoControlFile$afd_poll_accept" ||
+		name == "NtDeviceIoControlFile$afd_poll_accept_nonblock"
 }
 
 func windowsSemanticPrivateEventSelectInfoNoEvent(call *prog.Call, argIdx int) bool {
@@ -1661,6 +1677,25 @@ func windowsSemanticPrivateEventSelectInfoNoEvent(call *prog.Call, argIdx int) b
 		return false
 	}
 	return windowsSemanticArgZero(group.Inner[2])
+}
+
+func windowsSemanticPrivateEventSelectInfoEvent(call *prog.Call, argIdx int) *prog.ResultArg {
+	group := windowsSemanticPointerGroupArg(call, argIdx)
+	if group == nil || len(group.Inner) < 3 {
+		return nil
+	}
+	event, ok := group.Inner[0].(*prog.ResultArg)
+	if !ok || event.Res == nil {
+		return nil
+	}
+	events, ok := group.Inner[1].(*prog.ConstArg)
+	if !ok || events.Val == 0 || events.Val > 0x3ff {
+		return nil
+	}
+	if !windowsSemanticArgZero(group.Inner[2]) {
+		return nil
+	}
+	return event.Res
 }
 
 func windowsSemanticPrivatePollInfoAcceptNonblock(call *prog.Call, argIdx int, socket *prog.ResultArg) bool {

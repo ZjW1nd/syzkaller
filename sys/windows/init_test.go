@@ -836,6 +836,8 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertResource("NtReadFile$afd_tcp_nonblock", 0, "AFD_TCP")
 	assertResource("NtWriteFile$afd_tcp_nonblock", 0, "AFD_TCP")
 	assertResource("NtDeviceIoControlFile$afd_bind_udp", 0, "AFD_UDP")
+	assertResource("NtDeviceIoControlFile$afd_bind_udp_loopback", 0, "AFD_UDP")
+	assertResource("NtDeviceIoControlFile$afd_bind_udp_loopback_nonblock", 0, "AFD_UDP")
 	assertResource("NtDeviceIoControlFile$afd_connect_udp_loopback", 0, "AFD_UDP")
 	assertResource("NtDeviceIoControlFile$afd_set_information_nonblock_udp_created", 0, "AFD_UDP")
 	assertResource("NtReadFile$afd_udp_peer_nonblock", 0, "AFD_UDP")
@@ -883,6 +885,9 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertPtrStruct("NtDeviceIoControlFile$afd_bind_udp", 6, "AFD_BIND_INFO_TL")
 	assertPtrStruct("NtDeviceIoControlFile$afd_bind_udp", 8, "sockaddr_in")
 	assertPtrStruct("NtDeviceIoControlFile$afd_bind_udp_nonblock", 6, "AFD_BIND_INFO_TL")
+	assertPtrStruct("NtDeviceIoControlFile$afd_bind_udp_loopback", 6, "AFD_BIND_INFO_TL_UDP_LOOPBACK")
+	assertPtrStruct("NtDeviceIoControlFile$afd_bind_udp_loopback", 8, "sockaddr_in")
+	assertPtrStruct("NtDeviceIoControlFile$afd_bind_udp_loopback_nonblock", 6, "AFD_BIND_INFO_TL_UDP_LOOPBACK")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp", 6, "AFD_CONNECT_JOIN_INFO_TL")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp_nonblock", 6, "AFD_CONNECT_JOIN_INFO_TL")
 	assertPtrStruct("NtDeviceIoControlFile$afd_connect_tcp_to_listener", 6, "AFD_CONNECT_JOIN_INFO_TL_LISTENER")
@@ -1008,6 +1013,7 @@ func TestWindowsObjectResourceHierarchy(t *testing.T) {
 	assertPtrStruct("NtDeviceIoControlFile$afd_routing_interface_change_udp", 6, "AFD_ROUTING_INTERFACE_CHANGE_INFO_BLOCKING")
 	assertPtrStruct("NtDeviceIoControlFile$afd_routing_interface_change_udp_nonblock", 6, "AFD_ROUTING_INTERFACE_CHANGE_INFO")
 	assertPtrStruct("NtDeviceIoControlFile$afd_event_select_accept", 6, "AFD_EVENT_SELECT_INFO")
+	assertPtrStructFieldResource("NtDeviceIoControlFile$afd_event_select_accept", 6, "Event", "EVENT_HANDLE")
 	assertPtrStruct("NtDeviceIoControlFile$afd_enum_network_events_accept", 8, "AFD_ENUM_NETWORK_EVENTS_INFO")
 	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept", 6, "AFD_POLL_INFO")
 	assertPtrStruct("NtDeviceIoControlFile$afd_poll_accept", 8, "AFD_POLL_INFO")
@@ -1157,6 +1163,7 @@ func TestWindowsObjectStructLayouts(t *testing.T) {
 		{name: "FILE_FULL_EA_INFORMATION_AFD_OPEN_UDP", size: 0x34},
 		{name: "AFD_BIND_INFO_TL", size: 0x14},
 		{name: "AFD_BIND_INFO_TL_LISTENER", size: 0x14},
+		{name: "AFD_BIND_INFO_TL_UDP_LOOPBACK", size: 0x14},
 		{name: "AFD_CONNECT_JOIN_INFO_TL", size: 0x28},
 		{name: "AFD_LISTEN_INFO", size: 0xc},
 		{name: "AFD_WSABUF_IN", size: 0x10},
@@ -1212,6 +1219,8 @@ func TestWindowsNtControlCallsHaveFullArity(t *testing.T) {
 		"NtDeviceIoControlFile$afd_bind_tcp_listener_nonblock",
 		"NtDeviceIoControlFile$afd_bind_udp",
 		"NtDeviceIoControlFile$afd_bind_udp_nonblock",
+		"NtDeviceIoControlFile$afd_bind_udp_loopback",
+		"NtDeviceIoControlFile$afd_bind_udp_loopback_nonblock",
 		"NtDeviceIoControlFile$afd_connect_tcp",
 		"NtDeviceIoControlFile$afd_connect_tcp_nonblock",
 		"NtDeviceIoControlFile$afd_connect_udp",
@@ -2889,6 +2898,13 @@ func TestWindowsAFDDirectEndpointStateCallsAreGeneratable(t *testing.T) {
 			},
 		},
 		{
+			root: "NtDeviceIoControlFile$afd_bind_udp_loopback",
+			want: []string{
+				"NtCreateFile$afd_udp_endpoint",
+				"NtDeviceIoControlFile$afd_bind_udp_loopback",
+			},
+		},
+		{
 			root: "NtDeviceIoControlFile$afd_connect_udp_loopback",
 			want: []string{
 				"NtCreateFile$afd_udp_endpoint",
@@ -3029,7 +3045,7 @@ func TestWindowsAFDDirectEndpointStateGeneratesResourceChains(t *testing.T) {
 	}
 }
 
-func TestWindowsAFDPrivatePendingReceiveSeedsInjectAfterPendingIRP(t *testing.T) {
+func TestWindowsAFDPrivatePendingReceiveSeedsTriggerAfterPendingIRP(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3037,14 +3053,22 @@ func TestWindowsAFDPrivatePendingReceiveSeedsInjectAfterPendingIRP(t *testing.T)
 	for _, test := range []struct {
 		file    string
 		pending string
+		trigger string
 	}{
 		{
-			file:    "test/nyx_afd_private_deep_tcp_vnet_accept_receive_pending.txt",
+			file:    "test/nyx_afd_private_deep_tcp_loopback_accept_receive_pending.txt",
 			pending: "NtDeviceIoControlFile$afd_receive_accept_pending",
+			trigger: "NtDeviceIoControlFile$afd_send_tcp",
 		},
 		{
-			file:    "test/nyx_afd_private_deep_udp_vnet_receive_pending.txt",
+			file:    "test/nyx_afd_private_deep_udp_loopback_receive_pending.txt",
 			pending: "NtDeviceIoControlFile$afd_receive_datagram_udp_bound_pending",
+			trigger: "NtDeviceIoControlFile$afd_send_udp_peer",
+		},
+		{
+			file:    "test/nyx_afd_private_deep_udp_loopback_buffered_pending.txt",
+			pending: "NtDeviceIoControlFile$afd_receive_datagram_udp_bound_pending",
+			trigger: "NtDeviceIoControlFile$afd_send_udp_peer",
 		},
 	} {
 		data, err := os.ReadFile(test.file)
@@ -3063,7 +3087,7 @@ func TestWindowsAFDPrivatePendingReceiveSeedsInjectAfterPendingIRP(t *testing.T)
 			t.Fatalf("SerializeForExec(%s): %v", test.file, err)
 		}
 		pending := -1
-		payload := -1
+		trigger := -1
 		for i, call := range p.Calls {
 			if call.Meta == nil {
 				continue
@@ -3071,17 +3095,17 @@ func TestWindowsAFDPrivatePendingReceiveSeedsInjectAfterPendingIRP(t *testing.T)
 			switch call.Meta.Name {
 			case test.pending:
 				pending = i
-			case "syz_emit_ethernet$windows":
+			case test.trigger:
 				if pending != -1 {
-					payload = i
+					trigger = i
 				}
 			}
 		}
 		if pending == -1 {
 			t.Fatalf("%s is missing %s", test.file, test.pending)
 		}
-		if payload == -1 {
-			t.Fatalf("%s should inject vnet payload after posting pending receive", test.file)
+		if trigger == -1 {
+			t.Fatalf("%s should issue %s after posting %s", test.file, test.trigger, test.pending)
 		}
 	}
 }

@@ -1274,6 +1274,9 @@ func TestWindowsAFDSemanticStateAcceptsPendingIOFocusedSeeds(t *testing.T) {
 	profiled := windowsPolicyTestAFDTarget(t)
 	for _, seed := range []string{
 		"test/nyx_exp_afd_pending_io_tcp_recv_iocp.txt",
+		"test/nyx_afd_private_deep_tcp_loopback_accept_receive_pending.txt",
+		"test/nyx_afd_private_deep_udp_loopback_receive_pending.txt",
+		"test/nyx_afd_private_deep_udp_loopback_buffered_pending.txt",
 	} {
 		t.Run(seed, func(t *testing.T) {
 			data, err := os.ReadFile(seed)
@@ -1297,6 +1300,12 @@ func TestWindowsAFDSemanticStateAcceptsEventPollFocusedSeeds(t *testing.T) {
 	profiled := windowsPolicyTestAFDTarget(t)
 	for _, seed := range []string{
 		"test/nyx_afd_public_event_nonblock_tcp.txt",
+		"test/nyx_afd_private_full_341_NtDeviceIoControlFile_afd_event_select_accept.txt",
+		"test/nyx_afd_private_full_342_NtDeviceIoControlFile_afd_enum_network_events_accept.txt",
+		"test/nyx_afd_private_full_343_NtDeviceIoControlFile_afd_poll_accept.txt",
+		"test/nyx_afd_private_full_344_NtDeviceIoControlFile_afd_event_select_accept_nonblock.txt",
+		"test/nyx_afd_private_full_345_NtDeviceIoControlFile_afd_enum_network_events_accept_nonblock.txt",
+		"test/nyx_afd_private_full_346_NtDeviceIoControlFile_afd_poll_accept_nonblock.txt",
 		"test/nyx_afd_private_event_select_nonblock.txt",
 		"test/nyx_afd_private_enum_events_nonblock.txt",
 		"test/nyx_afd_private_poll_accept_nonblock.txt",
