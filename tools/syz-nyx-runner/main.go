@@ -77,9 +77,13 @@ const (
 	nyxModuleRangePatternSize   = 64
 	nyxMaxModuleRangeTargets    = 16
 	nyxModuleRangeConfigFile    = "syz_nyx_module_ranges.bin"
-	nyxInitMinTimeout           = 3 * time.Minute
+	nyxInitMinTimeout           = 5 * time.Minute
 	nyxManagerReconnectBackoff  = time.Second
 )
+// vmPrimedGlobally tracks whether PT coverage has been primed at least once
+// in this runner process. It survives runner struct resets across VM
+// reconnects so the init-floor timeout is not re-applied after restarts.
+var vmPrimedGlobally = false
 
 type multiFlag []string
 
@@ -2619,6 +2623,7 @@ type runner struct {
 	connectReply      *flatrpc.ConnectReply
 	handshakeReady    bool
 	coveragePrimed    bool
+	timeoutReduced    bool
 	lastEnvFlags      flatrpc.ExecEnv
 	lastSandboxArg    int64
 	needRestart       bool
@@ -3160,15 +3165,19 @@ func (r *runner) connect() error {
 	 * setup, and AP synchronisation that can take 30+ seconds.  The
 	 * derived hard timeout from a 5s program_timeout would be only 8s,
 	 * killing the first execution before it starts.  Use the init wait
-	 * timeout as a floor so the first execution gets at least 185s.
+	 * timeout as a floor — but only on the very first boot, not on
+	 * reconnects after VM restarts.  The package-level vmPrimedGlobally
+	 * flag survives runner struct resets across reconnects.
 	 */
-	initFloor := r.vm.initWaitTimeout()
-	if derivedTimeout < initFloor {
-		derivedTimeout = initFloor
+	if !r.coveragePrimed && !vmPrimedGlobally {
+		initFloor := r.vm.initWaitTimeout()
+		if derivedTimeout < initFloor {
+			derivedTimeout = initFloor
+		}
 	}
 	if derivedTimeout != r.vm.hardTimeout {
-		log.Logf(0, "runner using derived hard timeout %s (fallback=%s program_timeout_ms=%d init_floor=%s)",
-			derivedTimeout, r.vm.hardTimeout, r.connectReply.ProgramTimeoutMs, initFloor)
+		log.Logf(0, "runner using derived hard timeout %s (fallback=%s program_timeout_ms=%d primed=%v)",
+			derivedTimeout, r.vm.hardTimeout, r.connectReply.ProgramTimeoutMs, r.coveragePrimed)
 		r.vm.hardTimeout = derivedTimeout
 	}
 	log.Logf(0, "runner connect: sending InfoRequest")
@@ -3714,6 +3723,21 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	}
 	if requestNeedsCover && requestNeedsCoveragePriming(req) {
 		r.coveragePrimed = true
+		vmPrimedGlobally = true
+	}
+	/* After the first CollectCover request primes PT, switch from the
+	 * generous init-floor timeout (5+ minutes) to the tight derived
+	 * timeout (~8s) so hung network syscalls are killed quickly instead
+	 * of burning 255s each. */
+	if r.coveragePrimed && !r.timeoutReduced {
+		derivedTimeout := deriveHardTimeout(r.connectReply.ProgramTimeoutMs, r.vm.hardTimeout)
+		if derivedTimeout < r.vm.hardTimeout {
+			log.Logf(0, "runner reducing hard timeout to %s after coverage priming (was %s)",
+				derivedTimeout, r.vm.hardTimeout)
+			r.vm.hardTimeout = derivedTimeout
+			r.vm.applyHardTimeout()
+		}
+		r.timeoutReduced = true
 	}
 	return r.executeRequestOnce(req, false)
 }
