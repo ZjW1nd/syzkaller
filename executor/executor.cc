@@ -558,37 +558,12 @@ static intptr_t SYSCALLAPI DisconnectEx(intptr_t s, intptr_t overlapped, intptr_
 					intptr_t reserved, intptr_t, intptr_t, intptr_t,
 					intptr_t, intptr_t, intptr_t);
 
-static void windows_log_sockaddr_state(const char* op, SOCKET s, const struct sockaddr* addr,
-				       int namelen)
+static void windows_log_sockaddr_state(const char*, SOCKET, const struct sockaddr*, int)
 {
-	if (addr == nullptr) {
-		nyx_hprintf("windows socket state %s socket=0x%llx addr=null namelen=%d\n",
-			    op, (unsigned long long)s, namelen);
-		return;
-	}
-	if (namelen >= (int)sizeof(struct sockaddr_in) && addr->sa_family == AF_INET) {
-		const struct sockaddr_in* in = (const struct sockaddr_in*)addr;
-		uint32 ip = ntohl(in->sin_addr.s_addr);
-		nyx_hprintf("windows socket state %s socket=0x%llx family=AF_INET addr=%u.%u.%u.%u port=%u namelen=%d\n",
-			    op, (unsigned long long)s, (ip >> 24) & 0xff, (ip >> 16) & 0xff,
-			    (ip >> 8) & 0xff, ip & 0xff, (unsigned)ntohs(in->sin_port),
-			    namelen);
-		return;
-	}
-	nyx_hprintf("windows socket state %s socket=0x%llx family=%u namelen=%d\n", op,
-		    (unsigned long long)s, (unsigned)addr->sa_family, namelen);
 }
 
-static void windows_log_getsockname_state(const char* op, SOCKET s)
+static void windows_log_getsockname_state(const char*, SOCKET)
 {
-	struct sockaddr_storage storage = {};
-	int len = sizeof(storage);
-	if (getsockname(s, (struct sockaddr*)&storage, &len) == 0) {
-		windows_log_sockaddr_state(op, s, (const struct sockaddr*)&storage, len);
-		return;
-	}
-	nyx_hprintf("windows socket state %s socket=0x%llx getsockname failed wsa=%d errno=%d\n",
-		    op, (unsigned long long)s, WSAGetLastError(), errno);
 }
 
 static int windows_wsa_error_to_errno(int wsa)
@@ -622,14 +597,10 @@ static intptr_t SYSCALLAPI windows_bind_state(intptr_t s, intptr_t addr, intptr_
 	errno = 0;
 	if (bind(socket, name, (int)namelen) == 0) {
 		windows_log_getsockname_state("bind result", socket);
-		nyx_hprintf("windows socket state bind ok socket=0x%llx\n",
-			    (unsigned long long)socket);
 		return s;
 	}
 	int wsa = WSAGetLastError();
 	errno = windows_wsa_error_to_errno(wsa);
-	nyx_hprintf("windows socket state bind failed socket=0x%llx wsa=%d errno=%d\n",
-		    (unsigned long long)socket, wsa, errno);
 	return -1;
 }
 
@@ -764,14 +735,10 @@ static intptr_t SYSCALLAPI windows_listen_state(intptr_t s, intptr_t backlog, in
 	errno = 0;
 	if (listen(socket, (int)backlog) == 0) {
 		windows_log_getsockname_state("listen result", socket);
-		nyx_hprintf("windows socket state listen ok socket=0x%llx backlog=%lld\n",
-			    (unsigned long long)socket, (long long)backlog);
 		return s;
 	}
 	int wsa = WSAGetLastError();
 	errno = windows_wsa_error_to_errno(wsa);
-	nyx_hprintf("windows socket state listen failed socket=0x%llx backlog=%lld wsa=%d errno=%d\n",
-		    (unsigned long long)socket, (long long)backlog, wsa, errno);
 	return -1;
 }
 
@@ -2726,6 +2693,7 @@ static int nyx_mode_loop(int argc, char** argv)
 	nyx_host_config_t host_cfg = {};
 	if (!nyx_fetch_host_config(&host_cfg))
 		fail("failed to fetch Nyx host config");
+	nyx_pin_protocol_thread(&host_cfg, "host_config");
 
 	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
 	nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
@@ -2761,10 +2729,12 @@ static int nyx_mode_loop(int argc, char** argv)
 	std::vector<uint8_t> output_mem;
 	uint64_t freshness = 1;
 	bool have_handshake = false;
+	uint64_t last_handshake_cr3 = 0;
 	handshake_req hs = {};
 	kafl_syz_cov_cmd_t cov_cmd = {};
 
 	for (;;) {
+		nyx_pin_protocol_thread(&host_cfg, "next_payload");
 		nyx_hypercall(HYPERCALL_KAFL_NEXT_PAYLOAD, 0);
 		if (payload->size < (int32_t)sizeof(nyx_msg_header_t))
 			fail("Nyx payload too small");
@@ -2816,11 +2786,15 @@ static int nyx_mode_loop(int argc, char** argv)
 #if SYZ_NYX_WINDOWS_SUBMIT_CR3
 			uint64_t cr3 = 0;
 			if (nyx_query_cr3(&cr3)) {
-				if (!repeated_handshake) {
+				const bool cr3_changed = !repeated_handshake ||
+							 cr3 != last_handshake_cr3;
+				if (!repeated_handshake || cr3_changed) {
 					nyx_hprintf("nyx handshake submit_cr3=0x%llx\n",
 						    (unsigned long long)cr3);
 				}
-				nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
+				if (cr3_changed)
+					nyx_hypercall(HYPERCALL_KAFL_SUBMIT_CR3, cr3);
+				last_handshake_cr3 = cr3;
 			} else {
 				if (!repeated_handshake)
 					nyx_hprintf("nyx handshake query_cr3 unavailable\n");
@@ -2830,6 +2804,7 @@ static int nyx_mode_loop(int argc, char** argv)
 				nyx_hprintf("nyx handshake submit_cr3 disabled at build time\n");
 #endif
 			have_handshake = true;
+			nyx_pin_protocol_thread(&host_cfg, "handshake");
 			if (!repeated_handshake)
 				nyx_hprintf("nyx handshake dumping ack\n");
 			nyx_dump_ack();
@@ -3135,6 +3110,7 @@ void execute_call(thread_t* th)
 #endif
 	kafl_syz_cov_session_cmd_t cov_session_cmd = {};
 	bool nyx_use_session_cov = cover_collection_required();
+	bool nyx_use_legacy_boundary = !nyx_use_session_cov && !flag_threaded;
 	if (is_windows_nyx_vnet_call(call)) {
 		nyx_log_exec_stage("execute_call_vnet_no_acquire", th->id, th->call_num, th->num_args);
 		NONFAILING(th->res = execute_syscall(call, th->args));
@@ -3153,11 +3129,13 @@ void execute_call(thread_t* th)
 				      th->call_index,
 				      th->call_num,
 				      call->name ? call->name : "<null>");
-	} else {
+	} else if (nyx_use_legacy_boundary) {
 		nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE,
 			      ((uint64_t)GetCurrentThreadId() << 32) |
-				  (__readgsqword(0x30) & 0xFFFFFFFF));
+				      (__readgsqword(0x30) & 0xFFFFFFFF));
+	} else {
+		nyx_log_exec_stage("execute_call_no_cov_threaded_no_acquire", th->id, th->call_num, th->num_args);
 	}
 #endif
 #if GOOS_windows
@@ -3206,9 +3184,11 @@ void execute_call(thread_t* th)
 				      th->call_index,
 				      th->call_num);
 		nyx_log_thread_stage("execute_call_after_cov_session_end", th, (uint64)th->res, errno);
-	} else {
+	} else if (nyx_use_legacy_boundary) {
 		nyx_hypercall(HYPERCALL_KAFL_RELEASE, 0);
 		nyx_log_thread_stage("execute_call_after_release", th, (uint64)th->res, errno);
+	} else {
+		nyx_log_thread_stage("execute_call_no_cov_threaded_no_release", th, (uint64)th->res, errno);
 	}
 	// Per-call coverage is dumped by the QEMU session END handler.
 #if SYZ_NYX_WINDOWS_SPARSE_TABLE

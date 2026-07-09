@@ -358,7 +358,8 @@ func TestWindowsAFDPrivateIoctlResourceSimulation(t *testing.T) {
 	}
 	for _, call := range ioctls {
 		t.Run(call.Name, func(t *testing.T) {
-			if call.Attrs.NoGenerate && profiled.CallNoGenerate(call) {
+			if call.Attrs.NoGenerate && profiled.CallNoGenerate(call) &&
+				!windowsPolicyTestRequiresAsyncAFDPrivateIOCTL(call) {
 				t.Fatalf("AFD profile did not allow focused generation")
 			}
 			sim, err := profiled.SimulateCallResourceUse(call, enabled)
@@ -740,6 +741,74 @@ func TestWindowsAFDTargetProfileRejectsBrokenPrivateResourceLineage(t *testing.T
 	}
 }
 
+func TestWindowsAFDTargetProfileRejectsUnresolvedPrivatePendingIO(t *testing.T) {
+	windowsSkipLegacyAfdWinsockArchived(t)
+	profiled := windowsPolicyTestAFDTarget(t)
+	p := windowsPolicyTestDeserialize(t, profiled,
+		"NtCreateFile$afd_tcp_endpoint(&(0x7f0000110000)=<r0=>0xffffffffffffffff, 0xc0100000, &(0x7f00001100c0)={0x30, 0x0, 0x0, &(0x7f0000110080)={0x16, 0x18, 0x0, &(0x7f0000110040)}}, &(0x7f0000110100), 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000110140), 0x34)\n"+
+			"NtDeviceIoControlFile$afd_bind_tcp_listener(r0, 0x0, 0x0, 0x0, &(0x7f0000110180), 0x12003, &(0x7f00001101c0), 0x14, &(0x7f0000110200), 0x10)\n"+
+			"NtDeviceIoControlFile$afd_start_listen_tcp(r0, 0x0, 0x0, 0x0, &(0x7f0000110240), 0x1200b, &(0x7f0000110280)={0x0, '\\x00', 0x4}, 0xc, 0x0, 0x0)\n"+
+			"NtCreateFile$afd_tcp_endpoint(&(0x7f0000110300)=<r1=>0xffffffffffffffff, 0xc0100000, &(0x7f00001103c0)={0x30, 0x0, 0x0, &(0x7f0000110380)={0x16, 0x18, 0x0, &(0x7f0000110340)}}, &(0x7f0000110400), 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000110440), 0x34)\n"+
+			"NtDeviceIoControlFile$afd_bind_tcp(r1, 0x0, 0x0, 0x0, &(0x7f0000110480), 0x12003, &(0x7f00001104c0), 0x14, &(0x7f0000110500), 0x10)\n"+
+			"NtDeviceIoControlFile$afd_connect_tcp_client_to_listener(r1, 0x0, 0x0, 0x0, &(0x7f0000110540), 0x12007, &(0x7f0000110580)={0x0, '\\x00', 0x0, r0}, 0x28, &(0x7f00001105c0), 0x10)\n"+
+			"NtDeviceIoControlFile$afd_wait_for_listen_tcp(r0, 0x0, 0x0, 0x0, &(0x7f0000110600), 0x1200c, 0x0, 0x0, &(0x7f0000110640)={<r2=>0x0}, 0x14)\n"+
+			"NtCreateFile$afd_tcp_accept_slot(&(0x7f0000110680)=<r3=>0xffffffffffffffff, 0xc0100000, &(0x7f0000110740)={0x30, 0x0, 0x0, &(0x7f0000110700)={0x16, 0x18, 0x0, &(0x7f00001106c0)}}, &(0x7f0000110780), 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f00001107c0), 0x34)\n"+
+			"NtDeviceIoControlFile$afd_accept_tcp(r0, 0x0, 0x0, 0x0, &(0x7f0000110800), 0x12010, &(0x7f0000110840)={0x0, '\\x00', r2, r3}, 0x10, 0x0, 0x0)\n"+
+			"r4 = CreateEventA$auto(0x0, 0x0, 0x0, &(0x7f0000110880)='syz_obj\\x00')\n"+
+			"NtDeviceIoControlFile$afd_receive_accept_pending(r3, r4, 0x0, 0x0, &(0x7f0000110900), 0x12017, &(0x7f0000110a00)={&(0x7f0000110980)=[{0x80, &(0x7f0000110940)=\"\"/128}], 0x1, 0x0, 0x20}, 0x18, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_send_tcp(r1, 0x0, 0x0, 0x0, &(0x7f0000110a40), 0x1201f, &(0x7f0000110b40)={&(0x7f0000110b00)=[{0x10, &(0x7f0000110ac0)='afd-loopback-rx'}], 0x1, 0x1, 0x20}, 0x18, 0x0, 0x0)\n"+
+			"NtDelayExecution(0x0, &(0x7f0000110b80)=@QuadPart=0xffffffffffff3cb0)\n"+
+			"CloseHandle$afd_tcp_accepted(r3)\n"+
+			"CloseHandle$afd_tcp_connected(r1)\n"+
+			"CloseHandle$afd_tcp_listening(r0)\n")
+	if profiled.RuntimePolicy.ShouldScheduleProgram("collide:fuzz", p) {
+		t.Fatalf("focused profile scheduled unresolved private pending IO:\n%s", p.Serialize())
+	}
+}
+
+func TestWindowsAFDTargetProfileAllowsResolvedPrivatePendingIO(t *testing.T) {
+	windowsSkipLegacyAfdWinsockArchived(t)
+	profiled := windowsPolicyTestAFDTarget(t)
+	data, err := os.ReadFile("test/nyx_afd_private_full_393_CancelIoEx_afd_accept_receive_pending.txt")
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+	p := windowsPolicyTestDeserialize(t, profiled, string(data))
+	if !profiled.RuntimePolicy.ShouldScheduleProgram("candidate", p) {
+		t.Fatalf("focused profile rejected resolved private pending IO:\n%s", p.Serialize())
+	}
+}
+
+func TestWindowsAFDTargetProfileRequiresAsyncPrivatePendingIO(t *testing.T) {
+	windowsSkipLegacyAfdWinsockArchived(t)
+	profiled := windowsPolicyTestAFDTarget(t)
+	data, err := os.ReadFile("test/nyx_afd_private_deep_tcp_loopback_accept_receive_pending.txt")
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+	valid := windowsPolicyTestDeserialize(t, profiled, string(data))
+	if !profiled.RuntimePolicy.ShouldScheduleProgram("candidate", valid) {
+		t.Fatalf("focused profile rejected async private pending IO:\n%s", valid.Serialize())
+	}
+	syncPending := valid.Clone()
+	found := false
+	for _, call := range syncPending.Calls {
+		if call.Meta != nil && call.Meta.Name == "NtDeviceIoControlFile$afd_receive_accept_pending" {
+			call.Props.Async = false
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("test seed did not contain afd_receive_accept_pending")
+	}
+	if profiled.RuntimePolicy.ShouldScheduleProgram("candidate", syncPending) {
+		t.Fatalf("focused profile scheduled synchronous private pending IO:\n%s", syncPending.Serialize())
+	}
+	if profiled.RuntimePolicy.ShouldScheduleProgram("collide:fuzz", syncPending) {
+		t.Fatalf("focused profile scheduled collided synchronous private pending IO:\n%s", syncPending.Serialize())
+	}
+}
+
 func TestWindowsAFDTargetProfileRejectsMixedBrokenResourceLineage(t *testing.T) {
 	windowsSkipLegacyAfdWinsockArchived(t)
 	target, err := prog.GetTarget("windows", "amd64")
@@ -817,6 +886,42 @@ func TestWindowsAFDTargetProfilePrefersSameLineageCollidePair(t *testing.T) {
 		}
 	}
 	t.Fatal("generated program is missing WSARecv$accept")
+}
+
+func TestWindowsAFDTargetProfileBlocksPrivateStateCollide(t *testing.T) {
+	profiled := windowsPolicyTestAFDTarget(t)
+	p := windowsPolicyTestDeserialize(t, profiled,
+		"NtCreateFile$afd_tcp_endpoint(&(0x7f0000000000)=<r0=>0xffffffffffffffff, 0xc0100000, &(0x7f00000000c0)={0x30, 0x0, 0x0, &(0x7f0000000080)={0x16, 0x18, 0x0, &(0x7f0000000040)}}, &(0x7f0000000100)={@Status=0x7f, 0x75f}, 0x0, 0x0, 0x3, 0x3, 0x0, &(0x7f0000000140), 0x34)\n"+
+			"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_created(r0, 0x0, 0x0, 0x0, &(0x7f0000000180)={@Status=0x2, 0x8}, 0x1203b, &(0x7f00000001c0)={0x2, 0x0, 0x1}, 0x10, 0x0, 0x0)\n"+
+			"NtDeviceIoControlFile$afd_bind_tcp_nonblock(r0, 0x0, 0x0, 0x0, &(0x7f0000000200)={@Status=0x8001, 0x80000000}, 0x12003, &(0x7f0000000240), 0x14, &(0x7f0000000280), 0x10)\n")
+	for seed := int64(0); seed < 64; seed++ {
+		collided := prog.AssignRandomAsync(p, rand.New(rand.NewSource(seed)))
+		if collided.Calls[1].Props.Async {
+			t.Fatalf("AFD nonblock state transition became async:\n%s", collided.Serialize())
+		}
+		if collided.Calls[2].Props.Async {
+			t.Fatalf("AFD bind state transition became async:\n%s", collided.Serialize())
+		}
+	}
+	if _, err := prog.DupCallCollide(p, rand.New(rand.NewSource(0))); err == nil {
+		t.Fatal("duplicate-collide should reject private AFD state transitions")
+	}
+	if _, err := prog.DoubleExecCollide(p, rand.New(rand.NewSource(0))); err == nil {
+		t.Fatal("double-exec collide should reject private AFD state transitions")
+	}
+
+	withProps := p.Clone()
+	withProps.Calls[1].Props.Async = true
+	withProps.Calls[1].Props.Rerun = 32
+	withProps.Calls[2].Props.Rerun = 32
+	sanitized, changed := prog.SanitizeCollidePropsForTarget(withProps)
+	if !changed {
+		t.Fatal("expected sanitizer to clear private AFD state collide props")
+	}
+	if sanitized.Calls[1].Props.Async || sanitized.Calls[1].Props.Rerun != 0 ||
+		sanitized.Calls[2].Props.Rerun != 0 {
+		t.Fatalf("sanitizer left private AFD collide props:\n%s", sanitized.Serialize())
+	}
 }
 
 func TestWindowsAFDTargetProfileScoresCorpusResourcesByLineage(t *testing.T) {
@@ -2505,6 +2610,15 @@ func windowsPolicyTestDeserialize(t *testing.T, target *prog.Target, serialized 
 		t.Fatalf("Deserialize: %v\ndata:\n%s", err, serialized)
 	}
 	return p
+}
+
+func windowsPolicyTestRequiresAsyncAFDPrivateIOCTL(call *prog.Syscall) bool {
+	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") ||
+		!strings.Contains(call.Name, "_pending") || len(call.Args) < 2 {
+		return false
+	}
+	res, ok := call.Args[1].Type.(*prog.ResourceType)
+	return ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE"
 }
 
 func windowsPolicyTestCallReturn(t *testing.T, p *prog.Prog, callName string) *prog.ResultArg {

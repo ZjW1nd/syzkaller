@@ -14,7 +14,7 @@
 
 #define NYX_HOST_MAGIC 0x4878794e
 #define NYX_AGENT_MAGIC 0x4178794e
-#define NYX_HOST_VERSION 2
+#define NYX_HOST_VERSION 3
 #define NYX_AGENT_VERSION 1
 
 #define HYPERCALL_KAFL_RAX_ID 0x01f
@@ -79,6 +79,8 @@ typedef struct {
 	uint32_t ijon_bitmap_size;
 	uint32_t payload_buffer_size;
 	uint32_t worker_id;
+	uint32_t protocol_cpu;
+	uint32_t smp_enabled;
 } __attribute__((packed)) nyx_host_config_t;
 
 typedef struct {
@@ -255,6 +257,22 @@ static bool nyx_fetch_host_config(nyx_host_config_t* host_config)
 	nyx_hypercall(HYPERCALL_KAFL_GET_HOST_CONFIG, (uint64_t)(uintptr_t)host_config);
 	return host_config->host_magic == NYX_HOST_MAGIC &&
 	       host_config->host_version == NYX_HOST_VERSION;
+}
+
+static void nyx_pin_protocol_thread(const nyx_host_config_t* host_config, const char* reason)
+{
+	if (!host_config || !host_config->smp_enabled)
+		return;
+	if (host_config->protocol_cpu >= sizeof(DWORD_PTR) * 8) {
+		nyx_hprintf("nyx protocol thread pin skipped cpu=%u reason=%s\n",
+			    host_config->protocol_cpu, reason ? reason : "<none>");
+		return;
+	}
+	DWORD_PTR mask = ((DWORD_PTR)1) << host_config->protocol_cpu;
+	if (SetThreadAffinityMask(GetCurrentThread(), mask) == 0) {
+		nyx_hprintf("nyx protocol thread pin failed cpu=%u err=%lu reason=%s\n",
+			    host_config->protocol_cpu, GetLastError(), reason ? reason : "<none>");
+	}
 }
 
 static bool nyx_query_cr3(uint64_t* out_cr3)

@@ -523,6 +523,101 @@ func TestCollideUsesTargetSelectedIndices(t *testing.T) {
 	}
 }
 
+func TestCollideUsesTargetAsyncGuard(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.SelectCollideCallIndices = func(calls []*Call) ([]int, bool) {
+		return []int{0}, false
+	}
+	clone.AllowAsyncCollideCall = func(calls []*Call, idx int) bool {
+		return false
+	}
+	p, err := clone.Deserialize([]byte(
+		"test$manual(0x0)\n"+
+			"test$automatic(0x1)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	collided := AssignRandomAsync(p, rand.New(rand.NewSource(0)))
+	for _, call := range collided.Calls {
+		if call.Props.Async {
+			t.Fatalf("target-blocked call became async:\n%s", collided.Serialize())
+		}
+	}
+	if _, err := DupCallCollide(p, rand.New(rand.NewSource(0))); err == nil {
+		t.Fatal("expected duplicate-collide to reject target-blocked calls")
+	}
+	if _, err := DoubleExecCollide(p, rand.New(rand.NewSource(0))); err == nil {
+		t.Fatal("expected double-exec collide to reject target-blocked calls")
+	}
+
+	withProps, err := clone.Deserialize([]byte(
+		"test$manual(0x0) (async, rerun: 32)\n"+
+			"test$automatic(0x1) (rerun: 32)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sanitized, changed := SanitizeCollidePropsForTarget(withProps)
+	if !changed {
+		t.Fatal("expected sanitizer to clear target-blocked async props")
+	}
+	for _, call := range sanitized.Calls {
+		if call.Props.Async || call.Props.Rerun != 0 {
+			t.Fatalf("sanitizer left target-blocked collide props:\n%s", sanitized.Serialize())
+		}
+	}
+	if withProps.Calls[0].Props.Async == false || withProps.Calls[0].Props.Rerun == 0 {
+		t.Fatal("sanitizer mutated the original program")
+	}
+}
+
+func TestCollidePreservesTargetRequiredAsync(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.SelectCollideCallIndices = func(calls []*Call) ([]int, bool) {
+		return []int{1}, false
+	}
+	clone.AllowAsyncCollideCall = func(calls []*Call, idx int) bool {
+		return idx != 0
+	}
+	clone.CallRequiresAsync = func(calls []*Call, idx int) bool {
+		return idx == 0
+	}
+	p, err := clone.Deserialize([]byte(
+		"test$manual(0x0) (async)\n"+
+			"test$automatic(0x1)\n"+
+			"test$manual(0x2)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 100 {
+		collided := AssignRandomAsync(p, rand.New(rand.NewSource(0)))
+		if !collided.Calls[0].Props.Async {
+			t.Fatalf("required-async call was made synchronous:\n%s", collided.Serialize())
+		}
+	}
+
+	withProps, err := clone.Deserialize([]byte(
+		"test$manual(0x0) (rerun: 32)\n"+
+			"test$automatic(0x1) (rerun: 32)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sanitized, changed := SanitizeCollidePropsForTarget(withProps)
+	if !changed {
+		t.Fatal("expected sanitizer to restore required async and clear illegal rerun")
+	}
+	if !sanitized.Calls[0].Props.Async || sanitized.Calls[0].Props.Rerun != 0 {
+		t.Fatalf("sanitizer did not preserve required async safely:\n%s", sanitized.Serialize())
+	}
+}
+
 func TestDupCallCollideSkipsLowRelevancePrograms(t *testing.T) {
 	target, err := GetTarget("test", "64")
 	if err != nil {

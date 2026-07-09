@@ -914,6 +914,62 @@ func TestRequestNeedsCoveragePriming(t *testing.T) {
 	}
 }
 
+func TestMissingRequiredModuleCoverageForTargetedRequest(t *testing.T) {
+	skipLegacyAfdWinsockArchived(t)
+	execData := serializeWindowsTestProgramForExec(t,
+		filepath.Join("..", "..", "sys", "windows", "test", "nyx_afd_private_query_readonly.txt"))
+	req := &flatrpc.ExecRequest{
+		Data: execData,
+		ExecOpts: &flatrpc.ExecOpts{
+			ExecFlags: flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagCollectSignal,
+		},
+	}
+	msg := execResultMessage(&flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(progExecCallCountOrPanic(execData)),
+	})
+	module, ok := missingRequiredModuleCoverage(req, msg, []moduleRangeSpec{
+		{Pattern: "afd.sys", Required: true},
+	})
+	if !ok || module != "afd.sys" {
+		t.Fatalf("missingRequiredModuleCoverage()=%q,%v want afd.sys,true", module, ok)
+	}
+	if res := msg.Msg.Value.(*flatrpc.ExecResult); len(res.Info.Calls) != 0 {
+		res.Info.Calls[0].Cover = []uint64{0x10}
+	}
+	if module, ok := missingRequiredModuleCoverage(req, msg, []moduleRangeSpec{
+		{Pattern: "afd.sys", Required: true},
+	}); ok {
+		t.Fatalf("missingRequiredModuleCoverage()=%q,true after coverage injection", module)
+	}
+	if module, ok := missingRequiredModuleCoverage(req, execResultMessage(&flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(progExecCallCountOrPanic(execData)),
+	}), []moduleRangeSpec{{Pattern: "ntoskrnl.exe", Required: true}}); ok {
+		t.Fatalf("missingRequiredModuleCoverage()=%q,true for non-targeted required module", module)
+	}
+	if module, ok := requestTargetedConfiguredModule(execData, []moduleRangeSpec{
+		{Pattern: "ntoskrnl.exe", Required: true},
+		{Pattern: "afd.sys"},
+	}); !ok || module != "afd.sys" {
+		t.Fatalf("requestTargetedConfiguredModule()=%q,%v want afd.sys,true", module, ok)
+	}
+}
+
+func TestModuleCallNameToken(t *testing.T) {
+	tests := map[string]string{
+		"afd.sys":      "afd",
+		"win32k*.sys":  "win32k",
+		"ntoskrnl.exe": "ntoskrnl",
+		"C:/x/foo.sys": "foo",
+		"*.sys":        "",
+		"io.sys":       "",
+	}
+	for pattern, want := range tests {
+		if got := moduleCallNameToken(pattern); got != want {
+			t.Fatalf("moduleCallNameToken(%q)=%q want %q", pattern, got, want)
+		}
+	}
+}
+
 func TestExecProgramIsMultiCallWindowsVNet(t *testing.T) {
 	skipLegacyAfdWinsockArchived(t)
 	vnet := serializeWindowsTestProgramForExec(t,
@@ -994,6 +1050,131 @@ func execResultMessage(res *flatrpc.ExecResult) *flatrpc.ExecutorMessage {
 			Type:  flatrpc.ExecutorMessagesRawExecResult,
 			Value: res,
 		},
+	}
+}
+
+func TestReadExecResultWaitsForReloadBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), nyxExecResult)
+	want := execResultMessage(&flatrpc.ExecResult{
+		Id:   123,
+		Proc: 0,
+		Info: flatrpc.EmptyProgInfo(1),
+	})
+	raw := packFlatbuffer(want)
+	data := make([]byte, 4+len(raw))
+	binary.LittleEndian.PutUint32(data[:4], uint32(len(raw)))
+	copy(data[4:], raw)
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	vm := &nyxVM{trace: newTraceRecorder(8)}
+	got, ok, err := vm.readExecResultIfReady(path, 123, 3, true, false)
+	if err != nil {
+		t.Fatalf("readExecResultIfReady: %v", err)
+	}
+	if ok || got != nil {
+		t.Fatalf("result returned before reload boundary: ok=%v got=%#v", ok, got)
+	}
+	tail := vm.trace.Tail("runner", 0)
+	if len(tail) != 1 || tail[0].Stage != "exec_result_before_reload_boundary" {
+		t.Fatalf("bad trace tail before boundary: %#v", tail)
+	}
+
+	got, ok, err = vm.readExecResultIfReady(path, 123, 4, true, true)
+	if err != nil {
+		t.Fatalf("readExecResultIfReady after boundary: %v", err)
+	}
+	if !ok {
+		t.Fatal("ready result was not returned after reload boundary")
+	}
+	res, ok := got.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res.Id != 123 {
+		t.Fatalf("bad result: %#v", got)
+	}
+	tail = vm.trace.Tail("runner", 0)
+	if len(tail) != 2 ||
+		tail[0].Stage != "exec_result_before_reload_boundary" ||
+		tail[1].Stage != "exec_result_file" {
+		t.Fatalf("bad trace tail after boundary: %#v", tail)
+	}
+}
+
+func TestExecStepProbeWindowReleasesImmediatelyForReloadBoundary(t *testing.T) {
+	if got := execStepProbeWindow(0, false, false); got != 300*time.Millisecond {
+		t.Fatalf("first step probe window = %s", got)
+	}
+	if got := execStepProbeWindow(2, false, false); got != 50*time.Millisecond {
+		t.Fatalf("normal step probe window = %s", got)
+	}
+	if got := execStepProbeWindow(2, true, false); got != 0 {
+		t.Fatalf("reload boundary probe window = %s, want immediate release", got)
+	}
+	if got := execStepProbeWindow(3, true, true); got != 50*time.Millisecond {
+		t.Fatalf("settled reload probe window = %s", got)
+	}
+}
+
+func TestHprintfStagePayloadHeader(t *testing.T) {
+	if got := hprintfStage("nyx payload header kind=2 body=88 total=100"); got != "payload_header" {
+		t.Fatalf("hprintfStage payload header = %q", got)
+	}
+}
+
+func TestClearPayloadResetsSharedLength(t *testing.T) {
+	vm := &nyxVM{payloadMM: make([]byte, 16)}
+	if err := vm.setPayload([]byte("abcd")); err != nil {
+		t.Fatalf("setPayload: %v", err)
+	}
+	if got := vm.clearPayload(); got != 4 {
+		t.Fatalf("clearPayload returned old length %d", got)
+	}
+	if got := binary.LittleEndian.Uint32(vm.payloadMM[:4]); got != 0 {
+		t.Fatalf("payload length after clear = %d", got)
+	}
+}
+
+func TestDrainPendingQemuPingsReleasesAllAvailablePings(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	vm := &nyxVM{
+		control: client,
+		trace:   newTraceRecorder(16),
+	}
+	done := make(chan error, 1)
+	go func() {
+		for i := 0; i < 2; i++ {
+			if _, err := server.Write([]byte{nyxInterfacePing}); err != nil {
+				done <- err
+				return
+			}
+			var release [1]byte
+			if _, err := server.Read(release[:]); err != nil {
+				done <- err
+				return
+			}
+			if release[0] != nyxInterfacePing {
+				done <- fmt.Errorf("release byte = %#x", release[0])
+				return
+			}
+		}
+		done <- nil
+	}()
+	if err := vm.drainPendingQemuPings(7, "test", 4, 20*time.Millisecond); err != nil {
+		t.Fatalf("drainPendingQemuPings: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	var drained int
+	for _, entry := range vm.trace.Tail("qemu", 0) {
+		if entry.Stage == "kvm_run_drain_pending_ping" {
+			drained++
+		}
+	}
+	if drained != 2 {
+		t.Fatalf("drained pings = %d", drained)
 	}
 }
 
@@ -1111,7 +1292,7 @@ func TestPackModuleRangeConfig(t *testing.T) {
 
 func TestDeriveHardTimeoutUsesProgramTimeout(t *testing.T) {
 	got := deriveHardTimeout(5000, 3*time.Minute)
-	want := 15 * time.Second
+	want := 5 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
@@ -1205,7 +1386,7 @@ func TestDeriveHardTimeoutFallsBackWithoutProgramTimeout(t *testing.T) {
 func TestApplyStandaloneHardTimeoutUsesProgramTimeout(t *testing.T) {
 	vm := &nyxVM{hardTimeout: 3 * time.Minute}
 	got := applyStandaloneHardTimeout(vm, 60000)
-	want := 2 * time.Minute
+	want := 1 * time.Minute
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
@@ -1235,9 +1416,9 @@ func TestHardTimeoutWithSlackUsesMinimum(t *testing.T) {
 }
 
 func TestExecWaitTimeoutHonorsDerivedShortProgramTimeout(t *testing.T) {
-	vm := &nyxVM{hardTimeout: 15 * time.Second}
+	vm := &nyxVM{hardTimeout: 5 * time.Second}
 	got := vm.execWaitTimeout()
-	want := 20 * time.Second
+	want := 10 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}

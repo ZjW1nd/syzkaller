@@ -77,6 +77,12 @@ type Target struct {
 	// as the primary race/collide targets. It returns preferred call indices plus a flag that
 	// blocks generic collide transforms when the target considers the whole program too shallow.
 	SelectCollideCallIndices func(calls []*Call) ([]int, bool)
+	// AllowAsyncCollideCall lets a target reject calls that must not be made async by collide
+	// transforms because their syscall semantics require strict ordering with adjacent calls.
+	AllowAsyncCollideCall func(calls []*Call, idx int) bool
+	// CallRequiresAsync lets a target preserve calls whose semantics require executor-level
+	// async scheduling for later calls in the same program to complete them.
+	CallRequiresAsync func(calls []*Call, idx int) bool
 	// ResourceUseScore returns how valuable a particular syscall is as a consumer of an
 	// existing resource for future reuse decisions. Higher scores mean the resource has
 	// already reached a deeper or more interesting state.
@@ -714,6 +720,8 @@ func (target *Target) Clone() *Target {
 		Helpers:                        target.Helpers,
 		Bias:                           target.Bias,
 		SelectCollideCallIndices:       target.SelectCollideCallIndices,
+		AllowAsyncCollideCall:          target.AllowAsyncCollideCall,
+		CallRequiresAsync:              target.CallRequiresAsync,
 		RuntimePolicy:                  target.RuntimePolicy,
 		SemanticStateModel:             target.SemanticStateModel,
 		ApplyTargetProfile:             target.ApplyTargetProfile,

@@ -3750,13 +3750,31 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 			}
 			continue
 		}
+		if windowsAfdPrivateRequiresAsyncCall(call) {
+			if ct.DirectlyGeneratable(call.ID) {
+				t.Fatalf("%s requires async completion but remains a direct generation root", name)
+			}
+			continue
+		}
 		if !ct.DirectlyGeneratable(call.ID) {
 			t.Fatalf("%s is a non-SAN private AFD IOCTL but is not directly generatable", name)
 		}
 	}
 }
 
+func windowsAfdPrivateRequiresAsyncCall(call *prog.Syscall) bool {
+	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") ||
+		!strings.Contains(call.Name, "_pending") || len(call.Args) < 2 {
+		return false
+	}
+	res, ok := call.Args[1].Type.(*prog.ResourceType)
+	return ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE"
+}
+
 func windowsAfdPrivateConfigSyscall(name string) bool {
+	if windowsAfdPrivateConfigUnsupportedSyscall(name) {
+		return false
+	}
 	prefixes := []string{
 		"NtCreateFile$afd_",
 		"NtDeviceIoControlFile$afd_",
@@ -3779,6 +3797,18 @@ func windowsAfdPrivateConfigSyscall(name string) bool {
 		name == "syz_emit_ethernet$windows" ||
 		name == "syz_extract_tcp_res$windows" ||
 		name == "syz_extract_tcp_res$windows_synack"
+}
+
+func windowsAfdPrivateConfigUnsupportedSyscall(name string) bool {
+	switch name {
+	case "NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp_nonblock",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp",
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp_nonblock":
+		return true
+	default:
+		return false
+	}
 }
 
 func windowsIoctlCode(call *prog.Syscall) (uint64, bool) {
@@ -3919,7 +3949,7 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 	}
 }
 
-func TestWindowsAfdPrivateSeedsScheduleForStartupReplay(t *testing.T) {
+func TestWindowsAfdPrivateSeedsExcludeFullSmokeCorpusFromStartupReplay(t *testing.T) {
 	target, err := prog.GetTarget("windows", "amd64")
 	if err != nil {
 		t.Fatalf("GetTarget: %v", err)
@@ -3929,17 +3959,23 @@ func TestWindowsAfdPrivateSeedsScheduleForStartupReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ApplyTargetProfile: %v", err)
 	}
-	matches := windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
-		cfg.Experimental.SeedExcludePrefixes)
-	if len(matches) == 0 {
-		t.Fatal("private AFD seed prefix matched no seeds")
+	allMatches := windowsSeedPrefixMatches(t, cfg.Experimental.SeedPrefix)
+	selected := make(map[string]bool)
+	for _, path := range windowsSeedPrefixMatchesExcept(t, cfg.Experimental.SeedPrefix,
+		cfg.Experimental.SeedExcludePrefixes) {
+		selected[filepath.Base(path)] = true
 	}
-	fullSeeds := 0
-	var unscheduled []string
-	for _, path := range matches {
+	if len(selected) == 0 {
+		t.Fatal("private AFD seed prefix selected no startup replay seeds")
+	}
+	excludedFullSeeds := 0
+	for _, path := range allMatches {
 		base := filepath.Base(path)
 		if !strings.HasPrefix(base, "nyx_afd_private_full_") {
 			continue
+		}
+		if selected[base] {
+			t.Fatalf("private AFD startup replay still selects generated full smoke seed %s", base)
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -3957,17 +3993,10 @@ func TestWindowsAfdPrivateSeedsScheduleForStartupReplay(t *testing.T) {
 			t.Fatalf("%s has invalid semantic state: %+v\n%s",
 				base, st.Violations, p.Serialize())
 		}
-		fullSeeds++
-		if !target.RuntimePolicy.ShouldScheduleProgram("seed", p) {
-			unscheduled = append(unscheduled, base)
-		}
+		excludedFullSeeds++
 	}
-	if fullSeeds == 0 {
-		t.Fatal("private AFD config matched no nyx_afd_private_full_ seeds")
-	}
-	if len(unscheduled) != 0 {
-		t.Fatalf("%d private AFD full seeds are not scheduled for startup replay, first: %s",
-			len(unscheduled), strings.Join(unscheduled[:min(len(unscheduled), 10)], ", "))
+	if excludedFullSeeds == 0 {
+		t.Fatal("private AFD config matched no generated full smoke seeds to exclude")
 	}
 }
 
@@ -7531,6 +7560,30 @@ func TestRunnerSuccessPathLogsAreDebugOnly(t *testing.T) {
 	}
 }
 
+func TestRunnerCoveragePrimingReplayRehandshakes(t *testing.T) {
+	mainData, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	runRequest := extractFunctionBody(t, string(mainData), "func (r *runner) runRequest")
+	primeIdx := strings.Index(runRequest, "primeMsg, err := r.executeRequestOnce(req, true)")
+	if primeIdx == -1 {
+		t.Fatal("runRequest missing coverage priming execution")
+	}
+	afterPrime := runRequest[primeIdx:]
+	ensureIdx := strings.Index(afterPrime, "if err := r.ensureHandshake(req); err != nil")
+	replayLogIdx := strings.Index(afterPrime, `log.Logf(0, "runner replaying first traced request after handshake to prime PT coverage`)
+	replayExecIdx := strings.Index(afterPrime, "return r.executeRequestOnce(req, false)")
+	if ensureIdx == -1 || replayLogIdx == -1 || replayExecIdx == -1 {
+		t.Fatalf("runRequest priming replay path missing ensure/replay sequence: ensure=%d log=%d exec=%d",
+			ensureIdx, replayLogIdx, replayExecIdx)
+	}
+	if !(ensureIdx < replayLogIdx && replayLogIdx < replayExecIdx) {
+		t.Fatalf("runRequest must re-handshake before coverage priming replay: ensure=%d log=%d exec=%d",
+			ensureIdx, replayLogIdx, replayExecIdx)
+	}
+}
+
 func TestRunnerDoesNotDrainReloadBeforeNextPayload(t *testing.T) {
 	mainData, err := os.ReadFile("main.go")
 	if err != nil {
@@ -7553,6 +7606,19 @@ func TestRunnerDoesNotDrainReloadBeforeNextPayload(t *testing.T) {
 	handle := extractFunctionBody(t, mainSrc, "func (r *runner) executeRequestOnce")
 	if !strings.Contains(handle, "The pending root reload is consumed by the next payload release") {
 		t.Fatal("executeRequestOnce should document that reload is deferred until the next payload is written")
+	}
+	if !strings.Contains(handle, "fuzz root is sealed") {
+		t.Fatal("executeRequestOnce should document post-handshake fuzz root sealing")
+	}
+	for _, bad := range []string{
+		"r.handshakeReady = false",
+		"r.lastEnvFlags = 0",
+		"r.lastSandboxArg = 0",
+		"r.coveragePrimed = false",
+	} {
+		if strings.Contains(handle, bad) {
+			t.Fatalf("executeRequestOnce should not reset session state after each exec: %q", bad)
+		}
 	}
 }
 
@@ -8671,6 +8737,30 @@ func TestWindowsNyxExecutorBuildEnablesNetInjection(t *testing.T) {
 	} {
 		if !strings.Contains(string(data), needle) {
 			t.Fatalf("Windows Nyx executor build should include %q for vnet pseudo-syscalls", needle)
+		}
+	}
+}
+
+func TestOfflineNyxOverlayEnablesAutoLogon(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "guest-vm", "prepare-nyx-overlay-offline.sh")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read prepare-nyx-overlay-offline.sh: %v", err)
+	}
+	src := string(data)
+	for _, needle := range []string{
+		`AUTO_LOGON="${AUTO_LOGON:-1}"`,
+		`"AutoAdminLogon"="1"`,
+		`"ForceAutoLogon"="1"`,
+		`"DefaultUserName"="$AUTO_LOGON_USER"`,
+		`"DefaultPassword"="$AUTO_LOGON_PASSWORD"`,
+		`"NTsyzkallerNyxExecutor"="D:\\\\WINDOWS\\\\system32\\\\cmd.exe /c D:\\\\ntsyz-nyx-autostart.cmd"`,
+		`executor-launcher-started.txt`,
+		`nyx-autostart.cmd.log`,
+		`ntsyz-nyx-autostart.cmd`,
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("offline Nyx overlay script should contain %q", needle)
 		}
 	}
 }

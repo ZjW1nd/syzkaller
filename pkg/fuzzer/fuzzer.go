@@ -203,6 +203,9 @@ func (fuzzer *Fuzzer) executeWithFlags(executor queue.Executor, req *queue.Reque
 }
 
 func (fuzzer *Fuzzer) prepare(req *queue.Request, flags ProgFlags, attempt int) {
+	if req != nil && req.Prog != nil {
+		req.Prog, _ = prog.SanitizeCollidePropsForTarget(req.Prog)
+	}
 	req.OnDone(func(req *queue.Request, res *queue.Result) bool {
 		return fuzzer.processResult(req, res, flags, attempt)
 	})
@@ -767,8 +770,12 @@ func (fuzzer *Fuzzer) logCurrentStats() {
 }
 
 func setFlags(execFlags flatrpc.ExecFlag) flatrpc.ExecOpts {
+	/* Always include ExecFlagThreaded so the executor uses per-syscall
+	 * timeout (event_timedwait) even for blocking syscalls.  Without
+	 * Threaded, a blocking syscall hangs the whole program and only the
+	 * QEMU watchdog (hard timeout) can break it. */
 	return flatrpc.ExecOpts{
-		ExecFlags: execFlags,
+		ExecFlags: execFlags | flatrpc.ExecFlagThreaded,
 	}
 }
 
