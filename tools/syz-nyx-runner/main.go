@@ -1589,6 +1589,7 @@ func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
 	if err := vm.setPayload(payload); err != nil {
 		return err
 	}
+	log.Logf(0, "runner executeHandshake: begin req=%d deadline=%s", requestID, vm.execWaitTimeout())
 	deadline := time.Now().Add(vm.execWaitTimeout())
 	for i := 0; i < 16; i++ {
 		remaining := time.Until(deadline)
@@ -1607,9 +1608,9 @@ func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
 			return err
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
-			vm.debugLogf("runner handshake ack observed at step=%d", i)
-			vm.recordTrace("runner", "handshake_ack", requestID, traceFields("step", i))
-			return nil
+		log.Logf(0, "runner executeHandshake: ack observed at step=%d", i)
+		vm.recordTrace("runner", "handshake_ack", requestID, traceFields("step", i))
+		return nil
 		}
 		vm.recordAuxTrace("handshake_step", requestID)
 		vm.debugLogf("runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
@@ -1753,7 +1754,7 @@ func execStepProbeWindow(steps int, reloadRequested bool, reloadBoundarySettled 
 	if steps == 0 {
 		return 300 * time.Millisecond
 	}
-	return 50 * time.Millisecond
+	return 5 * time.Millisecond
 }
 
 func (vm *nyxVM) readExecResultIfReady(resultPath string, requestID int64, steps int, reloadRequested bool, reloadBoundarySettled bool) (*flatrpc.ExecutorMessage, bool, error) {
@@ -3154,17 +3155,36 @@ func (r *runner) connect() error {
 		r.connectReply.CoverEdges, r.connectReply.Kernel64Bit, r.connectReply.Slowdown,
 		r.connectReply.SyscallTimeoutMs, r.connectReply.ProgramTimeoutMs)
 	derivedTimeout := deriveHardTimeout(r.connectReply.ProgramTimeoutMs, r.vm.hardTimeout)
+	/*
+	 * Nyx's first program execution includes root snapshot creation, PT
+	 * setup, and AP synchronisation that can take 30+ seconds.  The
+	 * derived hard timeout from a 5s program_timeout would be only 8s,
+	 * killing the first execution before it starts.  Use the init wait
+	 * timeout as a floor so the first execution gets at least 185s.
+	 */
+	initFloor := r.vm.initWaitTimeout()
+	if derivedTimeout < initFloor {
+		derivedTimeout = initFloor
+	}
 	if derivedTimeout != r.vm.hardTimeout {
-		log.Logf(0, "runner using derived hard timeout %s (fallback=%s program_timeout_ms=%d)",
-			derivedTimeout, r.vm.hardTimeout, r.connectReply.ProgramTimeoutMs)
+		log.Logf(0, "runner using derived hard timeout %s (fallback=%s program_timeout_ms=%d init_floor=%s)",
+			derivedTimeout, r.vm.hardTimeout, r.connectReply.ProgramTimeoutMs, initFloor)
 		r.vm.hardTimeout = derivedTimeout
 	}
+	log.Logf(0, "runner connect: sending InfoRequest")
 	if err := flatrpc.Send(r.conn, &flatrpc.InfoRequest{
 		Files: nyxModuleInfoFiles(r.vm.moduleCanonicalizer.CanonicalRanges()),
 	}); err != nil {
+		log.Logf(0, "runner connect: InfoRequest send failed: %v", err)
 		return err
 	}
+	log.Logf(0, "runner connect: waiting for InfoReply")
 	_, err = flatrpc.Recv[*flatrpc.InfoReplyRaw](r.conn)
+	if err != nil {
+		log.Logf(0, "runner connect: InfoReply recv failed: %v", err)
+		return err
+	}
+	log.Logf(0, "runner connect: handshake complete, entering loop")
 	return err
 }
 
@@ -3173,6 +3193,7 @@ func (r *runner) ensureHandshake(req *flatrpc.ExecRequest) error {
 	if r.handshakeReady && r.lastEnvFlags == envFlags && r.lastSandboxArg == req.ExecOpts.SandboxArg {
 		return nil
 	}
+	log.Logf(0, "runner ensureHandshake: id=%d first=%v env=0x%x", req.Id, !r.handshakeReady, uint64(envFlags))
 	r.vm.debugLogf("runner sending handshake: raw_env=0x%x normalized_env=0x%x sandbox_arg=%d",
 		uint64(req.ExecOpts.EnvFlags), uint64(envFlags), req.ExecOpts.SandboxArg)
 	msg := &flatrpc.SnapshotHandshakeT{
@@ -3408,7 +3429,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 				requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
 				duration.Milliseconds(), res.Hanged, res.Error)
 		} else {
-			r.vm.debugLogf("%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
+			log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
 				requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
 				duration.Milliseconds(), res.Hanged, res.Error)
 		}
@@ -3661,6 +3682,7 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if req.Type != flatrpc.RequestTypeProgram {
 		return nil, fmt.Errorf("unsupported request type %v", req.Type)
 	}
+	log.Logf(0, "runner runRequest: id=%d flags=0x%x begin", req.Id, req.ExecOpts.ExecFlags)
 	if r.needRestart {
 		if err := r.restartVMWithRetries("recovering from previous hanged request"); err != nil {
 			return nil, err
@@ -3859,6 +3881,7 @@ func (r *runner) loop() error {
 			}
 			return err
 		}
+		log.Logf(0, "runner loop: received host message type=%T", msg.Msg.Value)
 		switch req := msg.Msg.Value.(type) {
 		case *flatrpc.ExecRequest:
 			r.vm.debugLogf("runner received ExecRequest id=%d type=%v", req.Id, req.Type)
