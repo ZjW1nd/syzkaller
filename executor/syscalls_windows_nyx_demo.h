@@ -481,6 +481,7 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 #define W32_SYZ_EXTRACT_TCP_RES_WINDOWS 3374
 #define W32_SYZ_EXTRACT_TCP_RES_WINDOWS_SYNACK 3375
 #define W32_SYZ_KAFL_BUGCHECK_TRIGGER 3376
+#define W32_SYZ_RACE_TEST_TRIGGER 3377
 #define W32_VIRTUALALLOC 3113
 #define W32_WRITEFILE 3219
 #define W32_WRITEFILE_AFD_TRANSMIT 3220
@@ -617,6 +618,16 @@ static void init_nyx_syscalls()
 											     1,
 											 },
 							 (syscall_t)syz_kafl_bugcheck_trigger};
+	syscalls[W32_SYZ_RACE_TEST_TRIGGER] = call_t{"syz_race_test_trigger", 0, {
+											     0,
+											     0,
+											     0,
+											     0,
+											     0,
+											     1,
+											     1,
+											 },
+							 (syscall_t)syz_race_test_trigger};
 	// New no-context NT syscalls
 	syscalls[W32_NTDELAYEXEC] = call_t{"NtDelayExecution", 0, {}, (syscall_t)NtDelayExecution};
 	syscalls[W32_NTYIELDEXEC] = call_t{"NtYieldExecution", 0, {}, (syscall_t)NtYieldExecution};

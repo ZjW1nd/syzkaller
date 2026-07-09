@@ -149,6 +149,29 @@ static void nyx_hprintf(const char* fmt, ...);
 #define windows_diag_log(...) (void)0
 #endif
 
+/* Forward declarations for race detector hypercall wrappers.
+ * nyx_windows.h (included later in executor.cc) defines the actual
+ * inline wrappers. Here we only need the constants and extern
+ * function pointers so syz_race_test_trigger can call them. */
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+#ifndef NYX_RACE_ACCESS_WRITE
+#define NYX_RACE_ACCESS_WRITE 0
+#define NYX_RACE_ACCESS_RW 1
+#endif
+extern void (*g_kafl_race_arm_watchpoint_fn)(uint64_t, uint32_t);
+extern uint64_t (*g_kafl_race_check_watchpoint_fn)(void);
+extern void (*g_kafl_race_config_fn)(uint32_t, uint32_t, uint32_t, bool, uint32_t);
+static inline void race_arm_wp(uint64_t addr, uint32_t type) {
+	if (g_kafl_race_arm_watchpoint_fn) g_kafl_race_arm_watchpoint_fn(addr, type);
+}
+static inline uint64_t race_check_wp(void) {
+	return g_kafl_race_check_watchpoint_fn ? g_kafl_race_check_watchpoint_fn() : 0;
+}
+static inline void race_config_wp(uint32_t rate, uint32_t delay_us, uint32_t mode, bool enable, uint32_t budget) {
+	if (g_kafl_race_config_fn) g_kafl_race_config_fn(rate, delay_us, mode, enable, budget);
+}
+#endif
+
 #if SYZ_EXECUTOR || __NR_syz_kafl_bugcheck_trigger
 static intptr_t SYSCALLAPI syz_kafl_bugcheck_trigger(intptr_t, intptr_t, intptr_t, intptr_t, intptr_t,
 						     intptr_t, intptr_t, intptr_t, intptr_t, intptr_t)
@@ -177,6 +200,113 @@ static intptr_t SYSCALLAPI syz_kafl_bugcheck_trigger(intptr_t, intptr_t, intptr_
 	CloseServiceHandle(service);
 	CloseServiceHandle(scm);
 	return ok ? 0 : -(intptr_t)err;
+}
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_race_test_trigger
+/*
+ * Pseudo-syscall that triggers a deliberate data race on a shared memory
+ * region using multiple threads.  Two worker threads increment a counter
+ * at the same volatile address without synchronisation, producing a
+ * classic TOCTOU / data race that the hypervisor EPT watchpoint engine
+ * should detect.
+ *
+ * The race detector (if enabled via KVM_EXIT_KAFL_RACE_CONFIG) will see
+ * the watchpoint armed on the shared buffer, and one of the thread's
+ * writes should trigger an EPT violation that is recorded as a race hit.
+ */
+static volatile LONG syz_race_shared_counter;
+static HANDLE syz_race_threads[4];
+static volatile LONG syz_race_start_flag;
+
+static DWORD WINAPI syz_race_worker(LPVOID param)
+{
+	volatile LONG *counter = (volatile LONG *)param;
+	/* Spin until start flag is set */
+	while (!syz_race_start_flag)
+		SwitchToThread();
+	/* Unsynchronised read-modify-write — classic data race */
+	for (int i = 0; i < 100000; i++) {
+		LONG val = *counter;    /* read */
+		val++;                  /* modify */
+		*counter = val;         /* write */
+	}
+	return 0;
+}
+
+static intptr_t SYSCALLAPI syz_race_test_trigger(intptr_t a0, intptr_t a1, intptr_t a2, intptr_t a3, intptr_t a4,
+						 intptr_t a5, intptr_t a6, intptr_t a7, intptr_t a8, intptr_t a9)
+{
+	int num_threads = (int)a0;
+	if (num_threads < 2)
+		num_threads = 2;
+	if (num_threads > 4)
+		num_threads = 4;
+
+	syz_race_shared_counter = 0;
+	syz_race_start_flag = 0;
+
+	windows_diag_log("syz_race_test_trigger starting %d threads\n", num_threads);
+
+	/* Enable the hypervisor race detector before doing anything else.
+	 * rate=100 (sample every access), delay_us=0, mode=0, enable=true,
+	 * budget=64 watchpoints. Without this, the EPT violation handler
+	 * skips all watchpoint hits (ept->enabled == false). */
+	race_config_wp(100, 0, 0, true, 64);
+	windows_diag_log("syz_race_test_trigger race detector enabled\n");
+
+	for (int i = 0; i < num_threads; i++) {
+		syz_race_threads[i] = CreateThread(nullptr, 0, syz_race_worker,
+						    (LPVOID)&syz_race_shared_counter, 0, nullptr);
+		if (!syz_race_threads[i]) {
+			windows_diag_log("syz_race_test_trigger CreateThread %d failed err=%lu\n",
+					 i, (unsigned long)GetLastError());
+			return -(intptr_t)GetLastError();
+		}
+	}
+
+	/* Arm the race detector watchpoint on the shared counter address.
+	 * This tells the hypervisor to EPT-protect the page containing
+	 * syz_race_shared_counter so that the first concurrent write
+	 * triggers a watchpoint hit. */
+	race_arm_wp((uint64_t)(uintptr_t)&syz_race_shared_counter,
+		    NYX_RACE_ACCESS_RW);
+	windows_diag_log("syz_race_test_trigger watchpoint armed at %p\n",
+			 &syz_race_shared_counter);
+
+	/* Release all threads simultaneously to maximise race window */
+	InterlockedExchange(&syz_race_start_flag, 1);
+
+	/* Wait for completion */
+	WaitForMultipleObjects(num_threads, syz_race_threads, TRUE, 5000);
+
+	/* Check whether the race detector observed a hit */
+	uint64_t hit_status = race_check_wp();
+	windows_diag_log("syz_race_test_trigger counter=%ld hit_status=0x%llx\n",
+			 (long)syz_race_shared_counter, (unsigned long long)hit_status);
+
+	for (int i = 0; i < num_threads; i++) {
+		if (syz_race_threads[i])
+			CloseHandle(syz_race_threads[i]);
+		syz_race_threads[i] = nullptr;
+	}
+
+	/* If counter != num_threads*100000, a race occurred (lost update) */
+	LONG expected = (LONG)num_threads * 100000;
+	if (syz_race_shared_counter != expected) {
+		windows_diag_log("syz_race_test_trigger RACE DETECTED (value): counter=%ld expected=%ld (lost %ld updates)\n",
+				 (long)syz_race_shared_counter, (long)expected,
+				 (long)(expected - syz_race_shared_counter));
+		return 1;  /* race detected by value comparison */
+	}
+	if (hit_status != 0) {
+		windows_diag_log("syz_race_test_trigger RACE DETECTED (watchpoint): hit_status=0x%llx\n",
+				 (unsigned long long)hit_status);
+		return 2;  /* race detected by EPT watchpoint */
+	}
+	windows_diag_log("syz_race_test_trigger no race: counter=%ld expected=%ld\n",
+			 (long)syz_race_shared_counter, (long)expected);
+	return 0;
 }
 #endif
 

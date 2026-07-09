@@ -42,7 +42,7 @@ const (
 	nyxInterfacePing        = byte('x')
 	nyxAuxMagic             = 0x54502d554d4551
 	nyxAuxVersion           = 0x3
-	nyxAuxHash              = 0x54
+	nyxAuxHash              = 0x78
 	nyxStateOffset          = 128 + 256 + 512
 	nyxMiscOffset           = nyxStateOffset + 512
 	nyxResultExecDoneOffset = nyxStateOffset + 1
@@ -1012,6 +1012,7 @@ func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image stri
 		ijonPath:               filepath.Join(workdir, fmt.Sprintf("ijon_%d", index)),
 		coverPath:              filepath.Join(workdir, fmt.Sprintf("syz_cov_%d.bin", index)),
 		raceReportPath:         filepath.Join(workdir, fmt.Sprintf("race_report_%d.bin", index)),
+		snapshotDir:            filepath.Join(workdir, fmt.Sprintf("snapshot_%d", index)),
 		bitmapSize:             bitmapSize,
 		qemuPath:               qemuPath,
 		qemuArgs:               qemuArgs,
@@ -1020,6 +1021,7 @@ func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image stri
 		memoryMB:               memoryMB,
 		debug:                  debug,
 		hardTimeout:            hardTimeout,
+		payloadSize:            payloadSize,
 		moduleRanges:           append([]moduleRangeSpec(nil), moduleRanges...),
 		windowsMinidump:        windowsMinidump,
 		windowsMinidumpTimeout: windowsMinidumpTimeout,

@@ -962,6 +962,24 @@ static intptr_t SYSCALLAPI WSARecvMsg(intptr_t s, intptr_t msg, intptr_t bytes,
 #elif GOOS_windows
 #include "executor_windows.h"
 #include "nyx_windows.h"
+
+/* Race detector function pointer bindings.
+ * common_windows.h declares these as extern; we define and initialise
+ * them here where nyx_windows.h's inline wrappers are visible. */
+#if SYZ_NYX_WINDOWS_SPARSE_TABLE
+static void race_arm_wp_wrapper(uint64_t addr, uint32_t access_type) {
+	kafl_race_arm_watchpoint(addr, access_type);
+}
+static uint64_t race_check_wp_wrapper(void) {
+	return kafl_race_check_watchpoint();
+}
+static void race_config_wp_wrapper(uint32_t rate, uint32_t delay_us, uint32_t mode, bool enable, uint32_t budget) {
+	kafl_race_config(rate, delay_us, mode, enable, budget);
+}
+void (*g_kafl_race_arm_watchpoint_fn)(uint64_t, uint32_t) = race_arm_wp_wrapper;
+uint64_t (*g_kafl_race_check_watchpoint_fn)(void) = race_check_wp_wrapper;
+void (*g_kafl_race_config_fn)(uint32_t, uint32_t, uint32_t, bool, uint32_t) = race_config_wp_wrapper;
+#endif
 #elif GOOS_test
 #include "executor_test.h"
 #else
