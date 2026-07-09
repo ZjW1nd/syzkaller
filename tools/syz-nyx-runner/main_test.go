@@ -284,7 +284,7 @@ func TestParseCoverageDumpMultipleRecords(t *testing.T) {
 	}
 	writeCoverageDump(t, path, want)
 
-	got, _, err := parseCoverageDump(path)
+	got, _, _, err := parseCoverageDump(path)
 	if err != nil {
 		t.Fatalf("parseCoverageDump failed: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestParseCoverageDumpV3Metadata(t *testing.T) {
 	}
 	writeCoverageDump(t, path, want)
 
-	got, _, err := parseCoverageDump(path)
+	got, _, _, err := parseCoverageDump(path)
 	if err != nil {
 		t.Fatalf("parseCoverageDump failed: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestParseCoverageDumpV2Compatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, comps, err := parseCoverageDump(path)
+	got, comps, _, err := parseCoverageDump(path)
 	if err != nil {
 		t.Fatalf("parseCoverageDump failed: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestParseCoverageDumpRejectsBadMagic(t *testing.T) {
 	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := parseCoverageDump(path); err == nil {
+	if _, _, _, err := parseCoverageDump(path); err == nil {
 		t.Fatal("parseCoverageDump unexpectedly succeeded on bad magic")
 	}
 }
@@ -548,7 +548,7 @@ func TestInjectCoverageByCallIndex(t *testing.T) {
 		},
 	}
 
-	covRecords, _, err := parseCoverageDump(path)
+	covRecords, _, _, err := parseCoverageDump(path)
 	if err != nil {
 		t.Fatalf("parseCoverageDump failed: %v", err)
 	}
@@ -1309,5 +1309,220 @@ func TestHandleHangedRequestRestartsWithoutNyxReload(t *testing.T) {
 
 	if !r.needRestart {
 		t.Fatal("hanged request without nyx reload must schedule full VM restart")
+	}
+}
+
+func writeRaceSection(buf *bytes.Buffer, stats RaceStats) {
+	binary.Write(buf, binary.LittleEndian, uint32(raceSectionMagic))
+	binary.Write(buf, binary.LittleEndian, uint16(raceSectionVersion))
+	binary.Write(buf, binary.LittleEndian, uint16(0)) // reserved
+	binary.Write(buf, binary.LittleEndian, stats.WatchpointsArmed)
+	binary.Write(buf, binary.LittleEndian, stats.WatchpointsHit)
+	binary.Write(buf, binary.LittleEndian, stats.RacesDetected)
+	binary.Write(buf, binary.LittleEndian, stats.DoubleFetchesDetected)
+	binary.Write(buf, binary.LittleEndian, stats.RacesKnownOrigin)
+	binary.Write(buf, binary.LittleEndian, stats.RacesUnknownOrigin)
+	binary.Write(buf, binary.LittleEndian, stats.TotalStallNs)
+	binary.Write(buf, binary.LittleEndian, stats.RaceFingerprintsNew)
+}
+
+func TestParseRaceSection(t *testing.T) {
+	want := RaceStats{
+		WatchpointsArmed:      42,
+		WatchpointsHit:        17,
+		RacesDetected:         3,
+		DoubleFetchesDetected: 1,
+		RacesKnownOrigin:      2,
+		RacesUnknownOrigin:    1,
+		TotalStallNs:          1234567,
+		RaceFingerprintsNew:   5,
+	}
+	buf := new(bytes.Buffer)
+	writeRaceSection(buf, want)
+	got, err := parseRaceSection(buf.Bytes())
+	if err != nil {
+		t.Fatalf("parseRaceSection failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("parseRaceSection returned nil")
+	}
+	if *got != want {
+		t.Fatalf("race stats mismatch:\n got  %+v\n want %+v", *got, want)
+	}
+}
+
+func TestParseRaceSectionAbsent(t *testing.T) {
+	// An empty data slice means no race section was appended.
+	_, err := parseRaceSection(nil)
+	if err == nil {
+		t.Fatal("expected error for empty race section")
+	}
+}
+
+func TestParseRaceSectionBadMagic(t *testing.T) {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.LittleEndian, uint32(0xDEADBEEF))
+	binary.Write(buf, binary.LittleEndian, uint16(raceSectionVersion))
+	binary.Write(buf, binary.LittleEndian, uint16(0))
+	buf.Write(make([]byte, raceStatsSize))
+	_, err := parseRaceSection(buf.Bytes())
+	if err == nil {
+		t.Fatal("expected error for bad race section magic")
+	}
+}
+
+func TestParseCoverageDumpWithRaceSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "syz_cov_race.bin")
+	// Write a minimal coverage dump (0 records) + race section.
+	buf := new(bytes.Buffer)
+	hdr := nyxCovHeader{Magic: nyxCovMagic, Version: nyxCovVersion, RecordCount: 0}
+	binary.Write(buf, binary.LittleEndian, &hdr)
+	binary.Write(buf, binary.LittleEndian, uint32(0)) // comp record count
+	wantStats := RaceStats{
+		WatchpointsArmed: 10, WatchpointsHit: 5, RacesDetected: 2,
+		DoubleFetchesDetected: 1, RacesKnownOrigin: 1, RacesUnknownOrigin: 1,
+		TotalStallNs: 999, RaceFingerprintsNew: 3,
+	}
+	writeRaceSection(buf, wantStats)
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, _, raceStats, err := parseCoverageDump(path)
+	if err != nil {
+		t.Fatalf("parseCoverageDump failed: %v", err)
+	}
+	if raceStats == nil {
+		t.Fatal("expected race stats, got nil")
+	}
+	if *raceStats != wantStats {
+		t.Fatalf("race stats mismatch:\n got  %+v\n want %+v", *raceStats, wantStats)
+	}
+}
+
+func TestParseCoverageDumpWithoutRaceSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "syz_cov_norace.bin")
+	// Write a minimal coverage dump (0 records) without a race section.
+	writeCoverageDump(t, path, nil)
+	_, _, raceStats, err := parseCoverageDump(path)
+	if err != nil {
+		t.Fatalf("parseCoverageDump failed: %v", err)
+	}
+	if raceStats != nil {
+		t.Fatalf("expected nil race stats, got %+v", *raceStats)
+	}
+}
+
+func TestRaceFingerprintDeterministic(t *testing.T) {
+	ev := RaceEvent{
+		Gpa:           0x1000,
+		ArmerRip:      0xFFFF80001000,
+		HitterRip:     0xFFFF80002000,
+		ArmerIsWrite:  true,
+		HitterIsWrite: false,
+		RaceType:      0,
+	}
+	fp1 := raceFingerprint(ev)
+	fp2 := raceFingerprint(ev)
+	if fp1 != fp2 {
+		t.Fatalf("fingerprint not deterministic: 0x%x vs 0x%x", fp1, fp2)
+	}
+}
+
+func TestRaceFingerprintDistinct(t *testing.T) {
+	base := RaceEvent{
+		Gpa: 0x2000, ArmerRip: 0x1000, HitterRip: 0x2000,
+		ArmerIsWrite: true, HitterIsWrite: false, RaceType: 0,
+	}
+	fpBase := raceFingerprint(base)
+
+	// Different armer RIP → different fingerprint.
+	diff := base
+	diff.ArmerRip = 0x9999
+	if fp := raceFingerprint(diff); fp == fpBase {
+		t.Fatalf("expected different fingerprint for different armer_rip")
+	}
+
+	// Different hitter RIP → different fingerprint.
+	diff = base
+	diff.HitterRip = 0x8888
+	if fp := raceFingerprint(diff); fp == fpBase {
+		t.Fatalf("expected different fingerprint for different hitter_rip")
+	}
+
+	// Different page → different fingerprint.
+	diff = base
+	diff.Gpa = 0x5000
+	if fp := raceFingerprint(diff); fp == fpBase {
+		t.Fatalf("expected different fingerprint for different gpa page")
+	}
+
+	// Same page, different sub-page offset → same fingerprint (page alignment).
+	diff = base
+	diff.Gpa = base.Gpa + 0xFF // still within the same 4K page
+	if fp := raceFingerprint(diff); fp != fpBase {
+		t.Fatalf("expected same fingerprint for same page, got 0x%x vs 0x%x", fp, fpBase)
+	}
+
+	// Different access types → different fingerprint.
+	diff = base
+	diff.HitterIsWrite = true
+	if fp := raceFingerprint(diff); fp == fpBase {
+		t.Fatalf("expected different fingerprint for different access types")
+	}
+}
+
+func TestInjectRaceSignals(t *testing.T) {
+	execMsg := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
+			Value: &flatrpc.ExecResult{
+				Info: &flatrpc.ProgInfo{},
+			},
+		},
+	}
+	events := []RaceEvent{
+		{Gpa: 0x1000, ArmerRip: 0xA, HitterRip: 0xB, ArmerIsWrite: true, RaceType: 0},
+		{Gpa: 0x2000, ArmerRip: 0xC, HitterRip: 0xD, ArmerIsWrite: false, RaceType: 1},
+		// Duplicate of the first event → should be deduplicated.
+		{Gpa: 0x1000, ArmerRip: 0xA, HitterRip: 0xB, ArmerIsWrite: true, RaceType: 0},
+	}
+	injectRaceSignals(execMsg, events)
+	res := execMsg.Msg.Value.(*flatrpc.ExecResult)
+	if res.Info.Extra == nil {
+		t.Fatal("Expected Extra CallInfo to be created")
+	}
+	if len(res.Info.Extra.Signal) != 2 {
+		t.Fatalf("Expected 2 unique signals, got %d", len(res.Info.Extra.Signal))
+	}
+	// Verify the two signals are distinct.
+	if res.Info.Extra.Signal[0] == res.Info.Extra.Signal[1] {
+		t.Fatal("Expected distinct signal values")
+	}
+}
+
+func TestInjectRaceSignalsEmpty(t *testing.T) {
+	execMsg := &flatrpc.ExecutorMessage{
+		Msg: &flatrpc.ExecutorMessages{
+			Type: flatrpc.ExecutorMessagesRawExecResult,
+			Value: &flatrpc.ExecResult{
+				Info: &flatrpc.ProgInfo{},
+			},
+		},
+	}
+	// No events → no signals, no Extra created.
+	injectRaceSignals(execMsg, nil)
+	res := execMsg.Msg.Value.(*flatrpc.ExecResult)
+	if res.Info.Extra != nil {
+		t.Fatal("Expected Extra to remain nil for empty events")
+	}
+}
+
+func TestParseRaceReportDumpMissing(t *testing.T) {
+	// A non-existent file should return an error (os.ErrNotExist).
+	_, err := parseRaceReportDump("/nonexistent/race_report.bin")
+	if err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }

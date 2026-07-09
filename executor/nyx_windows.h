@@ -36,6 +36,19 @@
 #define HYPERCALL_KAFL_SYZ_COV_SESSION_BEGIN 45
 #define HYPERCALL_KAFL_SYZ_COV_SESSION_END 46
 
+/* Race detector hypercalls (guest → QEMU) — exit reasons 147-153 */
+#define HYPERCALL_KAFL_RACE_ARM_WATCHPOINT 47
+#define HYPERCALL_KAFL_RACE_CHECK_WATCHPOINT 48
+#define HYPERCALL_KAFL_RACE_REPORT 49
+#define HYPERCALL_KAFL_RACE_CONFIG 50
+#define HYPERCALL_KAFL_RACE_STALL_CPU 51
+#define HYPERCALL_KAFL_RACE_RESUME_CPU 52
+#define HYPERCALL_KAFL_RACE_GET_STATUS 53
+
+/* Race detector access types for arm_watchpoint */
+#define NYX_RACE_ACCESS_WRITE 0
+#define NYX_RACE_ACCESS_RW 1
+
 #define KAFL_MODE_64 0
 #define HPRINTF_MAX_SIZE 0x1000
 
@@ -189,6 +202,40 @@ static inline void nyx_hprintf(const char* fmt, ...)
 #else
 #error "Nyx Windows mode requires x86_64"
 #endif
+
+/* Race detector hypercall wrappers */
+static inline void kafl_race_arm_watchpoint(uint64_t addr, uint32_t access_type)
+{
+	nyx_hypercall(HYPERCALL_KAFL_RACE_ARM_WATCHPOINT,
+		      addr | ((uint64_t)access_type << 48));
+}
+
+static inline uint64_t kafl_race_check_watchpoint(void)
+{
+	return nyx_hypercall(HYPERCALL_KAFL_RACE_CHECK_WATCHPOINT, 0);
+}
+
+static inline void kafl_race_config(uint32_t rate, uint32_t delay_us,
+				    uint32_t mode, bool enable, uint32_t budget)
+{
+	uint64_t arg = (uint64_t)rate |
+		       ((uint64_t)delay_us << 16) |
+		       ((uint64_t)mode << 32) |
+		       ((uint64_t)(enable ? 1 : 0) << 40) |
+		       ((uint64_t)budget << 41);
+	nyx_hypercall(HYPERCALL_KAFL_RACE_CONFIG, arg);
+}
+
+/*
+ * Heuristic: determine whether a syscall argument value looks like a
+ * user-space pointer on Windows x64.  Pointers live in the canonical
+ * low half (0x0000_0000_0000_0000 - 0x0000_7FFF_FFFF_FFFF); small
+ * integers, handles, flags, and NTSTATUS codes are excluded.
+ */
+static inline bool nyx_race_arg_is_pointer(uint64_t v)
+{
+	return v >= 0x10000ULL && v < 0x800000000000ULL;
+}
 
 static bool nyx_dump_bytes(const char* basename, const void* data, uint64_t bytes, bool append)
 {

@@ -1071,7 +1071,7 @@ static void nyx_log_exec_preview(const uint8* prog_data, uint32 prog_size)
 }
 
 static void nyx_log_exec_stage(const char* stage, uint64 a0 = 0, uint64 a1 = 0, uint64 a2 = 0,
-				       uint64 a3 = 0)
+			       uint64 a3 = 0)
 {
 #if SYZ_NYX_WINDOWS_DEMO || !SYZ_NYX_TRACE_EXEC
 	(void)stage;
@@ -3157,7 +3157,18 @@ void execute_call(thread_t* th)
 		nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE,
 			      ((uint64_t)GetCurrentThreadId() << 32) |
-				      (__readgsqword(0x30) & 0xFFFFFFFF));
+				  (__readgsqword(0x30) & 0xFFFFFFFF));
+	}
+#endif
+#if GOOS_windows
+	/* Race detector: arm EPT watchpoints on pointer-like syscall arguments
+	 * before entering the syscall handler.  The hypervisor translates the
+	 * user-space VA to a GPA and downgrades the EPT page permissions. */
+	for (int i = 0; i < th->num_args; i++) {
+		uint64_t arg_val = (uint64_t)th->args[i];
+		if (nyx_race_arg_is_pointer(arg_val)) {
+			kafl_race_arm_watchpoint(arg_val, NYX_RACE_ACCESS_RW);
+		}
 	}
 #endif
 	nyx_cov_trace_hprintf("nyx cov trace stage=before_execute_syscall request=%llu tid=%lu call_index=%d call_num=%d call_name=%s\n",
@@ -3175,6 +3186,10 @@ void execute_call(thread_t* th)
 			      (unsigned long long)th->res,
 			      errno);
 #if GOOS_windows
+	/* Race detector: check whether any armed watchpoint was hit during
+	 * the syscall execution.  The hypervisor returns a non-zero status
+	 * if a concurrent access triggered an EPT violation on a watched page. */
+	kafl_race_check_watchpoint();
 	if (nyx_use_session_cov) {
 		nyx_cov_trace_hprintf("nyx cov trace stage=before_session_end request=%llu tid=%lu session=0x%llx call_index=%d call_num=%d\n",
 				      (unsigned long long)request_id,

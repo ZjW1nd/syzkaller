@@ -602,6 +602,56 @@ const (
 	nyxCovVersionMinV1 = 1
 )
 
+// RaceStats mirrors the packed kafl_syz_cov_race_stats_t (36 bytes) appended
+// to syz_cov dumps when the hypervisor race detector is enabled. Fields are
+// read manually from the binary section because Go would insert alignment
+// padding into the struct that does not match the C packed layout.
+type RaceStats struct {
+	WatchpointsArmed      uint32
+	WatchpointsHit        uint32
+	RacesDetected         uint32
+	DoubleFetchesDetected uint32
+	RacesKnownOrigin      uint32
+	RacesUnknownOrigin    uint32
+	TotalStallNs          uint64
+	RaceFingerprintsNew   uint32
+}
+
+// RaceEvent mirrors race_event_t from nyx/race_detector/race_report.h. Used
+// when parsing the separate race report dump file. The binary layout matches
+// the natural C struct alignment (sizeof == 152 on x86-64).
+type RaceEvent struct {
+	EventID       uint64
+	Gpa           uint64
+	TargetAddr    uint64
+	Size          uint32
+	ArmerVcpu     int32
+	ArmerRip      uint64
+	ArmerTeb      uint64
+	ArmerIsWrite  bool
+	OldValue      uint64
+	HitterVcpu    int32
+	HitterRip     uint64
+	HitterTeb     uint64
+	HitterIsWrite bool
+	NewValue      uint64
+	RaceType      uint8
+	Timestamp     uint64
+	ProgID        [32]byte
+}
+
+const (
+	raceSectionMagic   = 0x52414345 // "RACE"
+	raceSectionVersion = 1
+	raceStatsSize      = 36                        // packed kafl_syz_cov_race_stats_t
+	raceSectionSize    = 4 + 2 + 2 + raceStatsSize // magic + version + reserved + stats = 44
+
+	raceReportMagic      = 0x52414345 // "RACE"
+	raceReportVersion    = 1
+	raceReportHeaderSize = 12  // magic(4) + version(2) + reserved(2) + event_count(4)
+	raceEventSize        = 152 // sizeof(race_event_t) with natural C alignment
+)
+
 type qemuAux struct {
 	data   []byte
 	frozen []byte
@@ -754,17 +804,18 @@ func applyStandaloneHardTimeout(vm *nyxVM, programTimeoutMs int) time.Duration {
 }
 
 type nyxVM struct {
-	index       int
-	workdir     string
-	dumpDir     string
-	controlPath string
-	auxPath     string
-	sharedDir   string
-	bitmapPath  string
-	payloadPath string
-	ijonPath    string
-	coverPath   string
-	snapshotDir string
+	index          int
+	workdir        string
+	dumpDir        string
+	controlPath    string
+	auxPath        string
+	sharedDir      string
+	bitmapPath     string
+	payloadPath    string
+	ijonPath       string
+	coverPath      string
+	raceReportPath string
+	snapshotDir    string
 
 	payloadSize int
 	bitmapSize  int
@@ -958,8 +1009,7 @@ func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image stri
 		payloadPath:            filepath.Join(workdir, fmt.Sprintf("payload_%d", index)),
 		ijonPath:               filepath.Join(workdir, fmt.Sprintf("ijon_%d", index)),
 		coverPath:              filepath.Join(workdir, fmt.Sprintf("syz_cov_%d.bin", index)),
-		snapshotDir:            filepath.Join(workdir, "snapshot"),
-		payloadSize:            payloadSize,
+		raceReportPath:         filepath.Join(workdir, fmt.Sprintf("race_report_%d.bin", index)),
 		bitmapSize:             bitmapSize,
 		qemuPath:               qemuPath,
 		qemuArgs:               qemuArgs,
@@ -1022,7 +1072,7 @@ func (vm *nyxVM) start(ctx context.Context) error {
 		vm.controlPath,
 		vm.auxPath,
 		vm.coverPath,
-		filepath.Join(vm.dumpDir, nyxHandshakeAck),
+		vm.raceReportPath,
 		filepath.Join(vm.dumpDir, nyxExecResult),
 	} {
 		_ = os.Remove(path)
@@ -1573,6 +1623,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	))
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxExecResult))
 	_ = os.Remove(vm.coverPath)
+	_ = os.Remove(vm.raceReportPath)
 	vm.aux.clearTransientResult()
 	if err := vm.setPayload(payload); err != nil {
 		return nil, err
@@ -2234,39 +2285,39 @@ func readCovRecordMeta(data []byte, off int, version uint16, truncErr string) (n
 	}, off, nil
 }
 
-func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, error) {
+func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, *RaceStats, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if len(data) < binary.Size(nyxCovHeader{}) {
-		return nil, nil, errors.New("short coverage dump")
+		return nil, nil, nil, errors.New("short coverage dump")
 	}
 	var hdr nyxCovHeader
 	if err := binary.Read(bytes.NewReader(data[:binary.Size(hdr)]), binary.LittleEndian, &hdr); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if hdr.Magic != nyxCovMagic {
-		return nil, nil, fmt.Errorf("unexpected syz_cov magic 0x%x", hdr.Magic)
+		return nil, nil, nil, fmt.Errorf("unexpected syz_cov magic 0x%x", hdr.Magic)
 	}
 	if hdr.Version < nyxCovVersionMinV1 || hdr.Version > nyxCovVersion {
-		return nil, nil, fmt.Errorf("unsupported syz_cov version %d", hdr.Version)
+		return nil, nil, nil, fmt.Errorf("unsupported syz_cov version %d", hdr.Version)
 	}
 	if hdr.RecordCount == 0 && hdr.Version < 2 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	off := binary.Size(hdr)
 	records := make([]nyxCovDumpRecord, 0, hdr.RecordCount)
 	for range hdr.RecordCount {
 		rec, next, err := readCovRecordMeta(data, off, hdr.Version, "coverage record truncated")
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		off = next
 		pcs := make([]uint64, rec.PCCount)
 		for i := range pcs {
 			if off+8 > len(data) {
-				return nil, nil, errors.New("coverage body truncated")
+				return nil, nil, nil, errors.New("coverage body truncated")
 			}
 			pcs[i] = binary.LittleEndian.Uint64(data[off : off+8])
 			off += 8
@@ -2288,7 +2339,7 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, err
 	var compRecords []nyxCovCompRecord
 	if hdr.Version >= 2 && off < len(data) {
 		if off+4 > len(data) {
-			return nil, nil, errors.New("comp record count truncated")
+			return nil, nil, nil, errors.New("comp record count truncated")
 		}
 		compRecordCount := binary.LittleEndian.Uint32(data[off : off+4])
 		off += 4
@@ -2296,17 +2347,17 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, err
 		for i := uint32(0); i < compRecordCount; i++ {
 			rec, next, err := readCovRecordMeta(data, off, hdr.Version, "comp record header truncated")
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			off = next
 			comps := make([]nyxCompEntry, rec.PCCount)
 			for j := range comps {
 				if off+28 > len(data) {
-					return nil, nil, errors.New("comp body truncated")
+					return nil, nil, nil, errors.New("comp body truncated")
 				}
 				ce, err := readCompEntry(data[off : off+28])
 				if err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 				comps[j] = ce
 				off += 28
@@ -2326,10 +2377,15 @@ func parseCoverageDump(path string) ([]nyxCovDumpRecord, []nyxCovCompRecord, err
 			})
 		}
 	}
-	if off != len(data) {
-		return nil, nil, fmt.Errorf("unexpected trailing syz_cov data: %d bytes", len(data)-off)
+	var raceStats *RaceStats
+	if off < len(data) {
+		rs, raceErr := parseRaceSection(data[off:])
+		if raceErr != nil {
+			return nil, nil, nil, raceErr
+		}
+		raceStats = rs
 	}
-	return records, compRecords, nil
+	return records, compRecords, raceStats, nil
 }
 
 func pcsToSignal(pcs []uint64, coverEdges bool) []uint64 {
@@ -2359,6 +2415,181 @@ func hash32(a uint32) uint32 {
 	a = a * 0x27d4eb2d
 	a = a ^ (a >> 15)
 	return a
+}
+
+// parseRaceSection parses the race detector section appended to a syz_cov
+// dump after the last comp record. The section is only present when the
+// hypervisor race detector is enabled. Layout (little-endian, packed):
+//
+//	uint32 magic = 0x52414345 ("RACE")
+//	uint16 version = 1
+//	uint16 reserved
+//	kafl_syz_cov_race_stats_t (36 bytes, packed):
+//	  uint32 watchpoints_armed
+//	  uint32 watchpoints_hit
+//	  uint32 races_detected
+//	  uint32 double_fetches_detected
+//	  uint32 races_known_origin
+//	  uint32 races_unknown_origin
+//	  uint64 total_stall_ns
+//	  uint32 race_fingerprints_new
+//
+// Returns nil (no error) when the section is absent — callers treat that as
+// "race detector was disabled for this request".
+func parseRaceSection(data []byte) (*RaceStats, error) {
+	if len(data) < raceSectionSize {
+		return nil, fmt.Errorf("race section truncated: have %d bytes, need %d", len(data), raceSectionSize)
+	}
+	magic := binary.LittleEndian.Uint32(data[0:4])
+	if magic != raceSectionMagic {
+		return nil, fmt.Errorf("unexpected race section magic 0x%x", magic)
+	}
+	version := binary.LittleEndian.Uint16(data[4:6])
+	if version != raceSectionVersion {
+		return nil, fmt.Errorf("unsupported race section version %d", version)
+	}
+	// data[6:8] is reserved, skip
+	return &RaceStats{
+		WatchpointsArmed:      binary.LittleEndian.Uint32(data[8:12]),
+		WatchpointsHit:        binary.LittleEndian.Uint32(data[12:16]),
+		RacesDetected:         binary.LittleEndian.Uint32(data[16:20]),
+		DoubleFetchesDetected: binary.LittleEndian.Uint32(data[20:24]),
+		RacesKnownOrigin:      binary.LittleEndian.Uint32(data[24:28]),
+		RacesUnknownOrigin:    binary.LittleEndian.Uint32(data[28:32]),
+		TotalStallNs:          binary.LittleEndian.Uint64(data[32:40]),
+		RaceFingerprintsNew:   binary.LittleEndian.Uint32(data[40:44]),
+	}, nil
+}
+
+// parseRaceReportDump reads the separate race report dump file that contains
+// individual race_event_t records. The file is written by the QEMU side
+// (race_report_dump) when races are detected. Layout (little-endian):
+//
+//	uint32 magic = 0x52414345 ("RACE")
+//	uint16 version = 1
+//	uint16 reserved
+//	uint32 event_count
+//	event_count × race_event_t (natural C struct layout, 152 bytes each)
+//
+// Returns (nil, os.ErrNotExist) when the file has not been written yet (race
+// detector disabled or no races detected). Callers should treat that as a
+// non-error no-op.
+func parseRaceReportDump(path string) ([]RaceEvent, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) < raceReportHeaderSize {
+		return nil, errors.New("short race report dump")
+	}
+	magic := binary.LittleEndian.Uint32(data[0:4])
+	if magic != raceReportMagic {
+		return nil, fmt.Errorf("unexpected race report magic 0x%x", magic)
+	}
+	version := binary.LittleEndian.Uint16(data[4:6])
+	if version != raceReportVersion {
+		return nil, fmt.Errorf("unsupported race report version %d", version)
+	}
+	eventCount := binary.LittleEndian.Uint32(data[8:12])
+	off := raceReportHeaderSize
+	events := make([]RaceEvent, 0, eventCount)
+	for range eventCount {
+		ev, next, err := readRaceEvent(data, off)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, ev)
+		off = next
+	}
+	return events, nil
+}
+
+// readRaceEvent reads a single race_event_t from the dump. The binary layout
+// matches the natural C struct alignment of race_event_t (sizeof == 152 on
+// x86-64), which is what write(fd, &event, sizeof(race_event_t)) produces.
+func readRaceEvent(data []byte, off int) (RaceEvent, int, error) {
+	if off+raceEventSize > len(data) {
+		return RaceEvent{}, off, errors.New("race event record truncated")
+	}
+	ev := RaceEvent{
+		EventID:       binary.LittleEndian.Uint64(data[off:]),
+		Gpa:           binary.LittleEndian.Uint64(data[off+8:]),
+		TargetAddr:    binary.LittleEndian.Uint64(data[off+16:]),
+		Size:          binary.LittleEndian.Uint32(data[off+24:]),
+		ArmerVcpu:     int32(binary.LittleEndian.Uint32(data[off+28:])),
+		ArmerRip:      binary.LittleEndian.Uint64(data[off+32:]),
+		ArmerTeb:      binary.LittleEndian.Uint64(data[off+40:]),
+		ArmerIsWrite:  data[off+48] != 0,
+		OldValue:      binary.LittleEndian.Uint64(data[off+56:]),
+		HitterVcpu:    int32(binary.LittleEndian.Uint32(data[off+64:])),
+		HitterRip:     binary.LittleEndian.Uint64(data[off+72:]),
+		HitterTeb:     binary.LittleEndian.Uint64(data[off+80:]),
+		HitterIsWrite: data[off+88] != 0,
+		NewValue:      binary.LittleEndian.Uint64(data[off+96:]),
+		RaceType:      data[off+104],
+		Timestamp:     binary.LittleEndian.Uint64(data[off+112:]),
+	}
+	copy(ev.ProgID[:], data[off+120:off+152])
+	return ev, off + raceEventSize, nil
+}
+
+// raceFingerprint computes a deterministic 64-bit hash of (armer_rip,
+// hitter_rip, gpa_page, access_types) to uniquely identify a race pattern.
+// The page-aligned GPA absorbs sub-page offset noise while preserving the
+// contested memory location. The access type flags encode whether each side
+// is a read or write. The result is used as a signal value so the syzkaller
+// manager treats novel race patterns as new coverage, retaining programs
+// that trigger them as high-value seeds.
+func raceFingerprint(ev RaceEvent) uint64 {
+	h := sha1.New()
+	var buf [8]byte
+	binary.LittleEndian.PutUint64(buf[:], ev.ArmerRip)
+	h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], ev.HitterRip)
+	h.Write(buf[:])
+	binary.LittleEndian.PutUint64(buf[:], ev.Gpa&^uint64(nyxPageSize-1))
+	h.Write(buf[:])
+	var flags [3]byte
+	flags[0] = ev.RaceType
+	if ev.ArmerIsWrite {
+		flags[1] = 1
+	}
+	if ev.HitterIsWrite {
+		flags[2] = 1
+	}
+	h.Write(flags[:])
+	sum := h.Sum(nil)
+	return binary.LittleEndian.Uint64(sum[:8])
+}
+
+// injectRaceSignals computes race fingerprints from race events and injects
+// them as new signal values into the ExecResult's Extra CallInfo. The Extra
+// field holds "signal and cover collected from background threads" per the
+// flatrpc schema, making it the natural home for cross-thread race signals.
+// New fingerprints cause the manager to retain the program as a seed.
+func injectRaceSignals(execMsg *flatrpc.ExecutorMessage, raceEvents []RaceEvent) {
+	if len(raceEvents) == 0 {
+		return
+	}
+	res, ok := execMsg.Msg.Value.(*flatrpc.ExecResult)
+	if !ok || res.Info == nil {
+		return
+	}
+	if res.Info.Extra == nil {
+		res.Info.Extra = &flatrpc.CallInfo{}
+	}
+	seen := make(map[uint64]struct{}, len(res.Info.Extra.Signal)+len(raceEvents))
+	for _, s := range res.Info.Extra.Signal {
+		seen[s] = struct{}{}
+	}
+	for _, ev := range raceEvents {
+		fp := raceFingerprint(ev)
+		if _, ok := seen[fp]; ok {
+			continue
+		}
+		seen[fp] = struct{}{}
+		res.Info.Extra.Signal = append(res.Info.Extra.Signal, fp)
+	}
 }
 
 func describeExecProgram(data []byte) string {
@@ -2515,6 +2746,13 @@ type runner struct {
 	coverageDebugPath string
 	slowTrace         *slowTraceConfig
 	lastCompletedReq  *flatrpc.ExecRequest
+
+	// Cumulative race detector statistics across all requests. Updated
+	// from the race section appended to each syz_cov dump and reported
+	// via StateResult so the syzkaller manager can observe race detection
+	// progress.
+	raceStats  RaceStats
+	raceEvents int
 }
 
 func newRunner(id int, addr, port string, vm *nyxVM) *runner {
@@ -3210,7 +3448,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 		r.lastEnvFlags = 0
 		r.lastSandboxArg = 0
 	}
-	covRecords, compRecords, covErr := parseCoverageDump(r.vm.coverPath)
+	covRecords, compRecords, raceStats, covErr := parseCoverageDump(r.vm.coverPath)
 	if covErr == nil {
 		covErr = injectCoverage(req, execMsg, r.connectReply.CoverEdges,
 			r.connectReply.Kernel64Bit, r.vm.moduleCanonicalizer, covRecords, compRecords)
@@ -3236,8 +3474,37 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 			return nil, covErr
 		}
 	}
-	if execResultHanged(execMsg) {
-		r.handleHangedRequest(req.Id)
+	// Race detector: accumulate stats and inject race fingerprints as new
+	// signals so the manager retains programs that trigger novel races.
+	// Race stats come from the race section appended to the syz_cov dump;
+	// individual race events come from a separate race report dump file.
+	// Both are absent when the race detector is disabled, so missing files
+	// and nil stats are treated as no-ops, not errors.
+	if raceStats != nil {
+		r.raceStats.WatchpointsArmed += raceStats.WatchpointsArmed
+		r.raceStats.WatchpointsHit += raceStats.WatchpointsHit
+		r.raceStats.RacesDetected += raceStats.RacesDetected
+		r.raceStats.DoubleFetchesDetected += raceStats.DoubleFetchesDetected
+		r.raceStats.RacesKnownOrigin += raceStats.RacesKnownOrigin
+		r.raceStats.RacesUnknownOrigin += raceStats.RacesUnknownOrigin
+		r.raceStats.TotalStallNs += raceStats.TotalStallNs
+		r.raceStats.RaceFingerprintsNew += raceStats.RaceFingerprintsNew
+		log.Logf(0, "runner race stats: id=%d armed=%d hit=%d races=%d double_fetch=%d known=%d unknown=%d stall_ns=%d new_fps=%d",
+			req.Id, raceStats.WatchpointsArmed, raceStats.WatchpointsHit,
+			raceStats.RacesDetected, raceStats.DoubleFetchesDetected,
+			raceStats.RacesKnownOrigin, raceStats.RacesUnknownOrigin,
+			raceStats.TotalStallNs, raceStats.RaceFingerprintsNew)
+	}
+	if raceEvents, rErr := parseRaceReportDump(r.vm.raceReportPath); rErr == nil && len(raceEvents) > 0 {
+		injectRaceSignals(execMsg, raceEvents)
+		r.raceEvents += len(raceEvents)
+		if r.vm.debug {
+			for _, ev := range raceEvents {
+				log.Logf(0, "runner race event: id=%d type=%d gpa=0x%x armer_vcpu=%d armer_rip=0x%x hitter_vcpu=%d hitter_rip=0x%x fp=0x%x",
+					ev.EventID, ev.RaceType, ev.Gpa, ev.ArmerVcpu, ev.ArmerRip,
+					ev.HitterVcpu, ev.HitterRip, raceFingerprint(ev))
+			}
+		}
 	}
 	r.vm.recordTrace("runner", "request_end", req.Id, traceFields(
 		"label", requestLabel,
@@ -3653,10 +3920,17 @@ func (r *runner) loop() error {
 			}
 		case *flatrpc.StateRequest:
 			r.vm.debugLogf("runner received StateRequest")
+			stateData := fmt.Sprintf("syz-nyx-runner alive\n"+
+				"race_stats: armed=%d hit=%d races=%d double_fetch=%d known=%d unknown=%d stall_ns=%d new_fps=%d race_events=%d\n",
+				r.raceStats.WatchpointsArmed, r.raceStats.WatchpointsHit,
+				r.raceStats.RacesDetected, r.raceStats.DoubleFetchesDetected,
+				r.raceStats.RacesKnownOrigin, r.raceStats.RacesUnknownOrigin,
+				r.raceStats.TotalStallNs, r.raceStats.RaceFingerprintsNew,
+				r.raceEvents)
 			state := &flatrpc.ExecutorMessage{
 				Msg: &flatrpc.ExecutorMessages{
 					Type:  flatrpc.ExecutorMessagesRawState,
-					Value: &flatrpc.StateResult{Data: []byte("syz-nyx-runner alive\n")},
+					Value: &flatrpc.StateResult{Data: []byte(stateData)},
 				},
 			}
 			if err := flatrpc.Send(r.conn, state); err != nil {

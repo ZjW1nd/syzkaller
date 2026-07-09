@@ -110,7 +110,7 @@ func TestParseCoverageDumpV2(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	covRecords, compRecords, err := parseCoverageDump(path)
+	covRecords, compRecords, _, err := parseCoverageDump(path)
 	if err != nil {
 		t.Fatalf("parseCoverageDump: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestParseCoverageDumpV1BackwardCompat(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	covRecords, compRecords, err := parseCoverageDump(path)
+	covRecords, compRecords, _, err := parseCoverageDump(path)
 	if err != nil {
 		t.Fatalf("parseCoverageDump v1: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestParseCoverageDumpEmpty(t *testing.T) {
 	tmp := t.TempDir()
 	path := tmp + "/nonexistent.bin"
 
-	_, _, err := parseCoverageDump(path)
+	_, _, _, err := parseCoverageDump(path)
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
