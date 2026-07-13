@@ -4760,6 +4760,15 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 		}
 		return p, true, nil
 	}
+	if meta.Name == "syz_race_test_trigger" {
+		src := []byte(
+			"syz_race_test_trigger(0x2)\n")
+		p, err := target.Deserialize(src, prog.NonStrict)
+		if err != nil {
+			return nil, false, fmt.Errorf("build standalone syz_race_test_trigger program: %w", err)
+		}
+		return p, true, nil
+	}
 	ct := target.BuildChoiceTable(nil, standaloneEnabledCalls(target, meta))
 	for attempts := 0; attempts < 128; attempts++ {
 		p := target.Generate(mrand.NewSource(seed+int64(attempts)), 6, ct)
