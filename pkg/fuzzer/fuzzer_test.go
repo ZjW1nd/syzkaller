@@ -272,6 +272,36 @@ func TestGenFuzzFallsBackToFreshGenerationAfterBorrowingRejections(t *testing.T)
 	}
 }
 
+func TestGenFuzzCollideRequestsCollectSignal(t *testing.T) {
+	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fuzzer := NewFuzzer(ctx, &Config{
+		Corpus:          corpus.NewCorpus(ctx),
+		Collide:         true,
+		MaxCallsPerProg: 20,
+		EnabledCalls:    map[*prog.Syscall]bool{target.SyscallMap["test$length11"]: true},
+	}, rand.New(rand.NewSource(0)), target)
+
+	sawCollide := false
+	for range 2000 {
+		req := fuzzer.genFuzz()
+		if req == nil || !strings.HasPrefix(req.Origin, "collide:") {
+			continue
+		}
+		sawCollide = true
+		if req.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectSignal == 0 {
+			t.Fatalf("collide request has no CollectSignal flag: exec_flags=0x%x", uint64(req.ExecOpts.ExecFlags))
+		}
+	}
+	if !sawCollide {
+		t.Fatal("no collide request was generated; cannot verify signal collection")
+	}
+}
+
 func TestForceGenerateEveryNInterleavesCorpusTriageQueue(t *testing.T) {
 	target, err := prog.GetTarget(targets.TestOS, targets.TestArch64Fuzz)
 	if err != nil {

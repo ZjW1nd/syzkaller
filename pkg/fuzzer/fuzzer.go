@@ -471,6 +471,7 @@ func (fuzzer *Fuzzer) genFuzz() *queue.Request {
 		collidedProg := randomCollide(req.Prog, rnd)
 		collideReq := &queue.Request{
 			Prog:       collidedProg,
+			ExecOpts:   setFlags(flatrpc.ExecFlagCollectSignal),
 			Stat:       fuzzer.statExecCollide,
 			ExtraStats: []*stat.Val{req.Stat},
 			Origin:     "collide:" + req.Origin,
