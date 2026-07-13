@@ -32,7 +32,7 @@ afd_address_list {
 
 syz_execute_func(text ptr[in, text[target]])
 syz_kafl_bugcheck_trigger() (no_generate, no_minimize)
-syz_race_test_trigger(num_threads int32) (no_generate, no_minimize)
+syz_race_test_trigger(num_threads int32, mode int32) (no_generate, no_minimize)
 
 CloseHandle(hObject HANDLE) (automatic_helper)
 CreateFileA(lpFileName ptr[in, filename], dwDesiredAccess flags[file_access_rights], dwShareMode flags[file_share_mode], lpSecurityAttributes ptr[in, SECURITY_ATTRIBUTES, opt], dwCreationDisposition flags[file_create_disposition], dwFlagsAndAttributes flags[file_attributes], hTemplateFile FILE_HANDLE[opt]) FILE_HANDLE (automatic_helper)

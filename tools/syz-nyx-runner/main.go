@@ -1757,6 +1757,7 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		vm.debugLogf("runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, postState, postExecDone, postExecCode,
 			postMiscTrimmed)
+		wasBoundarySettled := reloadBoundarySettled
 		if postExecCode == nyxRCHprintf {
 			stage := hprintfStage(postMiscTrimmed)
 			if stage == "request_reload" {
@@ -1774,6 +1775,22 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		if reloadRequested && postExecDone && postExecCode == nyxRCSuccess && postMiscTrimmed == "" {
 			reloadBoundarySettled = true
 			vm.debugLogf("runner exec reload boundary settled at step=%d", steps)
+		}
+		if !wasBoundarySettled && reloadBoundarySettled {
+			/* clearPayloadIfAuxRequestsReload zeroed the shared buffer while
+			 * a prior request's reload was still pending (e.g. the coverage-
+			 * prime replay writes this request's payload before the prime's
+			 * request_reload boundary is consumed). Now that the boundary is
+			 * settled, QEMU's post-reload EXEC payload probe is about to read
+			 * the buffer, so re-set the payload; otherwise the probe reads an
+			 * empty buffer, times out, and the guest executor sees a zero-
+			 * length payload. */
+			if err := vm.setPayload(payload); err != nil {
+				return nil, err
+			}
+			vm.recordTrace("runner", "exec_payload_reset_after_reload_boundary", requestID,
+				traceFields("step", steps, "payload_bytes", len(payload)))
+			vm.debugLogf("runner exec re-set payload after reload boundary at step=%d bytes=%d", steps, len(payload))
 		}
 		if vm.aux.pageFault() {
 			vm.recordAuxTrace("page_fault", requestID)
@@ -3972,7 +3989,7 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 	if err := r.ensureHandshake(req); err != nil {
 		return nil, err
 	}
-	requestNeedsCover := req.ExecOpts.ExecFlags&flatrpc.ExecFlagCollectCover != 0
+	requestNeedsCover := req.ExecOpts.ExecFlags&(flatrpc.ExecFlagCollectCover|flatrpc.ExecFlagCollectSignal) != 0
 	if requestNeedsCover && !r.coveragePrimed && requestNeedsCoveragePriming(req) {
 		primeMsg, err := r.executeRequestOnce(req, true)
 		if err != nil {
@@ -4762,7 +4779,7 @@ func standaloneProgram(target *prog.Target, meta *prog.Syscall, seed int64) (*pr
 	}
 	if meta.Name == "syz_race_test_trigger" {
 		src := []byte(
-			"syz_race_test_trigger(0x2)\n")
+		"syz_race_test_trigger(0x2, 0x1)\n")
 		p, err := target.Deserialize(src, prog.NonStrict)
 		if err != nil {
 			return nil, false, fmt.Errorf("build standalone syz_race_test_trigger program: %w", err)

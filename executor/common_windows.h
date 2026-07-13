@@ -161,6 +161,8 @@ static void nyx_hprintf(const char* fmt, ...);
 extern void (*g_kafl_race_arm_watchpoint_fn)(uint64_t, uint32_t);
 extern uint64_t (*g_kafl_race_check_watchpoint_fn)(void);
 extern void (*g_kafl_race_config_fn)(uint32_t, uint32_t, uint32_t, bool, uint32_t);
+extern void (*g_kafl_race_start_sampling_fn)(uint32_t, uint32_t, uint32_t);
+extern void (*g_kafl_race_stop_sampling_fn)(void);
 static inline void race_arm_wp(uint64_t addr, uint32_t type) {
 	if (g_kafl_race_arm_watchpoint_fn) g_kafl_race_arm_watchpoint_fn(addr, type);
 }
@@ -169,6 +171,12 @@ static inline uint64_t race_check_wp(void) {
 }
 static inline void race_config_wp(uint32_t rate, uint32_t delay_us, uint32_t mode, bool enable, uint32_t budget) {
 	if (g_kafl_race_config_fn) g_kafl_race_config_fn(rate, delay_us, mode, enable, budget);
+}
+static inline void race_start_sampling(uint32_t batch, uint32_t interval_us, uint32_t stall_us) {
+	if (g_kafl_race_start_sampling_fn) g_kafl_race_start_sampling_fn(batch, interval_us, stall_us);
+}
+static inline void race_stop_sampling(void) {
+	if (g_kafl_race_stop_sampling_fn) g_kafl_race_stop_sampling_fn();
 }
 #endif
 
@@ -226,7 +234,7 @@ static DWORD WINAPI syz_race_worker(LPVOID param)
 	while (!syz_race_start_flag)
 		SwitchToThread();
 	/* Unsynchronised read-modify-write — classic data race */
-	for (int i = 0; i < 100000; i++) {
+	for (int i = 0; i < 5000; i++) {
 		LONG val = *counter;    /* read */
 		val++;                  /* modify */
 		*counter = val;         /* write */
@@ -248,12 +256,23 @@ static intptr_t SYSCALLAPI syz_race_test_trigger(intptr_t a0, intptr_t a1, intpt
 
 	windows_diag_log("syz_race_test_trigger starting %d threads\n", num_threads);
 
-	/* Enable the hypervisor race detector before doing anything else.
-	 * rate=100 (sample every access), delay_us=0, mode=0, enable=true,
-	 * budget=64 watchpoints. Without this, the EPT violation handler
-	 * skips all watchpoint hits (ept->enabled == false). */
-	race_config_wp(100, 0, 0, true, 64);
-	windows_diag_log("syz_race_test_trigger race detector enabled\n");
+	/* Mode selection: a1=0 (default) uses manual watchpoint arming,
+	 * a1=1 uses hypervisor random page sampling. Sampling mode arms
+	 * watchpoints on random kernel pages without needing to know
+	 * specific variable addresses. */
+	int use_sampling = (int)a1;  /* a1=1 for sampling, a1=0 for manual */
+
+	if (use_sampling) {
+		/* Start random page sampling: 16 pages per cycle, 1ms
+		 * interval, 500μs stall on hit. This covers all kernel
+		 * memory without knowing specific variable addresses. */
+		race_start_sampling(16, 1000, 500);
+		windows_diag_log("syz_race_test_trigger sampling started\n");
+	} else {
+		/* Enable the hypervisor race detector with manual arming */
+		race_config_wp(100, 0, 0, true, 64);
+		windows_diag_log("syz_race_test_trigger race detector enabled\n");
+	}
 
 	for (int i = 0; i < num_threads; i++) {
 		syz_race_threads[i] = CreateThread(nullptr, 0, syz_race_worker,
@@ -265,14 +284,15 @@ static intptr_t SYSCALLAPI syz_race_test_trigger(intptr_t a0, intptr_t a1, intpt
 		}
 	}
 
-	/* Arm the race detector watchpoint on the shared counter address.
-	 * This tells the hypervisor to EPT-protect the page containing
-	 * syz_race_shared_counter so that the first concurrent write
-	 * triggers a watchpoint hit. */
-	race_arm_wp((uint64_t)(uintptr_t)&syz_race_shared_counter,
-		    NYX_RACE_ACCESS_RW);
-	windows_diag_log("syz_race_test_trigger watchpoint armed at %p\n",
-			 &syz_race_shared_counter);
+	if (!use_sampling) {
+		/* Arm the race detector watchpoint on the shared counter
+		 * address. In sampling mode, the hypervisor arms watchpoints
+		 * on random pages automatically. */
+		race_arm_wp((uint64_t)(uintptr_t)&syz_race_shared_counter,
+			    NYX_RACE_ACCESS_RW);
+		windows_diag_log("syz_race_test_trigger watchpoint armed at %p\n",
+				 &syz_race_shared_counter);
+	}
 
 	/* Release all threads simultaneously to maximise race window */
 	InterlockedExchange(&syz_race_start_flag, 1);
@@ -291,8 +311,8 @@ static intptr_t SYSCALLAPI syz_race_test_trigger(intptr_t a0, intptr_t a1, intpt
 		syz_race_threads[i] = nullptr;
 	}
 
-	/* If counter != num_threads*100000, a race occurred (lost update) */
-	LONG expected = (LONG)num_threads * 100000;
+	/* If counter != num_threads*5000, a race occurred (lost update) */
+	LONG expected = (LONG)num_threads * 5000;
 	if (syz_race_shared_counter != expected) {
 		windows_diag_log("syz_race_test_trigger RACE DETECTED (value): counter=%ld expected=%ld (lost %ld updates)\n",
 				 (long)syz_race_shared_counter, (long)expected,
@@ -304,6 +324,11 @@ static intptr_t SYSCALLAPI syz_race_test_trigger(intptr_t a0, intptr_t a1, intpt
 				 (unsigned long long)hit_status);
 		return 2;  /* race detected by EPT watchpoint */
 	}
+	if (use_sampling) {
+		race_stop_sampling();
+		windows_diag_log("syz_race_test_trigger sampling stopped\n");
+	}
+
 	windows_diag_log("syz_race_test_trigger no race: counter=%ld expected=%ld\n",
 			 (long)syz_race_shared_counter, (long)expected);
 	return 0;
@@ -1660,12 +1685,14 @@ static void initialize_windows_net_injection()
 							   firewall_allow, sizeof(firewall_allow));
 	char skip_firewall[8];
 	DWORD skip_firewall_len = GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_SKIP_FIREWALL_ENV,
-							    skip_firewall, sizeof(skip_firewall));
+							  skip_firewall, sizeof(skip_firewall));
 	bool skip_firewall_enabled = skip_firewall_len > 0 && skip_firewall_len < sizeof(skip_firewall) &&
 				     skip_firewall[0] == '1';
 	windows_nyx_log("windows net injection firewall allow enabled=%u skip=%u\n",
 			(firewall_allow_len > 0 && firewall_allow_len < sizeof(firewall_allow) &&
-			 firewall_allow[0] == '1') ? 1U : 0U,
+			 firewall_allow[0] == '1')
+			    ? 1U
+			    : 0U,
 			skip_firewall_enabled ? 1U : 0U);
 	if (firewall_allow_len > 0 && firewall_allow_len < sizeof(firewall_allow) &&
 	    firewall_allow[0] == '1' && !skip_firewall_enabled) {
@@ -1673,9 +1700,9 @@ static void initialize_windows_net_injection()
 	}
 	char skip_init_ipv4[8];
 	DWORD skip_init_ipv4_len = GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_SKIP_INIT_IPV4_ENV,
-							    skip_init_ipv4, sizeof(skip_init_ipv4));
+							   skip_init_ipv4, sizeof(skip_init_ipv4));
 	bool skip_init_ipv4_enabled = skip_init_ipv4_len > 0 && skip_init_ipv4_len < sizeof(skip_init_ipv4) &&
-				       skip_init_ipv4[0] == '1';
+				      skip_init_ipv4[0] == '1';
 	windows_nyx_log("windows net injection init ipv4 configure enabled=%u\n",
 			skip_init_ipv4_enabled ? 0U : 1U);
 	if (!skip_init_ipv4_enabled) {

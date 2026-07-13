@@ -29,6 +29,7 @@ NYX_WINDOWS_SPARSE_TABLE="${NYX_WINDOWS_SPARSE_TABLE:-1}"
 NYX_USE_GENERIC_PATH="${NYX_USE_GENERIC_PATH:-1}"
 NYX_WINDOWS_SUBMIT_CR3="${NYX_WINDOWS_SUBMIT_CR3:-1}"
 NYX_TRACE_COV="${NYX_TRACE_COV:-0}"
+NYX_TRACE_EXEC="${NYX_TRACE_EXEC:-0}"
 
 case "$NYX_WINDOWS_DEMO" in
 	0|1)
@@ -75,6 +76,15 @@ case "$NYX_TRACE_COV" in
 		;;
 esac
 
+case "$NYX_TRACE_EXEC" in
+	0|1)
+		;;
+	*)
+		echo "[ERR] NYX_TRACE_EXEC must be 0 or 1, got: $NYX_TRACE_EXEC" >&2
+		exit 1
+		;;
+esac
+
 set -x
 "$CXX" -o ./bin/windows_amd64/syz-executor.exe executor/executor.cc \
 	-D_WIN32_WINNT=0x0A00 \
@@ -103,6 +113,7 @@ set -x
 	-DSYZ_NYX_USE_GENERIC_PATH="$NYX_USE_GENERIC_PATH" \
 	-DSYZ_NYX_WINDOWS_SUBMIT_CR3="$NYX_WINDOWS_SUBMIT_CR3" \
 	-DSYZ_NYX_TRACE_COV="$NYX_TRACE_COV" \
+	-DSYZ_NYX_TRACE_EXEC="$NYX_TRACE_EXEC" \
 	-DSYZ_NET_INJECTION=1 \
 	-DGOOS_windows=1 \
 	-DGOARCH_amd64=1 \

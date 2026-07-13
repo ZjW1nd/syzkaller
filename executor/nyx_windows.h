@@ -36,7 +36,7 @@
 #define HYPERCALL_KAFL_SYZ_COV_SESSION_BEGIN 45
 #define HYPERCALL_KAFL_SYZ_COV_SESSION_END 46
 
-/* Race detector hypercalls (guest → QEMU) — exit reasons 147-153 */
+/* Race detector hypercalls (guest → QEMU) — exit reasons 147-155 */
 #define HYPERCALL_KAFL_RACE_ARM_WATCHPOINT 47
 #define HYPERCALL_KAFL_RACE_CHECK_WATCHPOINT 48
 #define HYPERCALL_KAFL_RACE_REPORT 49
@@ -44,6 +44,8 @@
 #define HYPERCALL_KAFL_RACE_STALL_CPU 51
 #define HYPERCALL_KAFL_RACE_RESUME_CPU 52
 #define HYPERCALL_KAFL_RACE_GET_STATUS 53
+#define HYPERCALL_KAFL_RACE_START_SAMPLING 54
+#define HYPERCALL_KAFL_RACE_STOP_SAMPLING 55
 
 /* Race detector access types for arm_watchpoint */
 #define NYX_RACE_ACCESS_WRITE 0
@@ -226,6 +228,22 @@ static inline void kafl_race_config(uint32_t rate, uint32_t delay_us,
 		       ((uint64_t)(enable ? 1 : 0) << 40) |
 		       ((uint64_t)budget << 41);
 	nyx_hypercall(HYPERCALL_KAFL_RACE_CONFIG, arg);
+}
+
+/* Start random page sampling (Phase 7) */
+static inline void kafl_race_start_sampling(uint32_t batch, uint32_t interval_us,
+                                             uint32_t stall_us)
+{
+	uint64_t arg = (uint64_t)batch |
+		       ((uint64_t)interval_us << 16) |
+		       ((uint64_t)stall_us << 32);
+	nyx_hypercall(HYPERCALL_KAFL_RACE_START_SAMPLING, arg);
+}
+
+/* Stop random page sampling */
+static inline void kafl_race_stop_sampling(void)
+{
+	nyx_hypercall(HYPERCALL_KAFL_RACE_STOP_SAMPLING, 0);
 }
 
 /*

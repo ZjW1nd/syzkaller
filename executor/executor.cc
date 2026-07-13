@@ -979,6 +979,14 @@ static void race_config_wp_wrapper(uint32_t rate, uint32_t delay_us, uint32_t mo
 void (*g_kafl_race_arm_watchpoint_fn)(uint64_t, uint32_t) = race_arm_wp_wrapper;
 uint64_t (*g_kafl_race_check_watchpoint_fn)(void) = race_check_wp_wrapper;
 void (*g_kafl_race_config_fn)(uint32_t, uint32_t, uint32_t, bool, uint32_t) = race_config_wp_wrapper;
+static void race_start_sampling_wrapper(uint32_t batch, uint32_t interval_us, uint32_t stall_us) {
+	kafl_race_start_sampling(batch, interval_us, stall_us);
+}
+static void race_stop_sampling_wrapper(void) {
+	kafl_race_stop_sampling();
+}
+void (*g_kafl_race_start_sampling_fn)(uint32_t, uint32_t, uint32_t) = race_start_sampling_wrapper;
+void (*g_kafl_race_stop_sampling_fn)(void) = race_stop_sampling_wrapper;
 #endif
 #elif GOOS_test
 #include "executor_test.h"
@@ -2754,8 +2762,30 @@ static int nyx_mode_loop(int argc, char** argv)
 	for (;;) {
 		nyx_pin_protocol_thread(&host_cfg, "next_payload");
 		nyx_hypercall(HYPERCALL_KAFL_NEXT_PAYLOAD, 0);
-		if (payload->size < (int32_t)sizeof(nyx_msg_header_t))
-			fail("Nyx payload too small");
+		if (payload->size < (int32_t)sizeof(nyx_msg_header_t)) {
+			// A cleared or truncated shared payload buffer (e.g. the host
+			// zeroed it around a reload boundary and did not re-set it in
+			// time) must never wedge the whole VM. Historically this hit
+			// fail() and killed the executor, after which QEMU issued no
+			// further hypercalls and the runner blocked until its multi-
+			// second hang watchdog fired. Instead emit an empty result so
+			// the host observes a completed request and can resynchronize,
+			// then loop back to NEXT_PAYLOAD for the next (real) payload.
+			nyx_hprintf("nyx payload too small size=%d; fast-returning empty result\n",
+				    (int)payload->size);
+			if (output_mem.empty()) {
+				output_mem.resize(kMaxOutput);
+				output_data = reinterpret_cast<OutputData*>(output_mem.data());
+				output_size = output_mem.size();
+			}
+			output_data->Reset();
+			output_data->size.store(output_size, std::memory_order_relaxed);
+			output_data->num_calls.store(0, std::memory_order_relaxed);
+			auto result = finish_output(output_data, 0, 0, 0, 0,
+						    freshness++, 0, false, nullptr);
+			nyx_dump_exec_result(NYX_RESULT_BASENAME, result);
+			continue;
+		}
 
 		auto* header = reinterpret_cast<nyx_msg_header_t*>(payload->data);
 		if (header->magic != SYZ_NYX_MSG_MAGIC || header->version != SYZ_NYX_MSG_VERSION)
@@ -3151,7 +3181,7 @@ void execute_call(thread_t* th)
 		nyx_log_exec_stage("execute_call_pre_acquire", th->id, th->call_num, th->num_args);
 		nyx_hypercall(HYPERCALL_KAFL_ACQUIRE,
 			      ((uint64_t)GetCurrentThreadId() << 32) |
-				      (__readgsqword(0x30) & 0xFFFFFFFF));
+				  (__readgsqword(0x30) & 0xFFFFFFFF));
 	} else {
 		nyx_log_exec_stage("execute_call_no_cov_threaded_no_acquire", th->id, th->call_num, th->num_args);
 	}
