@@ -618,6 +618,38 @@ func TestCollidePreservesTargetRequiredAsync(t *testing.T) {
 	}
 }
 
+// TestAssignRandomAsyncNilMapRegress verifies that AssignRandomAsync does not panic
+// when the last call (first in reverse order) has CallRequiresAsync==true and consumes
+// a resource produced by an earlier call. Previously, unassigned was a nil map and the
+// write unassigned[res] = true panicked with "assignment to entry in nil map".
+func TestAssignRandomAsyncNilMapRegress(t *testing.T) {
+	target, err := GetTarget("test", "64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone := *target
+	clone.CallRequiresAsync = func(calls []*Call, idx int) bool {
+		// Require async on the last call, which consumes a resource.
+		return idx == len(calls)-1
+	}
+	clone.AllowAsyncCollideCall = func(calls []*Call, idx int) bool {
+		return true
+	}
+	p, err := clone.Deserialize([]byte(
+		"r0 = test$res0()\n"+
+			"test$res1(r0)\n"), Strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 200 {
+		collided := AssignRandomAsync(p, rand.New(rand.NewSource(0)))
+		// The last call must remain async (it is required).
+		if !collided.Calls[len(collided.Calls)-1].Props.Async {
+			t.Fatalf("required-async last call was made synchronous:\n%s", collided.Serialize())
+		}
+	}
+}
+
 func TestDupCallCollideSkipsLowRelevancePrograms(t *testing.T) {
 	target, err := GetTarget("test", "64")
 	if err != nil {

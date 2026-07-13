@@ -1530,12 +1530,14 @@ static void initialize_windows_net_injection()
 							   firewall_allow, sizeof(firewall_allow));
 	char skip_firewall[8];
 	DWORD skip_firewall_len = GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_SKIP_FIREWALL_ENV,
-							    skip_firewall, sizeof(skip_firewall));
+							  skip_firewall, sizeof(skip_firewall));
 	bool skip_firewall_enabled = skip_firewall_len > 0 && skip_firewall_len < sizeof(skip_firewall) &&
 				     skip_firewall[0] == '1';
 	windows_nyx_log("windows net injection firewall allow enabled=%u skip=%u\n",
 			(firewall_allow_len > 0 && firewall_allow_len < sizeof(firewall_allow) &&
-			 firewall_allow[0] == '1') ? 1U : 0U,
+			 firewall_allow[0] == '1')
+			    ? 1U
+			    : 0U,
 			skip_firewall_enabled ? 1U : 0U);
 	if (firewall_allow_len > 0 && firewall_allow_len < sizeof(firewall_allow) &&
 	    firewall_allow[0] == '1' && !skip_firewall_enabled) {
@@ -1543,9 +1545,9 @@ static void initialize_windows_net_injection()
 	}
 	char skip_init_ipv4[8];
 	DWORD skip_init_ipv4_len = GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_SKIP_INIT_IPV4_ENV,
-							    skip_init_ipv4, sizeof(skip_init_ipv4));
+							   skip_init_ipv4, sizeof(skip_init_ipv4));
 	bool skip_init_ipv4_enabled = skip_init_ipv4_len > 0 && skip_init_ipv4_len < sizeof(skip_init_ipv4) &&
-				       skip_init_ipv4[0] == '1';
+				      skip_init_ipv4[0] == '1';
 	windows_nyx_log("windows net injection init ipv4 configure enabled=%u\n",
 			skip_init_ipv4_enabled ? 0U : 1U);
 	if (!skip_init_ipv4_enabled) {

@@ -22,7 +22,7 @@ const maxAsyncPerProg = 24
 // This does not give 100% guarantee that the async call finishes
 // by that time, but hopefully this is enough for most cases.
 func AssignRandomAsync(origProg *Prog, rand *rand.Rand) *Prog {
-	var unassigned map[*ResultArg]bool
+	unassigned := make(map[*ResultArg]bool)
 	leftAsync := maxAsyncPerProg
 	prog := origProg.Clone()
 	preferred := make(map[int]bool)

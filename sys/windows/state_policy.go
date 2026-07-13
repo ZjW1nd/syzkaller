@@ -267,12 +267,31 @@ func windowsAFDCallRequiresAsync(calls []*prog.Call, idx int) bool {
 }
 
 func windowsAFDSyscallRequiresAsync(call *prog.Syscall) bool {
-	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") ||
-		!strings.Contains(call.Name, "_pending") || len(call.Args) < 2 {
+	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") {
 		return false
 	}
-	res, ok := call.Args[1].Type.(*prog.ResourceType)
-	return ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE"
+	// Pending IRP variants with EVENT_HANDLE require async completion.
+	if strings.Contains(call.Name, "_pending") && len(call.Args) >= 2 {
+		res, ok := call.Args[1].Type.(*prog.ResourceType)
+		if ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE" {
+			return true
+		}
+	}
+	// wait_for_listen and accept_tcp are always blocking in the kernel, even
+	// in nonblocking mode. The generator cannot guarantee that connect runs
+	// before wait_for_listen (it only models resource dependencies, not
+	// ordering constraints). Without a prior connect, wait_for_listen hangs
+	// indefinitely waiting for a connection that never arrives. Mark these
+	// as requiring async so they are only used from curated seeds that have
+	// the correct connect→wait→accept ordering.
+	name := call.Name
+	if strings.Contains(name, "afd_wait_for_listen") ||
+		strings.Contains(name, "afd_accept_tcp") ||
+		strings.Contains(name, "afd_super_accept_tcp") ||
+		strings.Contains(name, "afd_defer_accept") {
+		return true
+	}
+	return false
 }
 
 func windowsAFDCallAllowsAsyncDataPath(name string) bool {
@@ -412,7 +431,7 @@ func windowsRuntimePolicy(base prog.RuntimePolicy) prog.RuntimePolicy {
 		if !windowsHasValidAFDNonblockState(p) {
 			return false
 		}
-		if !windowsHasValidAFDRequiredAsync(p) {
+		if !windowsHasValidAFDBlockingOrder(p) {
 			return false
 		}
 		if !windowsHasValidAFDPendingEventUse(p) {
@@ -496,13 +515,81 @@ func windowsHasValidAFDRequiredAsync(p *prog.Prog) bool {
 		return true
 	}
 	for idx, call := range p.Calls {
-		if call == nil || call.Meta == nil || !windowsAFDCallRequiresAsync(p.Calls, idx) {
+		if call == nil || call.Meta == nil {
+			continue
+		}
+		// Only _pending variants with EVENT_HANDLE need async validation.
+		// wait_for_listen/accept/defer_accept are synchronous-but-blocking;
+		// they need correct ordering (connect-before-wait), not async events.
+		if !strings.Contains(call.Meta.Name, "_pending") {
+			continue
+		}
+		if !windowsAFDCallRequiresAsync(p.Calls, idx) {
 			continue
 		}
 		if !call.Props.Async {
 			return false
 		}
 		if !windowsAFDRequiredAsyncHasResolver(p, idx) {
+			return false
+		}
+	}
+	return true
+}
+
+// windowsHasValidAFDBlockingOrder rejects programs where a blocking AFD
+// listen/accept/super_accept/defer_accept call appears without a prior connect
+// to the same listener handle. Collide mode can combine calls from different
+// corpus entries and break the connect→wait→accept ordering, causing the
+// executor to hang indefinitely on wait_for_listen or accept_tcp.
+func windowsHasValidAFDBlockingOrder(p *prog.Prog) bool {
+	if p == nil {
+		return true
+	}
+	for idx, call := range p.Calls {
+		if call == nil || call.Meta == nil {
+			continue
+		}
+		name := call.Meta.Name
+		isBlocking := false
+		switch {
+		case strings.Contains(name, "afd_wait_for_listen") && !strings.Contains(name, "_pending"),
+			strings.Contains(name, "afd_accept_tcp") && !strings.Contains(name, "super"),
+			strings.Contains(name, "afd_super_accept_tcp"),
+			strings.Contains(name, "afd_defer_accept"):
+			isBlocking = true
+		}
+		if !isBlocking {
+			continue
+		}
+		// Find the listener handle root used by this blocking call.
+		listenerRoots := windowsAFDStateResourceRoots(call)
+		if len(listenerRoots) == 0 {
+			continue
+		}
+		// Check whether a prior connect to the same listener exists.
+		hasConnect := false
+		for _, prev := range p.Calls[:idx] {
+			if prev == nil || prev.Meta == nil {
+				continue
+			}
+			pname := prev.Meta.Name
+			if !strings.HasPrefix(pname, "NtDeviceIoControlFile$afd_connect_") &&
+				!strings.HasPrefix(pname, "NtDeviceIoControlFile$afd_super_connect_") &&
+				pname != "syz_emit_ethernet$windows" {
+				continue
+			}
+			for root := range listenerRoots {
+				if windowsAFDStateResourceRoots(prev)[root] {
+					hasConnect = true
+					break
+				}
+			}
+			if hasConnect {
+				break
+			}
+		}
+		if !hasConnect {
 			return false
 		}
 	}

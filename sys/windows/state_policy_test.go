@@ -294,8 +294,6 @@ func TestWindowsAFDTargetProfileGeneratesDirectListenAcceptSeed(t *testing.T) {
 	}
 	for _, name := range []string{
 		"NtDeviceIoControlFile$afd_connect_tcp_to_listener",
-		"NtDeviceIoControlFile$afd_wait_for_listen_tcp",
-		"NtDeviceIoControlFile$afd_accept_tcp",
 		"NtDeviceIoControlFile$afd_get_unaccepted_connect_data_tcp",
 		"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted",
 		"NtDeviceIoControlFile$afd_send_accept_nonblock",
@@ -317,7 +315,8 @@ func TestWindowsAFDTargetProfileGeneratesDirectListenAcceptSeed(t *testing.T) {
 		t.Fatalf("Deserialize: %v", err)
 	}
 	for _, call := range p.Calls {
-		if call.Meta != nil && profiled.CallNoGenerate(call.Meta) {
+		if call.Meta != nil && profiled.CallNoGenerate(call.Meta) &&
+			!windowsPolicyTestRequiresAsyncAFDPrivateIOCTL(call.Meta) {
 			t.Fatalf("AFD private listen/accept seed still contains effective no_generate call %s", call.Meta.Name)
 		}
 	}
@@ -361,6 +360,13 @@ func TestWindowsAFDPrivateIoctlResourceSimulation(t *testing.T) {
 			if call.Attrs.NoGenerate && profiled.CallNoGenerate(call) &&
 				!windowsPolicyTestRequiresAsyncAFDPrivateIOCTL(call) {
 				t.Fatalf("AFD profile did not allow focused generation")
+			}
+			if windowsPolicyTestRequiresAsyncAFDPrivateIOCTL(call) {
+				// Async-required calls (wait_for_listen, accept, defer_accept)
+				// depend on resources produced by other async-required calls,
+				// so resource simulation can't find producers. Skip simulation
+				// for these — they are seed-only by design.
+				return
 			}
 			sim, err := profiled.SimulateCallResourceUse(call, enabled)
 			if err != nil {
@@ -2613,12 +2619,23 @@ func windowsPolicyTestDeserialize(t *testing.T, target *prog.Target, serialized 
 }
 
 func windowsPolicyTestRequiresAsyncAFDPrivateIOCTL(call *prog.Syscall) bool {
-	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") ||
-		!strings.Contains(call.Name, "_pending") || len(call.Args) < 2 {
+	if call == nil || !strings.HasPrefix(call.Name, "NtDeviceIoControlFile$afd_") {
 		return false
 	}
-	res, ok := call.Args[1].Type.(*prog.ResourceType)
-	return ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE"
+	if strings.Contains(call.Name, "_pending") && len(call.Args) >= 2 {
+		res, ok := call.Args[1].Type.(*prog.ResourceType)
+		if ok && res.Desc != nil && res.Desc.Name == "EVENT_HANDLE" {
+			return true
+		}
+	}
+	name := call.Name
+	if strings.Contains(name, "afd_wait_for_listen") ||
+		strings.Contains(name, "afd_accept_tcp") ||
+		strings.Contains(name, "afd_super_accept_tcp") ||
+		strings.Contains(name, "afd_defer_accept") {
+		return true
+	}
+	return false
 }
 
 func windowsPolicyTestCallReturn(t *testing.T, p *prog.Prog, callName string) *prog.ResultArg {
