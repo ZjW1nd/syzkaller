@@ -34,3 +34,5 @@ executor/syscalls.h
 gha-creds-*.json
 .gocache
 .serena
+# Local runner binary
+tools/syz-nyx-runner/syz-nyx-runner
