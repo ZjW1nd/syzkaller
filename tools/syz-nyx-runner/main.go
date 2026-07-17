@@ -80,6 +80,7 @@ const (
 	nyxInitMinTimeout           = 5 * time.Minute
 	nyxManagerReconnectBackoff  = time.Second
 )
+
 // vmPrimedGlobally tracks whether PT coverage has been primed at least once
 // in this runner process. It survives runner struct resets across VM
 // reconnects so the init-floor timeout is not re-applied after restarts.
@@ -790,6 +791,7 @@ type nyxVM struct {
 	control     net.Conn
 	aux         *qemuAux
 	process     *exec.Cmd
+	qemuLog     *os.File
 	trace       *traceRecorder
 	traceReqID  int64
 }
@@ -1088,6 +1090,20 @@ func (vm *nyxVM) start(ctx context.Context) error {
 	if vm.debug {
 		vm.process.Stdout = os.Stdout
 		vm.process.Stderr = os.Stderr
+	} else {
+		// QEMU-nyx's SIGSEGV/SIGABRT handler writes a host crash backtrace
+		// straight to STDERR_FILENO (nyx/debug.c). Normal nyx logging is gated
+		// on qemu_log_enabled() (off without -D), so this file stays empty
+		// unless the host QEMU actually crashes. Append so backtraces survive
+		// across VM restarts that reuse the same workdir.
+		logPath := filepath.Join(vm.workdir, fmt.Sprintf("qemu-%d.log", vm.index))
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return fmt.Errorf("open qemu log %s: %w", logPath, err)
+		}
+		vm.qemuLog = f
+		vm.process.Stdout = f
+		vm.process.Stderr = f
 	}
 	if err := vm.process.Start(); err != nil {
 		return err
@@ -1412,6 +1428,10 @@ func (vm *nyxVM) close() {
 	if vm.process != nil && vm.process.Process != nil {
 		_ = osutil.KillAndWait(vm.process, 10*time.Second)
 	}
+	if vm.qemuLog != nil {
+		_ = vm.qemuLog.Close()
+		vm.qemuLog = nil
+	}
 	vm.process = nil
 	_ = os.Remove(vm.controlPath)
 	_ = os.Remove(vm.auxPath)
@@ -1612,9 +1632,9 @@ func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
 			return err
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
-		log.Logf(0, "runner executeHandshake: ack observed at step=%d", i)
-		vm.recordTrace("runner", "handshake_ack", requestID, traceFields("step", i))
-		return nil
+			log.Logf(0, "runner executeHandshake: ack observed at step=%d", i)
+			vm.recordTrace("runner", "handshake_ack", requestID, traceFields("step", i))
+			return nil
 		}
 		vm.recordAuxTrace("handshake_step", requestID)
 		vm.debugLogf("runner handshake post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
@@ -2206,14 +2226,13 @@ func authHash(value uint64) uint64 {
 
 func normalizeWindowsNyxEnvFlags(env flatrpc.ExecEnv) flatrpc.ExecEnv {
 	/* The Windows Nyx executor gets per-request coverage from explicit PT
-	 * hypercalls, while executor-side nocover stubs make KCOV feature knobs
-	 * inert. Keep only the handshake bits that are meaningful on Windows and
-	 * pin the sandbox/coverage mode so manager-side Linux feature probing does
-	 * not keep reconfiguring the guest between otherwise identical requests. */
+	 * hypercalls. Preserve the caller's signal bit so standalone no-cover
+	 * requests can bypass PT session setup while normal coverage requests keep
+	 * the signal path. */
 	const keep = flatrpc.ExecEnvDebug |
 		flatrpc.ExecEnvReadOnlyCoverage |
 		flatrpc.ExecEnvResetState
-	return (env & keep) | flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone
+	return (env & (keep | flatrpc.ExecEnvSignal)) | flatrpc.ExecEnvSandboxNone
 }
 
 func injectCoverage(msg *flatrpc.ExecRequest, execMsg *flatrpc.ExecutorMessage,
@@ -4039,7 +4058,7 @@ func runStandalone(index int, vm *nyxVM, syscallName string, seed int64, program
 		Id:   1,
 		Type: flatrpc.RequestTypeProgram,
 		ExecOpts: &flatrpc.ExecOpts{
-			EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
+			EnvFlags:   standaloneExecEnvFlags(collectCover),
 			ExecFlags:  execFlags,
 			SandboxArg: 0,
 		},
@@ -4135,7 +4154,7 @@ func runStandaloneExec(index int, vm *nyxVM, programPath string, threaded, keepS
 	req := &flatrpc.ExecRequest{
 		Type: flatrpc.RequestTypeProgram,
 		ExecOpts: &flatrpc.ExecOpts{
-			EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
+			EnvFlags:   standaloneExecEnvFlags(collectCover),
 			ExecFlags:  execFlags,
 			SandboxArg: 0,
 		},
@@ -4315,7 +4334,7 @@ func runStandaloneExecStaged(index int, vm *nyxVM, firstProgramPath, secondProgr
 			Id:   stage.id,
 			Type: flatrpc.RequestTypeProgram,
 			ExecOpts: &flatrpc.ExecOpts{
-				EnvFlags:   flatrpc.ExecEnvSignal | flatrpc.ExecEnvSandboxNone,
+				EnvFlags:   standaloneExecEnvFlags(collectCover),
 				ExecFlags:  execFlags,
 				SandboxArg: 0,
 			},
@@ -4433,10 +4452,18 @@ func standaloneConnectReply(syscallTimeoutMs, programTimeoutMs int, collectCover
 	}
 }
 
-func standaloneExecFlags(threaded, collectCover bool) flatrpc.ExecFlag {
-	execFlags := flatrpc.ExecFlagCollectSignal
+func standaloneExecEnvFlags(collectCover bool) flatrpc.ExecEnv {
+	flags := flatrpc.ExecEnvSandboxNone
 	if collectCover {
-		execFlags |= flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagDedupCover
+		flags |= flatrpc.ExecEnvSignal
+	}
+	return flags
+}
+
+func standaloneExecFlags(threaded, collectCover bool) flatrpc.ExecFlag {
+	var execFlags flatrpc.ExecFlag
+	if collectCover {
+		execFlags |= flatrpc.ExecFlagCollectSignal | flatrpc.ExecFlagCollectCover | flatrpc.ExecFlagDedupCover
 	}
 	if threaded {
 		execFlags |= flatrpc.ExecFlagThreaded

@@ -9,6 +9,7 @@
 workdir*
 
 bin/
+/guest-vm/runtime/
 syz-cluster/bin/
 dashboard/app/config_prod.go
 

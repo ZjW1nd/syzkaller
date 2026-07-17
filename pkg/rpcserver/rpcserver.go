@@ -49,6 +49,7 @@ type Config struct {
 	// Abort early on syz-executor not replying to requests and print extra debugging information.
 	DebugTimeouts bool
 	Procs         int
+	Timeouts      targets.Timeouts
 	Slowdown      int
 	pcBase        uint64
 	localModules  []*vminfo.KernelModule
@@ -184,6 +185,7 @@ func New(cfg *RemoteConfig) (Server, error) {
 		PrintMachineCheck: true,
 		Procs:             cfg.Procs,
 		Slowdown:          cfg.Timeouts.Slowdown,
+		Timeouts:          cfg.Timeouts,
 		pcBase:            pcBase,
 		localModules:      cfg.LocalModules,
 		disabledCalls:     cfg.DisabledSyscalls,
@@ -201,7 +203,7 @@ func newImpl(cfg *Config, mgr Manager) *server {
 		mgr:         mgr,
 		target:      cfg.Target,
 		sysTarget:   sysTarget,
-		timeouts:    sysTarget.Timeouts(cfg.Slowdown),
+		timeouts:    cfg.Timeouts,
 		runners:     make(map[int]*Runner),
 		checker:     checker,
 		baseSource:  baseSource,

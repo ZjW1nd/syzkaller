@@ -306,6 +306,13 @@ func (cfg *Config) initTimeouts() error {
 	}
 	// Note: we could also consider heavy debug tools (KASAN/KMSAN/KCSAN/KMEMLEAK) if necessary.
 	cfg.Timeouts = cfg.SysTarget.Timeouts(slowdown)
+	if override := os.Getenv("SYZ_NYX_DIAGNOSTIC_PROGRAM_TIMEOUT"); override != "" {
+		programTimeout, err := time.ParseDuration(override)
+		if err != nil || programTimeout <= cfg.Timeouts.Syscall {
+			return fmt.Errorf("bad SYZ_NYX_DIAGNOSTIC_PROGRAM_TIMEOUT %q", override)
+		}
+		cfg.Timeouts.Program = programTimeout
+	}
 	if cfg.VMRunningTime != "" {
 		vmRunningTime, err := time.ParseDuration(cfg.VMRunningTime)
 		if err != nil {

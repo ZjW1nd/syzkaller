@@ -14,7 +14,7 @@
 
 #define NYX_HOST_MAGIC 0x4878794e
 #define NYX_AGENT_MAGIC 0x4178794e
-#define NYX_HOST_VERSION 3
+#define NYX_HOST_VERSION 4
 #define NYX_AGENT_VERSION 1
 
 #define HYPERCALL_KAFL_RAX_ID 0x01f
@@ -68,6 +68,7 @@ typedef struct {
 	uint32_t worker_id;
 	uint32_t protocol_cpu;
 	uint32_t smp_enabled;
+	uint32_t cpu_count;
 } __attribute__((packed)) nyx_host_config_t;
 
 typedef struct {
@@ -225,6 +226,39 @@ static void nyx_pin_protocol_thread(const nyx_host_config_t* host_config, const 
 	if (SetThreadAffinityMask(GetCurrentThread(), mask) == 0) {
 		nyx_hprintf("nyx protocol thread pin failed cpu=%u err=%lu reason=%s\n",
 			    host_config->protocol_cpu, GetLastError(), reason ? reason : "<none>");
+	}
+}
+
+static void nyx_pin_worker_thread(uint32_t worker_id, uint32_t smp_enabled,
+				  uint32_t cpu_count)
+{
+	if (!smp_enabled || cpu_count == 0)
+		return;
+	char buf[8];
+	DWORD n = GetEnvironmentVariableA("SYZ_NYX_WORKER_PIN", buf, sizeof(buf));
+	if (n == 0 || n >= sizeof(buf) || buf[0] != '1') {
+		nyx_hprintf("nyx worker thread pin disabled worker=%u cpu_count=%u\n",
+			    worker_id, cpu_count);
+		return;
+	}
+	uint32_t cpu;
+	if (cpu_count > 1) {
+		cpu = 1 + (worker_id % (cpu_count - 1));
+	} else {
+		cpu = 0;
+	}
+	if (cpu >= sizeof(DWORD_PTR) * 8) {
+		nyx_hprintf("nyx worker thread pin skipped worker=%u cpu=%u cpu_count=%u\n",
+			    worker_id, cpu, cpu_count);
+		return;
+	}
+	DWORD_PTR mask = ((DWORD_PTR)1) << cpu;
+	if (SetThreadAffinityMask(GetCurrentThread(), mask) == 0) {
+		nyx_hprintf("nyx worker thread pin failed worker=%u cpu=%u err=%lu\n",
+			    worker_id, cpu, GetLastError());
+	} else {
+		nyx_hprintf("nyx worker thread pinned worker=%u cpu=%u cpu_count=%u\n",
+			    worker_id, cpu, cpu_count);
 	}
 }
 

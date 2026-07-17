@@ -1554,7 +1554,7 @@ static void initialize_windows_net_injection()
 		windows_net_injection_try_configure_local_ipv4();
 	}
 	windows_net_injection_log_guest_net_state("after-open");
-	DWORD settle_ms = windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS_ENV, 30000);
+	DWORD settle_ms = windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS_ENV, 0);
 	if (settle_ms != 0) {
 		windows_nyx_log("windows net injection pre-snapshot settle begin ms=%lu\n",
 				(unsigned long)settle_ms);
@@ -1632,7 +1632,7 @@ static long windows_net_injection_write(const void* data, DWORD length)
 	}
 	debug("windows net injection tx wrote frame length=%u\n", length);
 	windows_nyx_log("windows net injection tx wrote frame length=%u\n", length);
-	DWORD settle_ms = windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV, 30000);
+	DWORD settle_ms = windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV, 0);
 	if (settle_ms != 0) {
 		windows_nyx_log("windows net injection post-write settle begin ms=%lu\n",
 				(unsigned long)settle_ms);

@@ -7411,7 +7411,7 @@ func TestFullchainPersistsSlowTraceArtifacts(t *testing.T) {
 	}
 	scriptSrc := string(scriptData)
 	for _, want := range []string{
-		`SLOW_TRACE_DIR="${SLOW_TRACE_DIR:-}"`,
+		`SLOW_TRACE_DIR="${SLOW_TRACE_DIR:--}"`,
 		`SLOW_TRACE_DIR="$(dirname "$MANAGER_LOG")/slow-traces"`,
 		`SYZ_NYX_SLOW_TRACE_DIR="$SLOW_TRACE_DIR"`,
 		`SYZ_NYX_SLOW_TRACE_THRESHOLD_MS="$SLOW_TRACE_THRESHOLD_MS"`,

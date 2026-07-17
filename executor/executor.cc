@@ -298,6 +298,8 @@ static bool flag_comparisons;
 
 static uint64 request_id;
 static std::atomic<uint64> nyx_cov_session_seq{1};
+static uint32_t g_nyx_cpu_count = 0;
+static uint32_t g_nyx_smp_enabled = 0;
 static rpc::RequestType request_type;
 static uint64 all_call_signal;
 static bool all_extra_signal;
@@ -2693,6 +2695,8 @@ static int nyx_mode_loop(int argc, char** argv)
 	nyx_host_config_t host_cfg = {};
 	if (!nyx_fetch_host_config(&host_cfg))
 		fail("failed to fetch Nyx host config");
+	g_nyx_cpu_count = host_cfg.cpu_count;
+	g_nyx_smp_enabled = host_cfg.smp_enabled;
 	nyx_pin_protocol_thread(&host_cfg, "host_config");
 
 	nyx_hypercall(HYPERCALL_KAFL_ACQUIRE, ((uint64_t)GetCurrentThreadId() << 32) | (__readgsqword(0x30) & 0xFFFFFFFF));
@@ -3024,6 +3028,7 @@ void* worker_thread(void* arg)
 	current_thread = th;
 #if GOOS_windows
 	th->worker_tid = GetCurrentThreadId();
+	nyx_pin_worker_thread((uint32_t)th->id, g_nyx_smp_enabled, g_nyx_cpu_count);
 	nyx_log_thread_stage("worker_thread_started", th, th->worker_tid,
 			     th->handoff_seq);
 #endif
