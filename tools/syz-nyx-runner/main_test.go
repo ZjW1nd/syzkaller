@@ -20,6 +20,16 @@ import (
 	"github.com/google/syzkaller/prog"
 )
 
+func TestEffectiveKeepStateHonorsSMPRequest(t *testing.T) {
+	vm := &nyxVM{qemuVCPUCount: 4}
+	if effectiveKeepState(vm, false) {
+		t.Fatal("keep-state enabled without a request")
+	}
+	if !effectiveKeepState(vm, true) {
+		t.Fatal("keep-state request was disabled for an SMP guest")
+	}
+}
+
 func writeCoverageDump(t *testing.T, path string, records []nyxCovDumpRecord) {
 	t.Helper()
 	buf := new(bytes.Buffer)
@@ -859,11 +869,13 @@ func TestNormalizeWindowsNyxEnvFlags(t *testing.T) {
 		flatrpc.ExecEnvExtraCover |
 		flatrpc.ExecEnvDebug
 	got := normalizeWindowsNyxEnvFlags(raw)
-	want := flatrpc.ExecEnvDebug |
-		flatrpc.ExecEnvSignal |
-		flatrpc.ExecEnvSandboxNone
+	want := flatrpc.ExecEnvDebug | flatrpc.ExecEnvSandboxNone
 	if got != want {
 		t.Fatalf("normalized env mismatch: got 0x%x want 0x%x", uint64(got), uint64(want))
+	}
+	if got := normalizeWindowsNyxEnvFlags(raw | flatrpc.ExecEnvSignal); got != want|flatrpc.ExecEnvSignal {
+		t.Fatalf("normalized signal env mismatch: got 0x%x want 0x%x",
+			uint64(got), uint64(want|flatrpc.ExecEnvSignal))
 	}
 }
 
@@ -1044,6 +1056,53 @@ func TestPrimeResultCanReturn(t *testing.T) {
 	}
 }
 
+func TestCoveragePrimeCanReturn(t *testing.T) {
+	noCoverage := execResultMessage(&flatrpc.ExecResult{
+		Info: flatrpc.EmptyProgInfo(1),
+	})
+	executorError := execResultMessage(&flatrpc.ExecResult{
+		Error: "executor failed",
+		Info:  flatrpc.EmptyProgInfo(1),
+	})
+
+	tests := []struct {
+		name             string
+		msg              *flatrpc.ExecutorMessage
+		ptEnableDisabled bool
+		want             bool
+	}{
+		{
+			name:             "normal PT replays empty coverage",
+			msg:              noCoverage,
+			ptEnableDisabled: false,
+			want:             false,
+		},
+		{
+			name:             "PT-off accepts successful empty coverage",
+			msg:              noCoverage,
+			ptEnableDisabled: true,
+			want:             true,
+		},
+		{
+			name:             "PT-off does not accept executor error",
+			msg:              executorError,
+			ptEnableDisabled: true,
+			want:             false,
+		},
+		{
+			name:             "PT-off does not accept missing result",
+			msg:              nil,
+			ptEnableDisabled: true,
+			want:             false,
+		},
+	}
+	for _, test := range tests {
+		if got := coveragePrimeCanReturn(test.msg, test.ptEnableDisabled); got != test.want {
+			t.Fatalf("%s: got %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
 func execResultMessage(res *flatrpc.ExecResult) *flatrpc.ExecutorMessage {
 	return &flatrpc.ExecutorMessage{
 		Msg: &flatrpc.ExecutorMessages{
@@ -1101,23 +1160,78 @@ func TestReadExecResultWaitsForReloadBoundary(t *testing.T) {
 }
 
 func TestExecStepProbeWindowReleasesImmediatelyForReloadBoundary(t *testing.T) {
-	if got := execStepProbeWindow(0, false, false); got != 300*time.Millisecond {
+	if got := execStepProbeWindow(0, false, false, false); got != 300*time.Millisecond {
 		t.Fatalf("first step probe window = %s", got)
 	}
-	if got := execStepProbeWindow(2, false, false); got != 50*time.Millisecond {
+	if got := execStepProbeWindow(2, false, false, false); got != 5*time.Millisecond {
 		t.Fatalf("normal step probe window = %s", got)
 	}
-	if got := execStepProbeWindow(2, true, false); got != 0 {
+	if got := execStepProbeWindow(2, true, false, false); got != 0 {
 		t.Fatalf("reload boundary probe window = %s, want immediate release", got)
 	}
-	if got := execStepProbeWindow(3, true, true); got != 50*time.Millisecond {
+	if got := execStepProbeWindow(3, true, true, false); got != 5*time.Millisecond {
 		t.Fatalf("settled reload probe window = %s", got)
+	}
+}
+
+func TestExecStepProbeWindowReleasesHandshakeHandoffImmediately(t *testing.T) {
+	if got := execStepProbeWindow(0, false, false, true); got != 0 {
+		t.Fatalf("handshake handoff probe window = %s, want immediate release", got)
 	}
 }
 
 func TestHprintfStagePayloadHeader(t *testing.T) {
 	if got := hprintfStage("nyx payload header kind=2 body=88 total=100"); got != "payload_header" {
 		t.Fatalf("hprintfStage payload header = %q", got)
+	}
+}
+
+func TestExecPayloadHeaderStartsProgramDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code uint8
+		msg  string
+		want bool
+	}{
+		{
+			name: "exec payload",
+			code: nyxRCHprintf,
+			msg:  "nyx payload header kind=2 body=88 total=100",
+			want: true,
+		},
+		{
+			name: "handshake payload",
+			code: nyxRCHprintf,
+			msg:  "nyx payload header kind=1 body=56 total=68",
+		},
+		{
+			name: "non hprintf",
+			code: nyxRCSuccess,
+			msg:  "nyx payload header kind=2 body=88 total=100",
+		},
+		{
+			name: "other hprintf",
+			code: nyxRCHprintf,
+			msg:  "nyx worker thread pinned worker=0 cpu=1 cpu_count=4",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := execPayloadHeaderStartsProgram(test.code, test.msg); got != test.want {
+				t.Fatalf("execPayloadHeaderStartsProgram(%d, %q) = %v, want %v",
+					test.code, test.msg, got, test.want)
+			}
+		})
+	}
+}
+
+func TestPreExecPayloadTimeoutHasBootstrapFloor(t *testing.T) {
+	vm := &nyxVM{hardTimeout: 10 * time.Second}
+	if got := vm.preExecPayloadTimeout(); got != 2*time.Minute {
+		t.Fatalf("pre-exec payload timeout = %s, want 2m", got)
+	}
+	vm.hardTimeout = 3 * time.Minute
+	if got := vm.preExecPayloadTimeout(); got != 3*time.Minute+5*time.Second {
+		t.Fatalf("pre-exec payload timeout = %s, want 3m5s", got)
 	}
 }
 
@@ -1292,9 +1406,48 @@ func TestPackModuleRangeConfig(t *testing.T) {
 
 func TestDeriveHardTimeoutUsesProgramTimeout(t *testing.T) {
 	got := deriveHardTimeout(5000, 3*time.Minute)
-	want := 5 * time.Second
+	want := 8 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestFirstExecTimeoutFloorAllowsBoundedRecovery(t *testing.T) {
+	got := firstExecTimeoutWithFloor(8*time.Second, false)
+	want := 40 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestFirstExecTimeoutFloorSkippedAfterPriming(t *testing.T) {
+	got := firstExecTimeoutWithFloor(8*time.Second, true)
+	want := 8 * time.Second
+	if got != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestUpdateHardTimeoutAppliesAuxWatchdog(t *testing.T) {
+	auxData := make([]byte, 4096)
+	vm := &nyxVM{
+		hardTimeout: 5 * time.Minute,
+		aux:         &qemuAux{data: auxData},
+	}
+
+	vm.updateHardTimeout(40 * time.Second)
+
+	if vm.hardTimeout != 40*time.Second {
+		t.Fatalf("hard timeout = %s, want 40s", vm.hardTimeout)
+	}
+	if auxData[128+256] != 1 {
+		t.Fatalf("aux config changed = %d, want 1", auxData[128+256])
+	}
+	if auxData[128+256+1] != 40 {
+		t.Fatalf("aux timeout seconds = %d, want 40", auxData[128+256+1])
+	}
+	if got := binary.LittleEndian.Uint32(auxData[128+256+2 : 128+256+6]); got != 0 {
+		t.Fatalf("aux timeout usec = %d, want 0", got)
 	}
 }
 
@@ -1386,7 +1539,7 @@ func TestDeriveHardTimeoutFallsBackWithoutProgramTimeout(t *testing.T) {
 func TestApplyStandaloneHardTimeoutUsesProgramTimeout(t *testing.T) {
 	vm := &nyxVM{hardTimeout: 3 * time.Minute}
 	got := applyStandaloneHardTimeout(vm, 60000)
-	want := 1 * time.Minute
+	want := 63 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
@@ -1407,9 +1560,9 @@ func TestApplyStandaloneHardTimeoutHonorsSmallerFallback(t *testing.T) {
 	}
 }
 
-func TestHardTimeoutWithSlackUsesMinimum(t *testing.T) {
+func TestHardTimeoutWithSlackAddsBoundedSlack(t *testing.T) {
 	got := hardTimeoutWithSlack(5 * time.Second)
-	want := 35 * time.Second
+	want := 8 * time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
@@ -1427,16 +1580,16 @@ func TestExecWaitTimeoutHonorsDerivedShortProgramTimeout(t *testing.T) {
 func TestInitWaitTimeoutKeepsSlowNyxShadowInitBudget(t *testing.T) {
 	vm := &nyxVM{hardTimeout: 45 * time.Second}
 	got := vm.initWaitTimeout()
-	want := 125 * time.Second
+	want := 5*time.Minute + 5*time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}
 }
 
 func TestInitWaitTimeoutHonorsLongerHardTimeout(t *testing.T) {
-	vm := &nyxVM{hardTimeout: 3 * time.Minute}
+	vm := &nyxVM{hardTimeout: 6 * time.Minute}
 	got := vm.initWaitTimeout()
-	want := 185 * time.Second
+	want := 6*time.Minute + 3*time.Second
 	if got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}

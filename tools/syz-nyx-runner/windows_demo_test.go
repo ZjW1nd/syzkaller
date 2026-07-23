@@ -3637,8 +3637,8 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 		}
 		want[call.Name] = true
 	}
-	if len(want) != 385 {
-		t.Fatalf("AFD private profile syscall count=%d, want 385", len(want))
+	if len(want) != 392 {
+		t.Fatalf("AFD private profile syscall count=%d, want 392", len(want))
 	}
 	got := make(map[string]bool)
 	for _, name := range cfg.EnabledSyscalls {
@@ -3754,6 +3754,9 @@ func TestWindowsAfdPrivateConfigCoversEndpointState(t *testing.T) {
 			if ct.DirectlyGeneratable(call.ID) {
 				t.Fatalf("%s requires async completion but remains a direct generation root", name)
 			}
+			continue
+		}
+		if call.Attrs.NoGenerate {
 			continue
 		}
 		if !ct.DirectlyGeneratable(call.ID) {
@@ -3927,10 +3930,23 @@ func TestWindowsAfdPrivateConfigCoversSeedSyscalls(t *testing.T) {
 		}
 	}
 	seedOptional := map[string]bool{
-		"NtDelayExecution":                   true,
-		"syz_emit_ethernet$windows":          true,
-		"syz_extract_tcp_res$windows":        true,
-		"syz_extract_tcp_res$windows_synack": true,
+		"NtDelayExecution":                                                           true,
+		"syz_emit_ethernet$windows":                                                  true,
+		"syz_extract_tcp_res$windows":                                                true,
+		"syz_extract_tcp_res$windows_synack":                                         true,
+		"NtDeviceIoControlFile$afd_set_information_ulong_tcp":                        true,
+		"NtDeviceIoControlFile$afd_set_information_ulong_udp":                        true,
+		"NtDeviceIoControlFile$afd_set_max_recv_bytes_udp":                           true,
+		"NtDeviceIoControlFile$afd_set_max_recv_count_udp":                           true,
+		"NtDeviceIoControlFile$afd_set_circular_queue_udp":                           true,
+		"NtDeviceIoControlFile$afd_poll_multi":                                       true,
+		"CreateEventA$auto":                                                          true,
+		"CreateEventA$manual":                                                        true,
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp":               true,
+		"NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp_nonblock":      true,
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp":          true,
+		"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp_nonblock": true,
+		"NtDeviceIoControlFile$afd_poll_timeout":                                     true,
 	}
 	if fullSeeds != len(cfg.EnabledSyscalls)-len(seedOptional) {
 		t.Fatalf("private AFD full seed count=%d, want %d",
@@ -7486,20 +7502,22 @@ func TestRunnerSuccessPathLogsAreDebugOnly(t *testing.T) {
 	}
 
 	executeRequest := extractFunctionBody(t, mainSrc, "func (vm *nyxVM) executeRequest")
+	readExecResult := extractFunctionBody(t, mainSrc, "func (vm *nyxVM) readExecResultIfReady")
+	executeSuccessPaths := executeRequest + readExecResult
 	for _, want := range []string{
 		`vm.debugLogf("runner exec result observed before step=%d"`,
 		`vm.debugLogf("runner exec observed exec_done at step=%d but result file is not present yet"`,
 	} {
-		if !strings.Contains(executeRequest, want) {
-			t.Fatalf("executeRequest should gate success log with debugLogf: missing %q", want)
+		if !strings.Contains(executeSuccessPaths, want) {
+			t.Fatalf("execute request success paths should gate logs with debugLogf: missing %q", want)
 		}
 	}
 	for _, bad := range []string{
 		`log.Logf(0, "runner exec result observed before step=%d"`,
 		`log.Logf(0, "runner exec observed exec_done at step=%d but result file is not present yet"`,
 	} {
-		if strings.Contains(executeRequest, bad) {
-			t.Fatalf("executeRequest should not emit high-frequency success log by default: %q", bad)
+		if strings.Contains(executeSuccessPaths, bad) {
+			t.Fatalf("execute request success paths should not emit high-frequency success log by default: %q", bad)
 		}
 	}
 
@@ -7850,34 +7868,6 @@ func TestRunQemuWithTimeoutReturnsNetTimeout(t *testing.T) {
 	}
 }
 
-func TestExecutorInitializesInputDataBeforeNyxPreview(t *testing.T) {
-	path := filepath.Join("..", "..", "executor", "executor.cc")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read executor.cc: %v", err)
-	}
-	src := string(data)
-	start := strings.Index(src, "parse_execute(req);")
-	if start == -1 {
-		t.Fatal("parse_execute(req) block not found in executor.cc")
-	}
-	endRel := strings.Index(src[start:], "uint64_t exec_start = current_time_ms();")
-	if endRel == -1 {
-		t.Fatal("Nyx exec block end not found in executor.cc")
-	}
-	block := src[start : start+endRel]
-	assign := strings.Index(block, "input_data =")
-	if assign == -1 {
-		t.Fatal("input_data assignment not found before Nyx execution")
-	}
-	preview := strings.Index(block, "nyx_log_exec_preview(")
-	if preview == -1 {
-		t.Fatal("nyx_log_exec_preview call not found in Nyx execution block")
-	}
-	if assign > preview {
-		t.Fatalf("input_data is assigned after nyx_log_exec_preview (assign=%d preview=%d)", assign, preview)
-	}
-}
 
 func TestNyxModeLoopInitializesCoverageAfterHandshake(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
@@ -7962,16 +7952,9 @@ func TestNyxModeLoopReloadsExecByDefaultUnlessKeepStateRequested(t *testing.T) {
 		if finish == -1 {
 			t.Fatalf("%s: exec finish helper not found", label)
 		}
-		log := strings.Index(block, "nyx_hprintf(\"nyx result dumped request=%lld bytes=%u\\n\"")
-		if log == -1 {
-			log = strings.Index(block, "nyx_trace_hprintf(\"nyx result dumped request=%lld bytes=%u\\n\"")
-		}
-		if log == -1 {
-			t.Fatalf("%s: result-dumped log not found", label)
-		}
-		if !(dump < finish && dump < log) {
-			t.Fatalf("%s: expected result dump before finish/log, got dump=%d finish=%d log=%d",
-				label, dump, finish, log)
+		if dump >= finish {
+			t.Fatalf("%s: expected result dump before finish, got dump=%d finish=%d",
+				label, dump, finish)
 		}
 	}
 	helper := extractFunctionBody(t, src, "static void nyx_finish_exec_payload")
@@ -8065,7 +8048,7 @@ func assertNoNyxLoggingBetweenAcquireAndRelease(t *testing.T, src string) {
 			t.Fatal("Nyx RELEASE hypercall not found after ACQUIRE")
 		}
 		window := src[acquire : acquire+releaseRel]
-		if strings.Contains(window, "nyx_hprintf(") || strings.Contains(window, "nyx_log_exec_stage(") {
+		if strings.Contains(window, "nyx_hprintf(") {
 			t.Fatal("executor contains Nyx logging between ACQUIRE and RELEASE")
 		}
 		found++
@@ -8096,8 +8079,7 @@ func TestExecutePathsAvoidNyxHprintf(t *testing.T) {
 	assertNoNyxLoggingBetweenAcquireAndRelease(t, body)
 	for _, needle := range []string{
 		"is_windows_nyx_vnet_call(call)",
-		"execute_call_vnet_no_acquire",
-		"execute_call_vnet_done",
+		"goto windows_nyx_call_done;",
 	} {
 		if !strings.Contains(body, needle) {
 			t.Fatalf("execute_call should run Windows vnet helpers outside Nyx ACQUIRE, missing %q", needle)
@@ -8118,7 +8100,7 @@ func TestExecutePathsAvoidNyxHprintf(t *testing.T) {
 	}
 }
 
-func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
+func TestWindowsExecutorSchedulesBoundedHandoff(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -8126,31 +8108,20 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 	}
 	body := extractFunctionBody(t, string(data), "thread_t* schedule_call")
 	wantOrder := []string{
-		"schedule_pre_idle_wait",
-		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,",
-		"schedule_post_idle_wait",
-		"schedule_pre_done_reset",
+		"windows_wait_worker_idle(th, kWindowsWorkerIdleWaitMs);",
 		"event_reset(&th->done);",
-		"schedule_post_done_reset",
-		"th->handoff_seq++;",
-		"schedule_handoff_seq",
-		"schedule_pre_idle_reset",
 		"event_reset(&th->idle);",
-		"schedule_post_idle_reset",
-		"schedule_pre_ready_set",
 		"event_set(&th->ready);",
-		"schedule_post_ready_set",
 		"running++;",
-		"schedule_running_incremented",
 	}
 	last := -1
 	for _, needle := range wantOrder {
 		idx := strings.Index(body, needle)
 		if idx == -1 {
-			t.Fatalf("schedule_call missing handoff breadcrumb %q", needle)
+			t.Fatalf("schedule_call missing handoff operation %q", needle)
 		}
 		if idx <= last {
-			t.Fatalf("schedule_call breadcrumb %q is out of order", needle)
+			t.Fatalf("schedule_call handoff operation %q is out of order", needle)
 		}
 		last = idx
 	}
@@ -8160,15 +8131,6 @@ func TestWindowsExecutorLogsScheduleHandoff(t *testing.T) {
 	if !strings.Contains(body, "kWindowsWorkerIdleWaitMs") {
 		t.Fatal("schedule_call should pass the worker idle time budget")
 	}
-	if !strings.Contains(body, "event_isset(&th->ready)") ||
-		!strings.Contains(body, "event_isset(&th->done)") ||
-		!strings.Contains(body, "th->executing") ||
-		!strings.Contains(body, "running") ||
-		!strings.Contains(body, "th->worker_tid") ||
-		!strings.Contains(body, "th->worker_wait_seq") ||
-		!strings.Contains(body, "event_isset(&th->idle)") {
-		t.Fatal("schedule_call handoff logs should include ready/done/idle/executing/running state")
-	}
 }
 
 func TestWindowsExecutorWorkerIdleWaitIsBounded(t *testing.T) {
@@ -8177,26 +8139,56 @@ func TestWindowsExecutorWorkerIdleWaitIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read executor.cc: %v", err)
 	}
-	helper := extractFunctionBody(t, string(data), "static int windows_yield_until_event")
+	src := string(data)
+	start := extractFunctionBody(t, src, "static windows_deadline_t windows_deadline_start")
 	for _, needle := range []string{
-		"uint64 deadline_ms = current_time_ms() + max_wait_ms;",
+		"QueryPerformanceFrequency(&deadline.frequency)",
+		"QueryPerformanceCounter(&deadline.start)",
+	} {
+		if !strings.Contains(start, needle) {
+			t.Fatalf("windows_deadline_start missing QPC construct %q", needle)
+		}
+	}
+	expired := extractFunctionBody(t, src, "static bool windows_deadline_expired")
+	for _, needle := range []string{
+		"deadline->clockless_yields++ >= kWindowsClocklessWaitYields",
+		"QueryPerformanceCounter(&now)",
+		"elapsed_ms >= deadline->timeout_ms",
+	} {
+		if !strings.Contains(expired, needle) {
+			t.Fatalf("windows_deadline_expired missing bounded deadline construct %q", needle)
+		}
+	}
+	helper := extractFunctionBody(t, src, "static int windows_yield_until_event")
+	for _, needle := range []string{
+		"windows_deadline_start(max_wait_ms)",
 		"for (uint64 i = 0; i < max_yields; i++)",
 		"event_isset(ev)",
-		"current_time_ms() >= deadline_ms",
-		"SwitchToThread()",
-		"Sleep(0)",
+		"windows_deadline_expired(&deadline)",
+		"windows_wait_yield()",
 	} {
 		if !strings.Contains(helper, needle) {
 			t.Fatalf("windows_yield_until_event missing bounded-yield construct %q", needle)
 		}
 	}
+	workerIdle := extractFunctionBody(t, src, "static void windows_wait_worker_idle")
+	for _, needle := range []string{
+		"!windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields, wait_ms)",
+		`exitf("worker did not become idle`,
+	} {
+		if !strings.Contains(workerIdle, needle) {
+			t.Fatalf("windows_wait_worker_idle missing checked handoff construct %q", needle)
+		}
+	}
+
 	if strings.Contains(helper, "event_timedwait") ||
-		strings.Contains(helper, "WaitForSingleObject") {
-		t.Fatal("windows_yield_until_event should not use a blocking guest wait")
+		strings.Contains(helper, "WaitForSingleObject") ||
+		strings.Contains(helper, "current_time_ms") {
+		t.Fatal("windows_yield_until_event should not depend on a blocking guest-timer wait")
 	}
 }
 
-func TestWindowsExecutorLogsWorkerHandoffWaits(t *testing.T) {
+func TestWindowsExecutorUsesBoundedWorkerHandoffs(t *testing.T) {
 	path := filepath.Join("..", "..", "executor", "executor.cc")
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -8205,73 +8197,65 @@ func TestWindowsExecutorLogsWorkerHandoffWaits(t *testing.T) {
 	src := string(data)
 	threadCreate := extractFunctionBody(t, src, "void thread_create")
 	for _, needle := range []string{
-		"th->handoff_seq = 0;",
-		"th->worker_tid = 0;",
-		"th->worker_wait_seq = 0;",
 		"th->call_index = -1;",
 		"th->call_num = -1;",
 		"event_init(&th->idle);",
-		"thread_start(worker_thread, th);",
-		"thread_create_pre_idle_wait",
-		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,",
-		"thread_create_post_idle_wait",
+		"CreateThread(NULL, 128 << 10",
+		"CREATE_SUSPENDED",
+		"ResumeThread(worker)",
+		"windows_wait_worker_idle(th, kWindowsWorkerIdleWaitMs);",
+		"nyx_pin_worker_thread(worker",
+		"CloseHandle(worker)",
 		"event_set(&th->done);",
 	} {
 		if !strings.Contains(threadCreate, needle) {
 			t.Fatalf("thread_create missing initialization %q", needle)
 		}
 	}
-	if strings.Index(threadCreate, "thread_start(worker_thread, th);") >
-		strings.Index(threadCreate, "event_set(&th->done);") {
-		t.Fatal("Windows thread_create should start the worker before marking it done")
+	create := strings.Index(threadCreate, "CreateThread(NULL, 128 << 10")
+	resume := strings.Index(threadCreate, "ResumeThread(worker)")
+	wait := strings.Index(threadCreate, "windows_wait_worker_idle(th, kWindowsWorkerIdleWaitMs);")
+	pin := strings.Index(threadCreate, "nyx_pin_worker_thread(worker")
+	closeHandle := strings.Index(threadCreate, "CloseHandle(worker)")
+	done := strings.Index(threadCreate, "event_set(&th->done);")
+	if !(create < resume && resume < wait && wait < pin && pin < closeHandle && closeHandle < done) {
+		t.Fatalf("thread_create must create suspended, resume, wait for idle, pin, close the handle, then mark done: create=%d resume=%d wait=%d pin=%d close=%d done=%d",
+			create, resume, wait, pin, closeHandle, done)
 	}
-	if strings.Index(threadCreate, "thread_create_pre_idle_wait") >
-		strings.Index(threadCreate, "thread_create_post_idle_wait") {
-		t.Fatal("thread_create should log idle wait begin before idle wait result")
-	}
-	if !strings.Contains(threadCreate, "kWindowsWorkerIdleWaitMs") {
-		t.Fatal("thread_create should pass the worker idle time budget")
-	}
-	if strings.Index(threadCreate, "thread_create_post_idle_wait") >
-		strings.Index(threadCreate, "event_set(&th->done);") {
-		t.Fatal("thread_create should wait for the worker idle breadcrumb before marking done")
-	}
+
 	worker := extractFunctionBody(t, src, "void* worker_thread")
-	for _, needle := range []string{
-		"th->worker_tid = GetCurrentThreadId();",
-		"worker_thread_started",
-		"th->worker_wait_seq = th->handoff_seq;",
-		"event_set(&th->idle);",
-		"worker_wait_ready_begin",
-		"event_wait(&th->ready);",
-		"worker_ready_seen",
-	} {
-		if !strings.Contains(worker, needle) {
-			t.Fatalf("worker_thread missing handoff wait breadcrumb %q", needle)
+	wantOrder := []string{
+		"event_signal_and_wait(&th->idle, &th->ready);",
+		"event_reset(&th->ready);",
+		"execute_call(th);",
+		"event_set(&th->done);",
+	}
+	last := -1
+	for _, needle := range wantOrder {
+		idx := strings.Index(worker, needle)
+		if idx == -1 {
+			t.Fatalf("worker_thread missing handoff operation %q", needle)
 		}
-	}
-	if strings.Index(worker, "worker_wait_ready_begin") > strings.Index(worker, "event_wait(&th->ready);") {
-		t.Fatal("worker should log wait begin before blocking on ready")
-	}
-	if strings.Index(worker, "event_set(&th->idle);") > strings.Index(worker, "event_wait(&th->ready);") {
-		t.Fatal("worker should mark itself idle before blocking on ready")
-	}
-	if strings.Index(worker, "event_wait(&th->ready);") > strings.Index(worker, "worker_ready_seen") {
-		t.Fatal("worker should log ready seen after the ready wait returns")
-	}
-	execOne := extractFunctionBody(t, src, "void execute_one()")
-	for _, needle := range []string{
-		"wait_call_done_begin",
-		"event_timedwait(&th->done, timeout_ms)",
-		"wait_call_done_result",
-	} {
-		if !strings.Contains(execOne, needle) {
-			t.Fatalf("execute_one missing immediate wait breadcrumb %q", needle)
+		if idx <= last {
+			t.Fatalf("worker_thread handoff operation %q is out of order", needle)
 		}
+		last = idx
 	}
-	if strings.Index(execOne, "wait_call_done_begin") >
-		strings.Index(execOne, "event_timedwait(&th->done, timeout_ms)") {
-		t.Fatal("execute_one should log before waiting for a scheduled call")
+
+	waitStart := strings.Index(src, "// Wait for call completion.")
+	if waitStart == -1 {
+		t.Fatal("execute_one completion wait not found")
+	}
+	waitEndRel := strings.Index(src[waitStart:], "if (wait_done)")
+	if waitEndRel == -1 {
+		t.Fatal("execute_one completion wait end not found")
+	}
+	waitBlock := src[waitStart : waitStart+waitEndRel]
+	windowsWait := strings.Index(waitBlock, "windows_yield_until_event(&th->done,")
+	fallbackWait := strings.Index(waitBlock, "event_timedwait(&th->done, timeout_ms)")
+	if windowsWait == -1 || fallbackWait == -1 || windowsWait >= fallbackWait {
+		t.Fatalf("execute_one should select the bounded Windows wait before the non-Windows fallback: windows=%d fallback=%d",
+			windowsWait, fallbackWait)
 	}
 }
 
@@ -8287,10 +8271,7 @@ func TestWindowsExecutorDrainsWorkersBeforeNyxResult(t *testing.T) {
 		"if (!flag_threaded)",
 		"for (int i = 0; i < kMaxThreads; i++)",
 		"if (!th->created || th->executing)",
-		"nyx_worker_idle_drain_begin",
-		"windows_yield_until_event(&th->idle, kWindowsWorkerIdleYields,",
-		"kWindowsWorkerIdleDrainWaitMs",
-		"nyx_worker_idle_drain_done",
+		"windows_wait_worker_idle(th, kWindowsWorkerIdleDrainWaitMs);",
 	} {
 		if !strings.Contains(helper, needle) {
 			t.Fatalf("worker idle drain helper missing %q", needle)
@@ -8314,10 +8295,8 @@ func TestWindowsExecutorDrainsWorkersBeforeNyxResult(t *testing.T) {
 	block := src[blockStart : blockStart+blockEnd]
 	wantOrder := []string{
 		"execute_one();",
-		"nyx_post_execute_one",
 		"windows_drain_worker_idle_before_nyx_result();",
 		"HYPERCALL_KAFL_SYZ_COV_DUMP",
-		"nyx_finish_exec_payload(meta, msg->num_calls())",
 	}
 	last := -1
 	for _, needle := range wantOrder {
@@ -8375,8 +8354,8 @@ func TestWindowsNetInjectionStubsFailFast(t *testing.T) {
 		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_REFRESH_UNICAST_ENV",
 		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_STATIC_NEIGHBOR_ENV",
 		"GetEnvironmentVariableA(SYZ_WINDOWS_NET_INJECTION_FIREWALL_ALLOW_ENV",
-		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS_ENV, 30000)",
-		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV, 30000)",
+		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_PRE_SNAPSHOT_SETTLE_MS_ENV, 0)",
+		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_POST_WRITE_SETTLE_MS_ENV, 0)",
 		"windows_net_injection_env_dword(SYZ_WINDOWS_NET_INJECTION_READ_ATTEMPTS_ENV",
 		"CreateFileA(device_path, GENERIC_READ | GENERIC_WRITE",
 		"FILE_FLAG_OVERLAPPED",
@@ -8434,7 +8413,6 @@ func TestWindowsNetInjectionStubsFailFast(t *testing.T) {
 		"windows net injection %s ipv4 src=%u.%u.%u.%u dst=%u.%u.%u.%u proto=%u total_len=%u ihl=%u csum=0x%04x verify=0x%04x",
 		"windows net injection %s tcp src_port=%u dst_port=%u flags=0x%02x seq=0x%x ack=0x%x data_off=%u csum=0x%04x verify=0x%04x",
 		"windows_net_checksum_finish",
-		"windows net injection wrote frame length=%u",
 		"windows net injection extracted tcp seq=0x%x ack=0x%x",
 		"windows net injection extracted cached tcp seq=0x%x ack=0x%x",
 		"windows net injection extract complete source=%s",
@@ -8661,7 +8639,6 @@ func TestWindowsNetInjectionStubsFailFast(t *testing.T) {
 		`windows_nyx_log("windows net injection write begin handle=0x%p event=0x%p length=%u buffer=0x%p\n"`,
 		`windows_nyx_log("windows net injection write issued ok=%u err=%u written=%u\n"`,
 		`windows_net_injection_log_frame_summary("tx", windows_net_injection_write_buffer, length)`,
-		`windows_nyx_log("windows net injection wrote frame length=%u\n"`,
 		`windows_net_injection_log_guest_net_state("after-write")`,
 		`windows_net_injection_log_guest_net_state("before-extract")`,
 		`windows_nyx_log("windows net injection read begin handle=0x%p event=0x%p length=%u buffer=0x%p\n"`,
@@ -8687,8 +8664,10 @@ func TestWindowsNetInjectionStubsFailFast(t *testing.T) {
 		"ip[9] != SYZ_WINDOWS_NET_INJECTION_IPPROTO_TCP",
 		"src_ip != SYZ_WINDOWS_NET_INJECTION_LOCAL_IPV4",
 		"dst_ip != SYZ_WINDOWS_NET_INJECTION_PEER_IPV4",
-		"src_port != SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT",
-		"dst_port != SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT",
+		"src_port < SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT",
+		"src_port > SYZ_WINDOWS_NET_INJECTION_LOCAL_TCP_PORT_MAX",
+		"dst_port < SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT",
+		"dst_port > SYZ_WINDOWS_NET_INJECTION_PEER_TCP_PORT_MAX",
 		"bool is_syn = (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) == SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN",
 		"bool is_synack = (flags & (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)) == (SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_SYN | SYZ_WINDOWS_NET_INJECTION_TCP_FLAG_ACK)",
 		"(!is_syn && !is_synack)",
@@ -8754,10 +8733,28 @@ func TestOfflineNyxOverlayEnablesAutoLogon(t *testing.T) {
 		`"ForceAutoLogon"="1"`,
 		`"DefaultUserName"="$AUTO_LOGON_USER"`,
 		`"DefaultPassword"="$AUTO_LOGON_PASSWORD"`,
-		`"NTsyzkallerNyxExecutor"="D:\\\\WINDOWS\\\\system32\\\\cmd.exe /c D:\\\\ntsyz-nyx-autostart.cmd"`,
+		`"Userinit"="D:\\\\WINDOWS\\\\system32\\\\userinit.exe,D:\\\\WINDOWS\\\\system32\\\\cmd.exe /c D:\\\\ntsyz-nyx-autostart.cmd,"`,
 		`executor-launcher-started.txt`,
 		`nyx-autostart.cmd.log`,
 		`ntsyz-nyx-autostart.cmd`,
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("offline Nyx overlay script should contain %q", needle)
+		}
+	}
+}
+
+func TestOfflineNyxOverlayPassesWorkerPinToExecutor(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "guest-vm", "prepare-nyx-overlay-offline.sh")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read prepare-nyx-overlay-offline.sh: %v", err)
+	}
+	src := string(data)
+	for _, needle := range []string{
+		`NYX_WORKER_PIN="${SYZ_NYX_WORKER_PIN:-}"`,
+		`nyx_worker_pin_line="\$env:SYZ_NYX_WORKER_PIN = '1'"`,
+		`$nyx_worker_pin_line`,
 	} {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("offline Nyx overlay script should contain %q", needle)

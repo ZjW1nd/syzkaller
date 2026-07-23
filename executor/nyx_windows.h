@@ -35,6 +35,8 @@
 #define HYPERCALL_KAFL_REQUEST_RELOAD 44
 #define HYPERCALL_KAFL_SYZ_COV_SESSION_BEGIN 45
 #define HYPERCALL_KAFL_SYZ_COV_SESSION_END 46
+#define HYPERCALL_KAFL_WORKER_READY 47
+#define HYPERCALL_KAFL_WORKER_KICK 48
 
 #define KAFL_MODE_64 0
 #define HPRINTF_MAX_SIZE 0x1000
@@ -229,8 +231,8 @@ static void nyx_pin_protocol_thread(const nyx_host_config_t* host_config, const 
 	}
 }
 
-static void nyx_pin_worker_thread(uint32_t worker_id, uint32_t smp_enabled,
-				  uint32_t cpu_count)
+static void nyx_pin_worker_thread(HANDLE thread, uint32_t worker_id,
+				  uint32_t smp_enabled, uint32_t cpu_count)
 {
 	if (!smp_enabled || cpu_count == 0)
 		return;
@@ -253,13 +255,45 @@ static void nyx_pin_worker_thread(uint32_t worker_id, uint32_t smp_enabled,
 		return;
 	}
 	DWORD_PTR mask = ((DWORD_PTR)1) << cpu;
-	if (SetThreadAffinityMask(GetCurrentThread(), mask) == 0) {
+	if (SetThreadAffinityMask(thread, mask) == 0) {
 		nyx_hprintf("nyx worker thread pin failed worker=%u cpu=%u err=%lu\n",
 			    worker_id, cpu, GetLastError());
-	} else {
-		nyx_hprintf("nyx worker thread pinned worker=%u cpu=%u cpu_count=%u\n",
-			    worker_id, cpu, cpu_count);
 	}
+	if (!SetThreadPriority(thread, THREAD_PRIORITY_HIGHEST)) {
+		nyx_hprintf("nyx worker thread priority failed worker=%u cpu=%u err=%lu\n",
+			    worker_id, cpu, GetLastError());
+	}
+}
+
+static void nyx_kick_worker_thread(uint32_t worker_id, uint32_t smp_enabled,
+				   uint32_t cpu_count)
+{
+	if (!smp_enabled || cpu_count <= 1)
+		return;
+	char buf[8];
+	DWORD n = GetEnvironmentVariableA("SYZ_NYX_WORKER_PIN", buf, sizeof(buf));
+	if (n == 0 || n >= sizeof(buf) || buf[0] != '1')
+		return;
+	uint32_t cpu = 1 + (worker_id % (cpu_count - 1));
+	if (cpu >= sizeof(DWORD_PTR) * 8)
+		return;
+	nyx_hypercall(HYPERCALL_KAFL_WORKER_KICK,
+		      ((uint64_t)cpu << 32) | worker_id);
+}
+
+static void nyx_report_worker_ready(uint32_t worker_id, uint32_t smp_enabled,
+				    uint32_t cpu_count)
+{
+	if (!smp_enabled || cpu_count <= 1)
+		return;
+	char buf[8];
+	DWORD n = GetEnvironmentVariableA("SYZ_NYX_WORKER_PIN", buf, sizeof(buf));
+	if (n == 0 || n >= sizeof(buf) || buf[0] != '1')
+		return;
+	uint32_t cpu = 1 + (worker_id % (cpu_count - 1));
+	if (cpu >= sizeof(DWORD_PTR) * 8)
+		return;
+	nyx_hypercall(HYPERCALL_KAFL_WORKER_READY, worker_id);
 }
 
 static bool nyx_query_cr3(uint64_t* out_cr3)

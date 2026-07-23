@@ -264,6 +264,8 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 #define W32_NTDEVICEIOCTLFILE_AFD_PARTIAL_DISCONNECT_TCP 2030
 #define W32_NTDEVICEIOCTLFILE_AFD_POLL_ACCEPT 2031
 #define W32_NTDEVICEIOCTLFILE_AFD_POLL_ACCEPT_NONBLOCK 2032
+#define W32_NTDEVICEIOCTLFILE_AFD_POLL_MULTI 2033
+#define W32_NTDEVICEIOCTLFILE_AFD_POLL_TIMEOUT 2034
 #define W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_ACCEPT 2035
 #define W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_TCP 2036
 #define W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_UDP 2037
@@ -332,6 +334,7 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 #define W32_NTDEVICEIOCTLFILE_AFD_SEND_TCP_NONBLOCK 2100
 #define W32_NTDEVICEIOCTLFILE_AFD_SEND_UDP_PEER 2101
 #define W32_NTDEVICEIOCTLFILE_AFD_SEND_UDP_PEER_NONBLOCK 2102
+#define W32_NTDEVICEIOCTLFILE_AFD_SET_CIRCULAR_QUEUE_UDP 2103
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_CONTEXT_TCP 2104
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_CONTEXT_UDP 2105
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_TCP_ACCEPTED 2106
@@ -342,6 +345,10 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_UDP_BOUND 2111
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_UDP_CREATED 2112
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_UDP_PEERED 2113
+#define W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_ULONG_TCP 2114
+#define W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_ULONG_UDP 2115
+#define W32_NTDEVICEIOCTLFILE_AFD_SET_MAX_RECV_BYTES_UDP 2116
+#define W32_NTDEVICEIOCTLFILE_AFD_SET_MAX_RECV_COUNT_UDP 2117
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_QOS_TCP 2118
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_QOS_TLI 2119
 #define W32_NTDEVICEIOCTLFILE_AFD_SET_QOS_UDP 2120
@@ -432,10 +439,14 @@ NTSTATUS NTAPI NtQueryDefaultUILanguage(LANGID*);
 #define W32_NTDEVICEIOCTLFILE_AFD_VALIDATE_GROUP_UDP 2205
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_DELAYED_TCP 2206
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_DELAYED_TCP_NONBLOCK 2207
+#define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_ACCEPT_TCP 2208
+#define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_ACCEPT_TCP_NONBLOCK 2209
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_TCP 2210
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_TCP_NONBLOCK 2211
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_TCP 2212
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_TCP_NONBLOCK 2213
+#define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_ACCEPT_TCP 2214
+#define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_ACCEPT_TCP_NONBLOCK 2215
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_TCP 2216
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_TCP_NONBLOCK 2217
 #define W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_TCP 2218
@@ -949,6 +960,8 @@ static void init_nyx_syscalls()
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_PARTIAL_DISCONNECT_TCP] = call_t{"NtDeviceIoControlFile$afd_partial_disconnect_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_POLL_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_poll_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_POLL_ACCEPT_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_poll_accept_nonblock", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_POLL_MULTI] = call_t{"NtDeviceIoControlFile$afd_poll_multi", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_POLL_TIMEOUT] = call_t{"NtDeviceIoControlFile$afd_poll_timeout", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_ACCEPT] = call_t{"NtDeviceIoControlFile$afd_query_handles_accept", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_TCP] = call_t{"NtDeviceIoControlFile$afd_query_handles_tcp", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_QUERY_HANDLES_UDP] = call_t{"NtDeviceIoControlFile$afd_query_handles_udp", 0, {}, (syscall_t)NtDeviceIoControlFile};
@@ -1005,6 +1018,7 @@ static void init_nyx_syscalls()
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SEND_TCP_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_send_tcp_nonblock", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SEND_UDP_PEER] = call_t{"NtDeviceIoControlFile$afd_send_udp_peer", 0, {}, (syscall_t)NtDeviceIoControlFile};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SEND_UDP_PEER_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_send_udp_peer_nonblock", 0, {}, (syscall_t)NtDeviceIoControlFile};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_CIRCULAR_QUEUE_UDP] = call_t{"NtDeviceIoControlFile$afd_set_circular_queue_udp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_CONTEXT_TCP] = call_t{"NtDeviceIoControlFile$afd_set_context_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_CONTEXT_UDP] = call_t{"NtDeviceIoControlFile$afd_set_context_udp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_TCP_ACCEPTED] = call_t{"NtDeviceIoControlFile$afd_set_information_nonblock_tcp_accepted", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
@@ -1015,6 +1029,10 @@ static void init_nyx_syscalls()
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_UDP_BOUND] = call_t{"NtDeviceIoControlFile$afd_set_information_nonblock_udp_bound", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_UDP_CREATED] = call_t{"NtDeviceIoControlFile$afd_set_information_nonblock_udp_created", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_NONBLOCK_UDP_PEERED] = call_t{"NtDeviceIoControlFile$afd_set_information_nonblock_udp_peered", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_ULONG_TCP] = call_t{"NtDeviceIoControlFile$afd_set_information_ulong_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_INFORMATION_ULONG_UDP] = call_t{"NtDeviceIoControlFile$afd_set_information_ulong_udp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_MAX_RECV_BYTES_UDP] = call_t{"NtDeviceIoControlFile$afd_set_max_recv_bytes_udp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_MAX_RECV_COUNT_UDP] = call_t{"NtDeviceIoControlFile$afd_set_max_recv_count_udp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_RECEIVE_CONNECT_DATA_LENGTH_TCP] = call_t{"NtDeviceIoControlFile$afd_set_receive_connect_data_length_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_RECEIVE_CONNECT_DATA_LENGTH_UDP] = call_t{"NtDeviceIoControlFile$afd_set_receive_connect_data_length_udp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_SET_RECEIVE_CONNECT_OPTIONS_LENGTH_TCP] = call_t{"NtDeviceIoControlFile$afd_set_receive_connect_options_length_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
@@ -1050,10 +1068,14 @@ static void init_nyx_syscalls()
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_UNCONNECT_UDP] = call_t{"NtDeviceIoControlFile$afd_unconnect_udp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_DELAYED_TCP] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_DELAYED_TCP_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_delayed_tcp_nonblock", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_ACCEPT_TCP] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_ACCEPT_TCP_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_accept_tcp_nonblock", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_TCP] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_PENDING_TCP_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_lifo_pending_tcp_nonblock", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_TCP] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_LIFO_TCP_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_lifo_tcp_nonblock", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_ACCEPT_TCP] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
+	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_ACCEPT_TCP_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_pending_accept_tcp_nonblock", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_TCP] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_PENDING_TCP_NONBLOCK] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_pending_tcp_nonblock", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};
 	syscalls[W32_NTDEVICEIOCTLFILE_AFD_WAIT_FOR_LISTEN_TCP] = call_t{"NtDeviceIoControlFile$afd_wait_for_listen_tcp", 0, {}, (syscall_t)windows_nt_device_io_control_file_state};

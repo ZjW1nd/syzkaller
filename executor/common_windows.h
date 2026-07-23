@@ -94,6 +94,15 @@ static void event_wait(event_t* ev)
 	if (state != WAIT_OBJECT_0)
 		exitf("WaitForSingleObject failed");
 }
+static void event_signal_and_wait(event_t* signal, event_t* wait)
+{
+	DWORD state =
+	    SignalObjectAndWait(signal->handle, wait->handle, INFINITE, FALSE);
+	if (state != WAIT_OBJECT_0)
+		exitf("SignalObjectAndWait failed");
+}
+
+
 
 static int event_isset(event_t* ev)
 {

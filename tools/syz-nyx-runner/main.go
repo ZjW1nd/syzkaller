@@ -78,12 +78,14 @@ const (
 	nyxMaxModuleRangeTargets    = 16
 	nyxModuleRangeConfigFile    = "syz_nyx_module_ranges.bin"
 	nyxInitMinTimeout           = 5 * time.Minute
+	nyxFirstExecTimeout         = 40 * time.Second
+	nyxPreExecPayloadTimeout    = 2 * time.Minute
 	nyxManagerReconnectBackoff  = time.Second
 )
 
 // vmPrimedGlobally tracks whether PT coverage has been primed at least once
 // in this runner process. It survives runner struct resets across VM
-// reconnects so the init-floor timeout is not re-applied after restarts.
+// reconnects so the first-exec timeout floor is not re-applied after restarts.
 var vmPrimedGlobally = false
 
 type multiFlag []string
@@ -744,6 +746,13 @@ func deriveHardTimeout(programTimeoutMs int32, fallback time.Duration) time.Dura
 	return timeout
 }
 
+func firstExecTimeoutWithFloor(timeout time.Duration, primed bool) time.Duration {
+	if !primed && timeout < nyxFirstExecTimeout {
+		return nyxFirstExecTimeout
+	}
+	return timeout
+}
+
 func applyStandaloneHardTimeout(vm *nyxVM, programTimeoutMs int) time.Duration {
 	derivedTimeout := deriveHardTimeout(int32(programTimeoutMs), vm.hardTimeout)
 	if derivedTimeout != vm.hardTimeout {
@@ -783,17 +792,18 @@ type nyxVM struct {
 	runtimeModuleRanges    []moduleRuntimeRange
 	moduleCanonicalizer    moduleRangeCanonicalizer
 
-	ctx         context.Context
-	payloadFile *os.File
-	payloadMM   []byte
-	auxFile     *os.File
-	auxMM       []byte
-	control     net.Conn
-	aux         *qemuAux
-	process     *exec.Cmd
-	qemuLog     *os.File
-	trace       *traceRecorder
-	traceReqID  int64
+	ctx                             context.Context
+	payloadFile                     *os.File
+	payloadMM                       []byte
+	auxFile                         *os.File
+	auxMM                           []byte
+	control                         net.Conn
+	aux                             *qemuAux
+	process                         *exec.Cmd
+	qemuLog                         *os.File
+	trace                           *traceRecorder
+	traceReqID                      int64
+	handshakeFrontendReleasePending bool
 }
 
 func (vm *nyxVM) debugLogf(msg string, args ...any) {
@@ -907,6 +917,11 @@ func hprintfStage(msg string) string {
 	}
 }
 
+func execPayloadHeaderStartsProgram(execCode uint8, msg string) bool {
+	return execCode == nyxRCHprintf &&
+		strings.HasPrefix(strings.TrimSpace(msg), "nyx payload header kind=2 ")
+}
+
 func parseQemuSMPValue(raw string) int {
 	if raw == "" {
 		return 1
@@ -938,15 +953,8 @@ func qemuVCPUCount(args []string) int {
 	return 1
 }
 
-func effectiveKeepState(vm *nyxVM, keepState bool) bool {
-	if !keepState {
-		return false
-	}
-	if vm == nil || vm.qemuVCPUCount <= 1 {
-		return true
-	}
-	log.Logf(0, "runner disabling keep-state for SMP guest: qemu_vcpus=%d", vm.qemuVCPUCount)
-	return false
+func effectiveKeepState(_ *nyxVM, keepState bool) bool {
+	return keepState
 }
 
 func newNyxVM(index int, workdir, qemuPath string, qemuArgs []string, image string, memoryMB int, payloadSize, bitmapSize int, debug bool, hardTimeout time.Duration, moduleRanges []moduleRangeSpec, windowsMinidump bool, windowsMinidumpTimeout int) *nyxVM {
@@ -1214,6 +1222,11 @@ func (vm *nyxVM) ensureAuxMmap() error {
 	vm.auxFile = f
 	vm.auxMM = mm
 	return nil
+}
+
+func (vm *nyxVM) updateHardTimeout(timeout time.Duration) {
+	vm.hardTimeout = timeout
+	vm.applyHardTimeout()
 }
 
 func (vm *nyxVM) applyHardTimeout() {
@@ -1609,7 +1622,7 @@ func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
 	}()
 	vm.recordTrace("runner", "handshake_begin", requestID, traceFields("payload_bytes", len(payload)))
 	_ = os.Remove(filepath.Join(vm.dumpDir, nyxHandshakeAck))
-	vm.aux.clearTransientResult()
+	vm.handshakeFrontendReleasePending = false
 	if err := vm.setPayload(payload); err != nil {
 		return err
 	}
@@ -1632,8 +1645,18 @@ func (vm *nyxVM) executeHandshake(payload []byte, requestID int64) error {
 			return err
 		}
 		if data, err := os.ReadFile(filepath.Join(vm.dumpDir, nyxHandshakeAck)); err == nil && bytes.Equal(data, []byte("ok")) {
-			log.Logf(0, "runner executeHandshake: ack observed at step=%d", i)
+			vm.debugLogf("runner handshake ack observed at step=%d", i)
 			vm.recordTrace("runner", "handshake_ack", requestID, traceFields("step", i))
+			/*
+			 * In SMP mode QEMU holds the handshake-ack dump vCPU until the
+			 * frontend publishes the first EXEC payload. The ping that
+			 * announced that wait was consumed by the handshake step, so
+			 * the first exec step must release it without first probing for
+			 * another ping. Delaying that release leaves the Windows
+			 * protocol CPU stopped while the other vCPUs keep running and
+			 * can strand the executor before its next NEXT_PAYLOAD.
+			 */
+			vm.handshakeFrontendReleasePending = vm.qemuVCPUCount > 1
 			return nil
 		}
 		vm.recordAuxTrace("handshake_step", requestID)
@@ -1683,10 +1706,11 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	_ = os.Remove(vm.coverPath)
 	vm.aux.clearTransientResult()
 	steps := 0
-	deadline := time.Now().Add(vm.execWaitTimeout())
+	deadline := time.Now().Add(vm.preExecPayloadTimeout())
 	resultPath := filepath.Join(vm.dumpDir, nyxExecResult)
 	reloadRequested := false
 	reloadBoundarySettled := false
+	programStarted := false
 	for {
 		msg, ok, err := vm.readExecResultIfReady(resultPath, requestID, steps, reloadRequested, reloadBoundarySettled)
 		if ok || err != nil {
@@ -1705,7 +1729,12 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		vm.debugLogf("runner exec step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, vm.aux.state(), vm.aux.execDone(), vm.aux.execCode(),
 			strings.TrimSpace(string(vm.aux.misc())))
-		probeWindow := execStepProbeWindow(steps, reloadRequested, reloadBoundarySettled)
+		handshakeHandoff := steps == 0 && vm.handshakeFrontendReleasePending
+		probeWindow := execStepProbeWindow(steps, reloadRequested, reloadBoundarySettled, handshakeHandoff)
+		if handshakeHandoff {
+			vm.handshakeFrontendReleasePending = false
+			vm.recordTrace("runner", "handshake_frontend_release", requestID, nil)
+		}
 		if err := vm.runQemuWithTimeoutAndProbe(remaining, probeWindow); err != nil {
 			if isTimeoutError(err) {
 				log.Logf(0, "runner exec qemu step timeout at step=%d; synthesizing hanged result", steps)
@@ -1724,6 +1753,12 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 		vm.debugLogf("runner exec post-step=%d state=%d exec_done=%v exec_code=%d misc=%q",
 			steps, postState, postExecDone, postExecCode,
 			postMiscTrimmed)
+		if !programStarted && execPayloadHeaderStartsProgram(postExecCode, postMiscTrimmed) {
+			programStarted = true
+			deadline = time.Now().Add(vm.execWaitTimeout())
+			vm.recordTrace("runner", "exec_program_deadline_started", requestID,
+				traceFields("step", steps, "timeout_ms", vm.execWaitTimeout().Milliseconds()))
+		}
 		wasBoundarySettled := reloadBoundarySettled
 		if postExecCode == nyxRCHprintf {
 			stage := hprintfStage(postMiscTrimmed)
@@ -1788,8 +1823,9 @@ func (vm *nyxVM) executeRequest(payload []byte, req *flatrpc.ExecRequest) (*flat
 	}
 }
 
-func execStepProbeWindow(steps int, reloadRequested bool, reloadBoundarySettled bool) time.Duration {
-	if reloadRequested && !reloadBoundarySettled {
+func execStepProbeWindow(steps int, reloadRequested bool, reloadBoundarySettled bool,
+	handshakeHandoff bool) time.Duration {
+	if handshakeHandoff || reloadRequested && !reloadBoundarySettled {
 		return 0
 	}
 	if steps == 0 {
@@ -1846,6 +1882,14 @@ func reqID(req *flatrpc.ExecRequest) int64 {
 
 func (vm *nyxVM) execWaitTimeout() time.Duration {
 	return timeoutWithSlack(vm.hardTimeout)
+}
+
+func (vm *nyxVM) preExecPayloadTimeout() time.Duration {
+	timeout := vm.execWaitTimeout()
+	if timeout < nyxPreExecPayloadTimeout {
+		return nyxPreExecPayloadTimeout
+	}
+	return timeout
 }
 
 func (vm *nyxVM) initWaitTimeout() time.Duration {
@@ -3197,24 +3241,18 @@ func (r *runner) connect() error {
 		r.connectReply.SyscallTimeoutMs, r.connectReply.ProgramTimeoutMs)
 	derivedTimeout := deriveHardTimeout(r.connectReply.ProgramTimeoutMs, r.vm.hardTimeout)
 	/*
-	 * Nyx's first program execution includes root snapshot creation, PT
-	 * setup, and AP synchronisation that can take 30+ seconds.  The
-	 * derived hard timeout from a 5s program_timeout would be only 8s,
-	 * killing the first execution before it starts.  Use the init wait
-	 * timeout as a floor — but only on the very first boot, not on
-	 * reconnects after VM restarts.  The package-level vmPrimedGlobally
-	 * flag survives runner struct resets across reconnects.
+	 * VM boot has already completed before connect.  The first execution still
+	 * has to seal the fuzz root and can take 30+ seconds, but inheriting the
+	 * multi-minute boot timeout makes a stuck handshake consume 255 seconds per
+	 * recovery attempt.  Keep a separate bounded first-exec floor; after PT has
+	 * been primed, use the normal derived program timeout.
 	 */
-	if !r.coveragePrimed && !vmPrimedGlobally {
-		initFloor := r.vm.initWaitTimeout()
-		if derivedTimeout < initFloor {
-			derivedTimeout = initFloor
-		}
-	}
+	derivedTimeout = firstExecTimeoutWithFloor(
+		derivedTimeout, r.coveragePrimed || vmPrimedGlobally)
 	if derivedTimeout != r.vm.hardTimeout {
 		log.Logf(0, "runner using derived hard timeout %s (fallback=%s program_timeout_ms=%d primed=%v)",
 			derivedTimeout, r.vm.hardTimeout, r.connectReply.ProgramTimeoutMs, r.coveragePrimed)
-		r.vm.hardTimeout = derivedTimeout
+		r.vm.updateHardTimeout(derivedTimeout)
 	}
 	log.Logf(0, "runner connect: sending InfoRequest")
 	if err := flatrpc.Send(r.conn, &flatrpc.InfoRequest{
@@ -3474,7 +3512,7 @@ func (r *runner) executeRequestOnce(req *flatrpc.ExecRequest, prime bool) (*flat
 				requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
 				duration.Milliseconds(), res.Hanged, res.Error)
 		} else {
-			log.Logf(0, "%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
+			r.vm.debugLogf("%s complete: id=%d calls=%d cover_records=%d duration_ms=%d hanged=%v error=%q",
 				requestLabel, req.Id, len(res.Info.Calls), countNonEmptyCover(res.Info.Calls),
 				duration.Milliseconds(), res.Hanged, res.Error)
 		}
@@ -3743,7 +3781,12 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 			return nil, err
 		}
 		r.coveragePrimed = true
-		if primeResultCanReturn(primeMsg) {
+		_, ptEnableDisabled := os.LookupEnv("NYX_DISABLE_PT_ENABLE_FOR_SYZ_COV")
+		if coveragePrimeCanReturn(primeMsg, ptEnableDisabled) {
+			if ptEnableDisabled && !execResultHasCoverage(primeMsg) && !execResultHanged(primeMsg) {
+				log.Logf(0, "runner PT enable disabled; accepting successful coverage-prime result without coverage: id=%d",
+					req.Id)
+			}
 			return primeMsg, nil
 		}
 		log.Logf(0, "runner coverage prime requires replay: id=%d %s", req.Id, primeResultDetails(primeMsg))
@@ -3762,16 +3805,14 @@ func (r *runner) runRequest(req *flatrpc.ExecRequest) (*flatrpc.ExecutorMessage,
 		vmPrimedGlobally = true
 	}
 	/* After the first CollectCover request primes PT, switch from the
-	 * generous init-floor timeout (5+ minutes) to the tight derived
-	 * timeout (~8s) so hung network syscalls are killed quickly instead
-	 * of burning 255s each. */
+	 * bounded first-exec floor to the tight derived timeout (~8s) so hung
+	 * network syscalls are killed quickly. */
 	if r.coveragePrimed && !r.timeoutReduced {
 		derivedTimeout := deriveHardTimeout(r.connectReply.ProgramTimeoutMs, r.vm.hardTimeout)
 		if derivedTimeout < r.vm.hardTimeout {
 			log.Logf(0, "runner reducing hard timeout to %s after coverage priming (was %s)",
 				derivedTimeout, r.vm.hardTimeout)
-			r.vm.hardTimeout = derivedTimeout
-			r.vm.applyHardTimeout()
+			r.vm.updateHardTimeout(derivedTimeout)
 		}
 		r.timeoutReduced = true
 	}
@@ -3808,6 +3849,17 @@ func primeResultCanReturn(msg *flatrpc.ExecutorMessage) bool {
 		return false
 	}
 	return execResultHasCoverage(msg)
+}
+
+func coveragePrimeCanReturn(msg *flatrpc.ExecutorMessage, ptEnableDisabled bool) bool {
+	if primeResultCanReturn(msg) {
+		return true
+	}
+	if !ptEnableDisabled || msg == nil || msg.Msg == nil {
+		return false
+	}
+	res, ok := msg.Msg.Value.(*flatrpc.ExecResult)
+	return ok && res != nil && res.Error == ""
 }
 
 func execResultHanged(msg *flatrpc.ExecutorMessage) bool {
